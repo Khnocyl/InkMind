@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type {
   Dispatch,
   MutableRefObject,
@@ -49,6 +49,23 @@ export function useProjectPersistence({
       (err) => console.error('项目持久化失败:', err)
     );
   }
+
+  // R3 收尾：页面关闭/切后台前兜底 flush——
+  // 避免「导入文风仿写后立刻刷新」中断 in-flight 写事务导致丢失。
+  useEffect(() => {
+    const flush = () => {
+      void persistWriterRef.current?.flush();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
 
   const handleUpdateAndPersistProject = useCallback(
     async (

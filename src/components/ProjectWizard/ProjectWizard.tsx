@@ -383,6 +383,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             initialConfig={project.config}
             styleProfiles={project.styleConfig?.styleProfiles || []}
             activeStyleProfileId={project.styleConfig?.activeStyleProfileId}
+            styleConfig={project.styleConfig}
+            onStyleConfigChange={(sc) => updateAndSave({ styleConfig: sc })}
             onNext={handleGenerateTitle}
             isGenerating={isGenerating}
             progressMsg={progressMsg}

@@ -606,7 +606,9 @@ export default function App() {
             aiTasteScanBusy={aiTasteScanBusy}
             aiTasteScanMessage={aiTasteScanMessage}
             focusTodoId={
-              focusRevisionTodo?.chapterId === activeChapter?.id
+              focusRevisionTodo != null &&
+              activeChapter != null &&
+              focusRevisionTodo.chapterId === activeChapter.id
                 ? focusRevisionTodo.todoId
                 : null
             }

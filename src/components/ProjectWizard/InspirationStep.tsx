@@ -1,20 +1,25 @@
-﻿import React, { useMemo, useState } from 'react';
-import type { ProjectConfig, StyleProfile } from '../../types/novel';
-import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library } from 'lucide-react';
+﻿import React, { useMemo, useRef, useState } from 'react';
+import type { ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel';
+import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2 } from 'lucide-react';
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
+import { analyzeReferenceStyle, importStyleProfile } from '../../services/styleImitate';
 
 interface InspirationStepProps {
   initialConfig: ProjectConfig;
-  /** 本书已导入的文风仿写档案（引擎与风格页导入） */
+  /** 本书已导入的文风仿写档案（引擎与风格页导入，或本向导内直接导入） */
   styleProfiles?: StyleProfile[];
   /** 当前激活的仿写 id */
   activeStyleProfileId?: string | null;
+  /** R3 收尾：新书 styleConfig（含黑名单/few-shot 基线，导入档案基于它合并） */
+  styleConfig?: StyleConfig;
   onNext: (
     config: ProjectConfig,
     meta?: { styleProfileId?: string | null }
   ) => void;
   isGenerating: boolean;
   progressMsg?: string;
+  /** R3 收尾：向导内直接导入文风档案 → 写入新书 styleConfig（随向导落盘） */
+  onStyleConfigChange?: (sc: StyleConfig) => Promise<unknown> | void;
 }
 
 const PRESET_INSPIRATIONS = [
@@ -59,6 +64,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   onNext,
   isGenerating,
   progressMsg,
+  onStyleConfigChange,
+  styleConfig,
 }) => {
   const packs = listGenrePacks();
   const [inspiration, setInspiration] = useState(initialConfig.inspiration || PRESET_INSPIRATIONS[0].text);
@@ -103,6 +110,56 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   }, [initialConfig, styleProfiles, activeStyleProfileId]);
 
   const [styleKey, setStyleKey] = useState(initialStyleKey);
+
+  // R3 收尾：向导内导入文风仿写（粘贴/上传 → 分析 → 写入新书 styleConfig）
+  const styleFileRef = useRef<HTMLInputElement>(null);
+  const [styleSample, setStyleSample] = useState('');
+  const [styleBusy, setStyleBusy] = useState(false);
+  const [styleMsg, setStyleMsg] = useState<string | null>(null);
+
+  const importStyleInWizard = async (text: string, sourceLabel: string) => {
+    if (!onStyleConfigChange || !text.trim() || styleBusy) return;
+    setStyleBusy(true);
+    setStyleMsg(null);
+    try {
+      const { profile } = await analyzeReferenceStyle({
+        text,
+        name: undefined,
+        sourceLabel,
+        onProgress: (m) => setStyleMsg(m),
+      });
+      const base = styleConfig || {
+        clicheBlacklist: [],
+        customBlacklist: [],
+        enforceShowDontTell: true,
+        forbidEndingSublimation: true,
+        fewShotExamples: [],
+        selectedExampleId: '',
+      };
+      await onStyleConfigChange(
+        importStyleProfile(base, profile, {
+          activate: true,
+          syncFewShot: true,
+        })
+      );
+      setStyleKey(`profile:${profile.id}`);
+      setStyleSample('');
+      setStyleMsg(`✅ 已导入并激活「${profile.name}」，将作为本新书默认文风`);
+    } catch (e: unknown) {
+      const m = e instanceof Error ? e.message : String(e);
+      setStyleMsg(`❌ ${m}`);
+    } finally {
+      setStyleBusy(false);
+    }
+  };
+
+  const handleStyleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || styleBusy) return;
+    const text = await file.text();
+    await importStyleInWizard(text.slice(0, 20000), file.name);
+  };
 
   const selectedPack = packs.find((p) => p.id === packId) || packs[0];
 
@@ -374,9 +431,63 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
               <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">
                 {styleProfiles.length > 0
                   ? `已载入 ${styleProfiles.length} 条仿写档案；选「仿写·…」会在向导与正文中启用该档案。`
-                  : '还没有导入仿写？请先在「引擎与风格 → 文风仿写」分析导入样本，再回向导可选。'}
+                  : '还没有仿写档案？可以直接在下方「导入参考文风」粘贴样本创建，无需离开向导。'}
               </p>
             </div>
+
+            {/* R3 收尾：向导内直接导入参考文风（创建新书时选定文风） */}
+            {onStyleConfigChange && (
+              <div className="md:col-span-2 lg:col-span-1 mt-3 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 space-y-2">
+                <div className="flex items-center space-x-1.5 text-[11px] font-semibold text-indigo-800">
+                  <Fingerprint className="w-3.5 h-3.5" />
+                  <span>导入参考文风（可选，本新书直接启用）</span>
+                </div>
+                <textarea
+                  value={styleSample}
+                  onChange={(e) => setStyleSample(e.target.value)}
+                  placeholder="粘贴一段目标作者的样章/片段（500–5000 字效果最佳）…"
+                  rows={3}
+                  disabled={styleBusy || isGenerating}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none resize-none"
+                />
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    disabled={!styleSample.trim() || styleBusy || isGenerating}
+                    onClick={() => void importStyleInWizard(styleSample, '向导粘贴样本')}
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold rounded-lg disabled:opacity-50 disabled:pointer-events-none transition-all"
+                  >
+                    {styleBusy ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-3 h-3" />
+                    )}
+                    <span>{styleBusy ? '分析中…' : '分析并导入'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={styleBusy || isGenerating}
+                    onClick={() => styleFileRef.current?.click()}
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-[11px] font-semibold rounded-lg disabled:opacity-50 transition-all"
+                  >
+                    <Upload className="w-3 h-3" />
+                    <span>上传文件</span>
+                  </button>
+                  <input
+                    ref={styleFileRef}
+                    type="file"
+                    accept=".txt,.md,.docx,text/plain"
+                    onChange={(e) => void handleStyleFile(e)}
+                    className="hidden"
+                  />
+                </div>
+                {styleMsg && (
+                  <p className="text-[11px] text-slate-600 leading-relaxed whitespace-pre-line">
+                    {styleMsg}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 提交按钮及进度提示 */}

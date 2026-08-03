@@ -30,6 +30,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
+    "fake-indexeddb": "^6.2.5",
     "oxlint": "^1.71.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.1",

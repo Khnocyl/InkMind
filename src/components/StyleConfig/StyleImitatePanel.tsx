@@ -24,10 +24,10 @@ import {
 
 interface StyleImitatePanelProps {
   styleConfig: StyleConfig;
-  /** 支持函数式更新，避免并发改配置时冲掉刚导入的档案 */
+  /** 支持函数式更新，避免并发改配置时冲掉刚导入的档案；返回 Promise 以便 await 落盘 */
   onUpdateStyleConfig: (
     config: StyleConfig | ((prev: StyleConfig) => StyleConfig)
-  ) => void;
+  ) => Promise<void> | void;
 }
 
 export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
@@ -55,7 +55,8 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
         sourceLabel,
         onProgress: (m) => setMsg(m),
       });
-      onUpdateStyleConfig((prev) =>
+      // R3 收尾：await 持久化，确保「导入 → 立即刷新」也不丢档案
+      await onUpdateStyleConfig((prev) =>
         importStyleProfile(prev, profile, {
           activate: true,
           syncFewShot: true,
@@ -63,8 +64,8 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
       );
       setMsg(
         fingerprintOnly
-          ? `✅ 已导入「${profile.name}」（指纹启发式，模型指南失败）· 已激活并同步 Few-Shot`
-          : `✅ 已导入「${profile.name}」· 统计指纹 + 风格指南已激活，后续写作自动仿写`
+          ? `✅ 已导入「${profile.name}」（指纹启发式，模型指南失败）· 已激活并同步 Few-Shot，已保存到本地`
+          : `✅ 已导入「${profile.name}」· 统计指纹 + 风格指南已激活，后续写作自动仿写（已保存）`
       );
       setSampleText('');
     } catch (e: unknown) {
@@ -95,16 +96,17 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
     }
   };
 
-  const handleActivate = (id: string | null) => {
-    onUpdateStyleConfig((prev) => setActiveStyleProfile(prev, id));
-    setMsg(id ? '已切换激活文风档案' : '已关闭文风仿写注入');
+  const handleActivate = async (id: string | null) => {
+    if (busy) return;
+    await onUpdateStyleConfig((prev) => setActiveStyleProfile(prev, id));
+    setMsg(id ? '已切换激活文风档案（已保存）' : '已关闭文风仿写注入（已保存）');
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!window.confirm('删除该文风档案？写作将不再使用其指纹/指南。')) return;
-    onUpdateStyleConfig((prev) => removeStyleProfile(prev, id));
+    await onUpdateStyleConfig((prev) => removeStyleProfile(prev, id));
     if (editId === id) setEditId(null);
-    setMsg('已删除文风档案');
+    setMsg('已删除文风档案（已保存）');
   };
 
   const startEdit = (p: StyleProfile) => {
@@ -112,9 +114,9 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
     setEditGuide(p.styleGuide);
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editId) return;
-    onUpdateStyleConfig((prev) =>
+    await onUpdateStyleConfig((prev) =>
       updateStyleProfile(prev, editId, { styleGuide: editGuide.trim() })
     );
     setEditId(null);
