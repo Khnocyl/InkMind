@@ -1,0 +1,248 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/*
+ * 全局主题：黑字白底（纸面阅读向）
+ * 将 slate 灰阶压成中性黑白灰，避免蓝灰底/深色壳。
+ */
+@theme {
+  --color-slate-50: #ffffff;
+  --color-slate-100: #fafafa;
+  --color-slate-200: #e8e8e8;
+  --color-slate-300: #d4d4d4;
+  --color-slate-400: #a3a3a3;
+  --color-slate-500: #737373;
+  --color-slate-600: #525252;
+  --color-slate-700: #3f3f3f;
+  --color-slate-800: #262626;
+  --color-slate-900: #111111;
+  --color-slate-950: #000000;
+
+  --color-zinc-50: #ffffff;
+  --color-zinc-100: #fafafa;
+  --color-zinc-200: #e8e8e8;
+  --color-zinc-300: #d4d4d4;
+  --color-zinc-400: #a3a3a3;
+  --color-zinc-500: #737373;
+  --color-zinc-600: #525252;
+  --color-zinc-700: #3f3f3f;
+  --color-zinc-800: #262626;
+  --color-zinc-900: #111111;
+  --color-zinc-950: #000000;
+
+  --color-neutral-50: #ffffff;
+  --color-neutral-100: #fafafa;
+  --color-neutral-200: #e8e8e8;
+  --color-neutral-900: #111111;
+  --color-neutral-950: #000000;
+
+  --color-stone-50: #ffffff;
+  --color-stone-100: #fafafa;
+  --color-stone-200: #e8e8e8;
+  --color-stone-900: #111111;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-serif: 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --app-bg: #ffffff;
+    --app-fg: #111111;
+    --app-fg-muted: #444444;
+    --app-border: #e5e5e5;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    min-height: 100vh;
+    background-color: #ffffff;
+    color: #111111;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 表单控件默认黑字白底，避免浏览器深色自动配色 */
+  input,
+  textarea,
+  select,
+  button {
+    color: inherit;
+  }
+
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    background-color: #ffffff;
+    color: #111111;
+  }
+
+  /* 链接与正文可读性 */
+  a {
+    color: inherit;
+  }
+}
+
+/* 自定义滚动条：浅底深条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #ffffff;
+}
+::-webkit-scrollbar-thumb {
+  background: #c4c4c4;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #888888;
+}
+
+/* 渐变与动画辅助 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+/* 阅读区/画布：强调白底黑字 */
+.theme-paper {
+  background-color: #ffffff;
+  color: #111111;
+}
+
+/*
+ * 主按钮统一：黑底白字
+ * 用法：className="btn-primary ..."
+ * 并覆盖常见彩色按钮类，避免漏改。
+ */
+@layer components {
+  .btn-primary {
+    background-color: #000000;
+    color: #ffffff;
+    border-color: #000000;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background-color: #262626;
+    color: #ffffff;
+  }
+  .btn-primary:disabled {
+    opacity: 0.5;
+  }
+
+  /**
+   * 待修定位：正文红色波浪线（拼写检查风格）
+   * 用于 WritingCanvas 镜像层
+   */
+  .revision-wavy-mark {
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-color: #e11d48;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+    background: linear-gradient(
+      to bottom,
+      rgba(254, 226, 226, 0.15) 0%,
+      rgba(254, 202, 202, 0.35) 100%
+    );
+    border-radius: 2px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .prose-mirror-layer {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    overflow: hidden;
+  }
+}
+
+/* 常见主操作色 → 黑底白字（仅按钮） */
+button.bg-indigo-600,
+button.bg-indigo-700,
+button.bg-purple-600,
+button.bg-purple-700,
+button.bg-rose-600,
+button.bg-rose-700,
+button.bg-emerald-600,
+button.bg-emerald-700,
+button.bg-teal-600,
+button.bg-teal-700,
+button.bg-violet-600,
+button.bg-violet-700,
+button.bg-amber-500,
+button.bg-amber-600,
+button.bg-amber-700,
+button.bg-cyan-600,
+button.bg-cyan-700,
+button.bg-fuchsia-600,
+button.bg-fuchsia-700,
+a.bg-indigo-600,
+a.bg-purple-600 {
+  background-color: #000000 !important;
+  color: #ffffff !important;
+  border-color: #000000 !important;
+}
+
+button.bg-indigo-600:hover:not(:disabled),
+button.bg-indigo-700:hover:not(:disabled),
+button.bg-purple-600:hover:not(:disabled),
+button.bg-purple-700:hover:not(:disabled),
+button.bg-rose-600:hover:not(:disabled),
+button.bg-rose-700:hover:not(:disabled),
+button.bg-emerald-600:hover:not(:disabled),
+button.bg-emerald-700:hover:not(:disabled),
+button.bg-teal-600:hover:not(:disabled),
+button.bg-teal-700:hover:not(:disabled),
+button.bg-violet-600:hover:not(:disabled),
+button.bg-violet-700:hover:not(:disabled),
+button.bg-amber-500:hover:not(:disabled),
+button.bg-amber-600:hover:not(:disabled),
+button.bg-amber-700:hover:not(:disabled),
+button.bg-cyan-600:hover:not(:disabled),
+button.bg-cyan-700:hover:not(:disabled),
+button.bg-fuchsia-600:hover:not(:disabled),
+button.bg-fuchsia-700:hover:not(:disabled),
+button.hover\:bg-indigo-500:hover:not(:disabled),
+button.hover\:bg-indigo-600:hover:not(:disabled),
+button.hover\:bg-purple-500:hover:not(:disabled),
+button.hover\:bg-rose-500:hover:not(:disabled),
+button.hover\:bg-rose-600:hover:not(:disabled),
+button.hover\:bg-emerald-500:hover:not(:disabled),
+button.hover\:bg-teal-600:hover:not(:disabled),
+button.hover\:bg-violet-500:hover:not(:disabled),
+button.hover\:bg-amber-500:hover:not(:disabled),
+button.hover\:bg-amber-600:hover:not(:disabled),
+button.hover\:bg-cyan-600:hover:not(:disabled) {
+  background-color: #262626 !important;
+  color: #ffffff !important;
+}
+
+/* 已是黑底的主按钮 hover 统一 */
+button.bg-black:hover:not(:disabled) {
+  background-color: #262626 !important;
+  color: #ffffff !important;
+}
