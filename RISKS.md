@@ -56,7 +56,7 @@
   5. **看板**：`src/components/UsageBadge.tsx` 挂 TopNav——本月调用数/token/费用/上限，超限红显，30s 自动刷新 + 点击刷新。
   6. **配置**：`StyleConfig.llmBudgetEnabled` / `llmMonthlyBudgetCny`（元，0=不限）；pipeline 启动时注入 `setBudgetConfig`。
 - **验证**：新增 `tests/costControl.test.ts` 21 例 + llmResilience 追加 4 例集成，159/159 全绿；tsc/lint/build 通过。
-- **残留/后续**：tier 自动路由的「实际切换模型」需后端 `/api/llm/generate` 支持 body.model 覆盖（当前用激活 profile 固定模型）；预算配置项 UI（StyleAndEngineManager 表单）未做，可在设置面板补充。
+- **残留/后续**：~~tier 自动路由的「实际切换模型」~~ ✅ 已支持——后端 `/api/llm/generate` 接受 body.model 覆盖（callLLMService 透传）、llmClient 三 generate 支持 `options.model`；**~~预算配置项 UI~~** ✅ 已在 StyleAndEngineManager 增加「💰 LLM 成本预算」卡片（开关 + 月度上限）。后续如要按章复杂度自动切模型，可在 pipeline 按 `classifyChapterTier` 结果传 `options.model`（调用方显式传入才生效，不会意外换模型）。
 
 ### R4 · 数据模型演进无迁移框架（P1 · ✅ 已修复）
 - **现状**：IndexedDB `DB_VERSION=2` 固定，项目 JSON 无 schema version，缺字段容错散落在多处 normalize。
@@ -128,6 +128,7 @@
 - [x] R1 拆分第三步：章节动作域 → `useChapterActions`（App.tsx 1819→888，-931 行；逻辑零改动，45 测试全绿）
 - [x] R1 拆分第四步：JSX 容器拆分 → `WorkspaceTab` / `WorldBibleTab`（App.tsx 888→802；45 测试全绿）—— R1 全项收尾 ✅
 - [x] R9-3 补 factGuard / draftBackup / aiTasteScan 单测（新增 54 个；99/99 全绿）—— R9 全项收尾 ✅
+- [x] R3 收尾：预算配置 UI 表单 + 后端 body.model 覆盖（llmService/index.ts 透传 + llmClient `options.model`；新增 2 测，160/160）+ git init 首次提交（bef4051，139 文件）—— **全部风险项闭环 ✅**
 - [x] R4 schema 迁移框架（`migrations.ts` + storage 接入 + 迁移前快照；新增 5 测，104/104）—— R4 全项收尾 ✅
 - [x] R7 记忆回写一致性（`memoryConsistency.ts` 冲突检测 + pipeline 接入；新增 9 测，113/113）—— R7 全项收尾 ✅
 - [x] R3-A LLM 韧性（`llmResilience.ts` 超时/重试/流式恢复 + `conservativeProse.ts` 保守稿降级链；新增 21 测，134/134）—— R3-A 收尾 ✅
