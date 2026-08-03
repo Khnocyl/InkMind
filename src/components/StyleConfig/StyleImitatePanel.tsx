@@ -1,7 +1,7 @@
 /**
  * 文风仿写面板（对齐 InkOS：analyze → import → 写作注入）
  */
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { StyleConfig, StyleProfile } from '../../types/novel';
 import {
   analyzeReferenceStyle,
@@ -11,6 +11,10 @@ import {
   updateStyleProfile,
 } from '../../services/styleImitate';
 import { formatFingerprintSummary } from '../../services/styleFingerprint';
+import {
+  removeGlobalStyleProfile,
+  upsertGlobalStyleProfiles,
+} from '../../services/styleProfileStore';
 import {
   Fingerprint,
   Loader2,
@@ -45,6 +49,14 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   const profiles = styleConfig.styleProfiles || [];
   const activeId = styleConfig.activeStyleProfileId || null;
 
+  // R3 收尾·文风全局化：挂载时把本书档案并入全局库（历史档案立即可在新书向导选择）
+  useEffect(() => {
+    if (profiles.length > 0) {
+      upsertGlobalStyleProfiles(profiles);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const runAnalyze = async (text: string, sourceLabel: string) => {
     setBusy(true);
     setMsg(null);
@@ -62,6 +74,8 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
           syncFewShot: true,
         })
       );
+      // R3 收尾·文风全局化：同步进全局库（新书向导可选）
+      upsertGlobalStyleProfiles([profile]);
       setMsg(
         fingerprintOnly
           ? `✅ 已导入「${profile.name}」（指纹启发式，模型指南失败）· 已激活并同步 Few-Shot，已保存到本地`
@@ -105,6 +119,8 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   const handleDelete = async (id: string) => {
     if (!window.confirm('删除该文风档案？写作将不再使用其指纹/指南。')) return;
     await onUpdateStyleConfig((prev) => removeStyleProfile(prev, id));
+    // R3 收尾·文风全局化：同步删除全局库
+    removeGlobalStyleProfile(id);
     if (editId === id) setEditId(null);
     setMsg('已删除文风档案（已保存）');
   };
@@ -119,6 +135,9 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
     await onUpdateStyleConfig((prev) =>
       updateStyleProfile(prev, editId, { styleGuide: editGuide.trim() })
     );
+    // R3 收尾·文风全局化：同步更新全局库（取更新后的档案）
+    const updated = profiles.find((p) => p.id === editId);
+    if (updated) upsertGlobalStyleProfiles([updated]);
     setEditId(null);
     setMsg('风格指南已保存');
   };

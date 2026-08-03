@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useState } from 'react';
-import type { BookProject, ProjectConfig, Character, WorldSetting, Volume, Chapter, WizardStep } from '../../types/novel';
+import type { BookProject, ProjectConfig, Character, WorldSetting, Volume, Chapter, WizardStep, StyleProfile, StyleConfig } from '../../types/novel';
 import { InspirationStep } from './InspirationStep';
 import { TitleReviewStep } from './TitleReviewStep';
 import { CharactersReviewStep } from './CharactersReviewStep';
@@ -15,7 +15,10 @@ import {
 } from '../../services/prompts';
 import { generateFullOutline } from '../../services/outlineGenerate';
 import { saveProject } from '../../services/storage';
-import { setActiveStyleProfile } from '../../services/styleImitate';
+import {
+  importStyleProfile,
+  setActiveStyleProfile,
+} from '../../services/styleImitate';
 import { Sparkles, CheckCircle, ArrowLeft } from 'lucide-react';
 
 // 防止 tree-shake 掉 buildOutlinePrompt（兼容热更新残留）
@@ -110,7 +113,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
   // Step 1 -> Step 2
   const handleGenerateTitle = async (
     config: ProjectConfig,
-    meta?: { styleProfileId?: string | null }
+    meta?: { styleProfileId?: string | null; profile?: StyleProfile }
   ) => {
     setIsGenerating(true);
     setErrorMsg('');
@@ -127,15 +130,26 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       }>(prompt, 0.75);
 
       // 同步激活选中的文风仿写档案（与引擎页共用 styleProfiles）
-      const stylePatch =
-        meta?.styleProfileId && project.styleConfig
-          ? {
-              styleConfig: setActiveStyleProfile(
-                project.styleConfig,
-                meta.styleProfileId
-              ),
-            }
-          : {};
+      // R3 收尾·文风全局化：选中的是「全局库」档案时复制进新书 styleConfig
+      let stylePatch: { styleConfig: StyleConfig } | {} = {};
+      if (meta?.styleProfileId && project.styleConfig) {
+        const base = project.styleConfig;
+        const hasInBook = (base.styleProfiles || []).some(
+          (p) => p.id === meta.styleProfileId
+        );
+        if (hasInBook) {
+          stylePatch = {
+            styleConfig: setActiveStyleProfile(base, meta.styleProfileId),
+          };
+        } else if (meta.profile) {
+          stylePatch = {
+            styleConfig: importStyleProfile(base, meta.profile, {
+              activate: true,
+              syncFewShot: true,
+            }),
+          };
+        }
+      }
 
       await updateAndSave({
         config,

@@ -3,6 +3,10 @@ import type { ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel
 import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2 } from 'lucide-react';
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
 import { analyzeReferenceStyle, importStyleProfile } from '../../services/styleImitate';
+import {
+  mergeWizardStyleProfiles,
+  upsertGlobalStyleProfiles,
+} from '../../services/styleProfileStore';
 
 interface InspirationStepProps {
   initialConfig: ProjectConfig;
@@ -14,7 +18,7 @@ interface InspirationStepProps {
   styleConfig?: StyleConfig;
   onNext: (
     config: ProjectConfig,
-    meta?: { styleProfileId?: string | null }
+    meta?: { styleProfileId?: string | null; profile?: StyleProfile }
   ) => void;
   isGenerating: boolean;
   progressMsg?: string;
@@ -82,34 +86,42 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   );
 
   /** select value: preset 原文 或 profile:<id> */
+  const mergedProfiles = useMemo(
+    () => mergeWizardStyleProfiles(styleProfiles),
+    [styleProfiles]
+  );
+
   const initialStyleKey = useMemo(() => {
     const fromParam = initialConfig.customParameters?.wizardStyleProfileId as
       | string
       | undefined;
-    if (fromParam && styleProfiles.some((p) => p.id === fromParam)) {
+    if (fromParam && mergedProfiles.some((x) => x.profile.id === fromParam)) {
       return `profile:${fromParam}`;
     }
     if (
       activeStyleProfileId &&
-      styleProfiles.some((p) => p.id === activeStyleProfileId)
+      mergedProfiles.some((x) => x.profile.id === activeStyleProfileId)
     ) {
       return `profile:${activeStyleProfileId}`;
     }
     const ws = initialConfig.writingStyle || '';
     if (ws && STYLE_PRESETS.includes(ws)) return ws;
     // 与某档案 authorStyle 匹配
-    const hit = styleProfiles.find(
-      (p) => p.authorStyle === ws || `仿写·${p.name}` === ws
+    const hit = mergedProfiles.find(
+      (x) => x.profile.authorStyle === ws || `仿写·${x.profile.name}` === ws
     );
-    if (hit) return `profile:${hit.id}`;
+    if (hit) return `profile:${hit.profile.id}`;
     if (ws && !STYLE_PRESETS.includes(ws)) {
       // 自定义历史值：挂到自定义项
       return ws;
     }
     return STYLE_PRESETS[0];
-  }, [initialConfig, styleProfiles, activeStyleProfileId]);
+  }, [initialConfig, mergedProfiles, activeStyleProfileId]);
 
   const [styleKey, setStyleKey] = useState(initialStyleKey);
+
+  // R3 收尾·文风全局化：下拉可选 = 本书档案 ∪ 全局档案（id 去重，本书优先）
+
 
   // R3 收尾：向导内导入文风仿写（粘贴/上传 → 分析 → 写入新书 styleConfig）
   const styleFileRef = useRef<HTMLInputElement>(null);
@@ -142,6 +154,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
           syncFewShot: true,
         })
       );
+      // R3 收尾·文风全局化：向导导入的档案也进全局库（其他新书可选）
+      upsertGlobalStyleProfiles([profile]);
       setStyleKey(`profile:${profile.id}`);
       setStyleSample('');
       setStyleMsg(`✅ 已导入并激活「${profile.name}」，将作为本新书默认文风`);
@@ -165,15 +179,21 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
 
   const resolveWritingStyle = (
     key: string
-  ): { writingStyle: string; styleProfileId: string | null } => {
+  ): {
+    writingStyle: string;
+    styleProfileId: string | null;
+    profile?: StyleProfile;
+  } => {
     if (key.startsWith('profile:')) {
       const id = key.slice('profile:'.length);
-      const p = styleProfiles.find((x) => x.id === id);
-      if (p) {
+      const hit = mergedProfiles.find((x) => x.profile.id === id);
+      if (hit) {
+        const p = hit.profile;
         const tip = (p.authorStyle || p.styleGuide || p.name).trim().slice(0, 200);
         return {
           writingStyle: `仿写·${p.name}${tip ? `：${tip}` : ''}`,
           styleProfileId: p.id,
+          profile: p,
         };
       }
     }
@@ -183,7 +203,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inspiration.trim()) return;
-    const { writingStyle, styleProfileId } = resolveWritingStyle(styleKey);
+    const { writingStyle, styleProfileId, profile } = resolveWritingStyle(styleKey);
     onNext(
       {
         inspiration,
@@ -199,7 +219,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
           wizardStyleProfileId: styleProfileId || undefined,
         },
       },
-      { styleProfileId }
+      { styleProfileId, profile }
     );
   };
 
@@ -402,12 +422,13 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                 disabled={isGenerating}
                 className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none truncate"
               >
-                {styleProfiles.length > 0 && (
-                  <optgroup label="已导入文风仿写（引擎与风格）">
-                    {styleProfiles.map((p) => (
+                {mergedProfiles.length > 0 && (
+                  <optgroup label="文风仿写档案">
+                    {mergedProfiles.map(({ profile: p, source }) => (
                       <option key={p.id} value={`profile:${p.id}`}>
                         仿写 · {p.name}
-                        {p.authorStyle ? ` · ${p.authorStyle.slice(0, 24)}` : ''}
+                        {source === 'global' ? '（全局）' : ''}
+                        {p.authorStyle ? ` · ${p.authorStyle.slice(0, 20)}` : ''}
                       </option>
                     ))}
                   </optgroup>
@@ -429,8 +450,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                   )}
               </select>
               <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">
-                {styleProfiles.length > 0
-                  ? `已载入 ${styleProfiles.length} 条仿写档案；选「仿写·…」会在向导与正文中启用该档案。`
+                {mergedProfiles.length > 0
+                  ? `已载入 ${mergedProfiles.length} 条仿写档案（含全局库）；选「仿写·…」会在向导与正文中启用该档案。`
                   : '还没有仿写档案？可以直接在下方「导入参考文风」粘贴样本创建，无需离开向导。'}
               </p>
             </div>
