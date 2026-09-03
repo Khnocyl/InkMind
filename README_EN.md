@@ -27,11 +27,52 @@ Pre-built binaries are available on the [Releases page](https://github.com/Khnoc
 
 ## Core Capabilities
 
-- **Strict Six-Stage Writing Pipeline** (Proprietary Multi-Agent Orchestration): Planner (Beats & Scenes) → Writer (Streaming Prose) → Validator (Deterministic Verification) → Auditor (Logic/Style/Pattern Checks) → Reviser (Targeted Fix Band) → Settler (Memory Writeback).
-- **Longform Memory System**: Fact Ledger (`factLedger`), persistent facts and foreshadowing debt, chapter recaps, and span digests injected before drafting based on semantic relevance.
-- **Consistency Defenses**: Post-draft flaw audits (character state, combat power, timeline, continuity, props, narrative perspective) + machine pattern checks + cross-chapter audit sampling + memory conflict detection.
-- **Cost & Rate Control**: Bring Your Own Key (BYOK, multi-profile support), monthly budget gates, usage analytics dashboard, and automatic graceful fallback to local conservative drafts upon LLM failure.
-- **Engineering Reliability**: Streaming draft backups, gzip project snapshots, automatic schema migrations, cross-tab write locks, and coalesced disk writes.
+InkMind is engineered specifically for longform novel creation (million-word serialized fiction), transcending single-prompt chatbots with an enterprise-grade infrastructure:
+
+### 1. Proprietary Six-Stage Writing Pipeline (Multi-Agent Collaboration)
+- **Scene & Beat Planning (Planner)**: Automatically breaks down outlines into multi-act dramatic beats, pacing narrative conflict and target word count distribution.
+- **Streaming Prose Generation (Writer)**: Crafts longform prose strictly adhering to world-building lore and foreshadowed debts with live streaming output.
+- **Deterministic Schema Verification (Validator)**: Powered by SchemaGate, providing automatic error reflection and targeted retries to prevent JSON truncation and corrupted formats.
+- **AI-Style De-flavoring (Taste Cleaner)**: Deeply scans and cleans clichéd AI idioms, excessive exclamation marks, repetitive dash abuse, and hollow prose.
+- **Targeted Segment Revision (Reviser)**: Upon detecting narrative flaws, surgical rewrites fix problematic sections without wiping valid portions of the chapter.
+- **Memory & Ledger Writeback (Settler)**: Consolidates chapter recaps, updates active foreshadowing debts, and records character progression upon completion.
+
+### 2. Million-Word Longform Memory Engine (No Character Forgetting)
+- **Dynamic Fact Ledger**: Long-term tracking of character status, power levels, injuries, inventory of key relics/items, and faction alliances.
+- **Foreshadowing & Debt Ledger**: Automatically registers narrative setups and unresolved mysteries, reminding writers across hundreds of thousands of words.
+- **Hierarchical Memory Compression**: Chapter recaps + story arc digests systematically distill plotlines, completely avoiding token context overflow.
+- **Semantic Relevance Pre-Injection**: Before generating each new chapter, extracts the most pertinent memory slices into the prompt to guarantee seamless continuity.
+
+### 3. Comprehensive Logical Consistency Defenses
+- **Six-Dimension Flaw Audit (Hard Review)**: Real-time inspection of character state anomalies, power scaling collapse, timeline inversions, continuity conflicts, miraculous item appearances, and POV shifts.
+- **Cross-Chapter Continuity Sampling**: Randomly audits back against earlier chapters to catch latent plot drift across long-term serialization.
+- **Local Rule Engine**: Built-in sensitive word scanning, high-frequency word density analysis, and sentence structure monotony diagnostics.
+
+### 4. Style Mimicry & Customization Engine
+- **Master Style Extraction**: Analyzes sample chapters to extract narrative pacing, vocabulary preferences, rhetorical habits, and descriptive tone.
+- **Multiple Style Profiles**: Store distinct writing profiles (Xianxia, Hard Sci-Fi, Urban Suspense, Fantasy, etc.) and switch with one click.
+- **Negative Writing Constraints**: Custom ban-lists for prohibited words, overused tropes, and stylistic taboos to rigidly govern LLM behavior.
+
+### 5. Modular World-Building & Lorebook System
+- **Comprehensive Lore Profiles**: Character dossiers (personality, backstory, verbal tics, abilities), geography maps, power tier hierarchies, factions, and divine artifacts.
+- **Multi-Level Outline Hierarchy**: Master premise → volume milestones → chapter outlines → scene beats, mastering large-scale narrative arcs.
+- **Global Lifecycle State Sync**: Character breakthroughs, item transfers, and faction downfalls automatically update across the entire story universe.
+
+### 6. Local-First Architecture & Privacy Security
+- **100% Author-Owned Data**: All story drafts, outlines, world lore, and vector indexes remain in the local IndexedDB, never uploaded to private cloud servers.
+- **Machine-Bound API Key Encryption**: Keys are encrypted locally using AES-256-GCM combined with device hardware fingerprinting, never leaked to frontend or logs.
+- **Disaster Recovery & Data Protection**: Millisecond-level local persistence for streaming drafts, gzip versioned project snapshots, cross-tab concurrency locks, and coalesced disk writes.
+
+### 7. LLM Orchestration & Cost Control
+- **Bring Your Own Key (BYOK)**: Native support for standard OpenAI-compatible protocols (DeepSeek, OpenAI, Kimi, Zhipu GLM, Qwen, and custom proxy gateways).
+- **Role-Based Model Routing**: Route background summaries to economical models while reserving top-tier models for complex outlining and prose generation, slashing costs by up to 70%.
+- **Live Token & Budget Analytics**: Real-time per-chapter token and cost tracking with configurable monthly hard budget caps.
+- **One-Click Connectivity Doctor**: Instant verification of endpoint latency, credentials, streaming throughput, and JSON compliance.
+
+### 8. Dedicated Writer Studio UX
+- **Distraction-Free Dual Themes**: Seamless toggling between light mode and eye-care dark mode, optimized for midnight creative flows with high-contrast typography.
+- **Multi-Format Export & Backups**: One-click export to plain text (.txt), Markdown (.md), or structured chapter archives.
+- **In-App Version Checker**: Query official GitHub Releases directly inside the app settings to stay updated.
 
 ---
 
