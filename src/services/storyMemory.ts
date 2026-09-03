@@ -261,6 +261,18 @@ export function mergeRecapIntoMemory(
   let addedThreads = 0;
   const now = new Date().toISOString();
 
+  // 防记忆污染（万古烬天 ch1 误报案例的根因之一）：recap 来自**当前版**正文，
+  // 同一章旧版自动派生的事实在此先行作废——否则旧稿事实残留记忆库，后续章节
+  // 的硬伤审会拿「新正文 vs 旧记忆」比对，产出幻觉硬伤。
+  // 仅作废 id 为 fact-{chapterNumber}-* 的自动派生事实；作者手钉（fact-manual-*）永不自动作废。
+  const chapterFactPrefix = `fact-${chapterNumber}-`;
+  for (const f of next.pinnedFacts) {
+    if (f.status === 'pinned' && f.sourceChapterNumber === chapterNumber && f.id.startsWith(chapterFactPrefix)) {
+      f.status = 'superseded';
+      f.note = (f.note ? f.note + ' ' : '') + '[自动作废：本章重写，旧版事实失效]';
+    }
+  }
+
   for (const raw of recap.keyFacts || []) {
     const text = String(raw).trim();
     if (text.length < 4) continue;

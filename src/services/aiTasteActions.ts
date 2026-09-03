@@ -2,6 +2,7 @@
  * AI 味只扫 / 命中处局部去 AI 味（不跑完整写章流水线）。
  */
 
+import { proseWords } from './proseWords';
 import type {
   Chapter,
   Character,
@@ -199,6 +200,8 @@ export async function deslopHitInChapter(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   /** 选区向两侧扩展字数 */
   pad?: number;
   onProgress?: (msg: string) => void;
@@ -256,6 +259,7 @@ export async function deslopHitInChapter(input: {
     characters: input.characters,
     styleConfig: input.styleConfig,
     storyMemory: input.storyMemory,
+    bookGenre: input.bookGenre,
     surroundingBefore: prose.slice(Math.max(0, start - 100), start),
     surroundingAfter: prose.slice(end, Math.min(prose.length, end + 100)),
   };
@@ -282,7 +286,7 @@ export async function deslopHitInChapter(input: {
   let next: Chapter = {
     ...input.chapter,
     content: newProse,
-    wordCount: newProse.replace(/\s+/g, '').length,
+    wordCount: proseWords(newProse),
     contentUpdatedAt: new Date().toISOString(),
     lastModified: new Date().toLocaleTimeString([], {
       hour: '2-digit',
@@ -327,6 +331,8 @@ export async function deslopTopErrorsInChapter(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   /** 最多处理几处，默认 3，上限 8 */
   maxHits?: number;
   /** 是否也处理 warn（默认 false，只 error） */
@@ -373,6 +379,7 @@ export async function deslopTopErrorsInChapter(input: {
         styleConfig: input.styleConfig,
         characters: input.characters,
         storyMemory: input.storyMemory,
+        bookGenre: input.bookGenre,
         onProgress: input.onProgress,
       });
       if (r.replaced) {
@@ -417,6 +424,8 @@ export async function deslopTopErrorsInBook(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   /** 每章最多几处，默认 1，上限 3（全书控制成本） */
   maxPerChapter?: number;
   /** 最多处理多少章，默认 20 */
@@ -474,6 +483,7 @@ export async function deslopTopErrorsInBook(input: {
         styleConfig: input.styleConfig,
         characters: input.characters,
         storyMemory: input.storyMemory,
+        bookGenre: input.bookGenre,
         maxHits: maxPer,
         onProgress: input.onProgress,
       });

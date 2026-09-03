@@ -1,6 +1,6 @@
 /**
  * 文风统计指纹（本地、不调 LLM）
- * 对齐 InkOS「style analyze」中的可量化层：句长、对白比、节奏与片语。
+ * 可量化特征层：句长、对白比、节奏与片语。
  */
 
 import type { StyleFingerprint } from '../types/novel';

@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import type {
   Dispatch,
   MutableRefObject,
@@ -8,6 +9,7 @@ import type {
   Chapter,
   ChapterIntent,
   CrossChapterIssue,
+  StyleConfig,
 } from '../types/novel';
 import {
   isChapterLocked,
@@ -37,13 +39,34 @@ import {
   toggleRevisionTodoOnChapter,
 } from '../services/revisionTodos';
 import { aiFixRevisionTodo } from '../services/revisionAiFix';
+import {
+  getActiveAbortSignal,
+  isGenerationAborted,
+  setActiveAbortSignal,
+} from '../services/llmClient';
 import { generateChapterIntent, hasIntentDraft } from '../services/chapterIntent';
+import { formatIntentForPrompt } from '../services/chapterIntent';
+import { formatStoryMemoryForPrompt } from '../services/storyMemory';
+import {
+  mergeGenreBlacklist,
+  resolveGenrePackForProject,
+} from '../services/genrePacks';
+import {
+  deriveHardTodosAfterRerun,
+  fingerprintProse,
+  mergeAuditRefresh,
+} from '../services/auditFreshness';
+import { auditExistingProse } from '../engine/agents/auditorAgent';
+import { applyPostWriteViolationsAsRevisionTodos } from '../services/factLedger';
+import { pruneStaleAutoTodos } from '../services/revisionTodos';
+import { MIN_GREEN_VERIFICATION_SCORE } from '../services/aiEngine';
 import {
   accrueDailyWords,
   countContentWords,
 } from '../services/dailyWordLog';
 import { buildPreviousContextPack } from '../services/contextPack';
 import { createSnapshot } from '../services/snapshots';
+import { resolveChapterWordTarget, proseWords, contentWordsOrFallback } from '../services/proseWords';
 
 export type ActiveTab = 'workspace' | 'world' | 'outline' | 'style';
 
@@ -52,6 +75,8 @@ export interface UseChapterActionsOptions {
   projectRef: MutableRefObject<BookProject | null>;
   /** 防止双击并发跑多条工作流 */
   generatingLockRef: MutableRefObject<boolean>;
+  /** 组件级 styleConfig 回退（项目配置缺失时用于审校重跑） */
+  styleConfig: StyleConfig;
   /** 当前章 id（state 值，驱动"当前章"类动作） */
   activeChapterId: string;
   /** 单章/自动写作是否在跑（章节删除/清空禁入） */
@@ -71,6 +96,10 @@ export interface UseChapterActionsOptions {
   handleUpdateAndPersistProject: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
   ) => Promise<void>;
+  /** 击键级元数据编辑专用：状态立即、落盘 400ms 去抖（性能） */
+  handleUpdateAndPersistProjectDebounced: (
+    updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
+  ) => void;
   /** 触发快照列表刷新 */
   bumpSnapshotList: () => void;
 }
@@ -89,6 +118,7 @@ export interface UseChapterActionsOptions {
 export function useChapterActions({
   projectRef,
   generatingLockRef,
+  styleConfig,
   activeChapterId,
   isGenerating,
   isAutoPiloting,
@@ -102,8 +132,16 @@ export function useChapterActions({
   setAiTasteScanMessage,
   setCrossAuditBusy,
   handleUpdateAndPersistProject,
+  handleUpdateAndPersistProjectDebounced,
   bumpSnapshotList,
 }: UseChapterActionsOptions) {
+  /** 一键修全部：轮间软停标志（置位后当前条完成即停机） */
+  const fixAllStopRef = useRef(false);
+  /** 一键修全部：批级 AbortController（贯通 generateText 活动信号，停止时中断当前条） */
+  const fixAllAbortRef = useRef<AbortController | null>(null);
+  /** 一键修全部：运行态（UI 切换「一键修全部」↔「停止」） */
+  const [fixAllRunning, setFixAllRunning] = useState(false);
+
   const handleAddChapter = (volumeId?: string, volumeNumber?: number) => {
     if (generatingLockRef.current) {
       setStatusMessage('⚠️ 生成进行中，暂不可新增章节。');
@@ -120,7 +158,7 @@ export function useChapterActions({
     const newChapter: Chapter = {
       id: `chap-${Date.now()}`,
       number: newNum,
-      title: `第 ${newNum} 章 新增章节`,
+      title: '新增章节',
       summary: '在此写下章节核心情节钩子与高潮转折，点击右侧按钮调用三步推理生成章节。',
       wordCount: 0,
       status: '大纲待拆',
@@ -162,7 +200,7 @@ export function useChapterActions({
       return;
     }
 
-    const words = target.wordCount || (target.content || '').replace(/\s+/g, '').length;
+    const words = contentWordsOrFallback(target.content, target.wordCount);
     const lockedHint = isChapterLocked(target) ? '\n⚠️ 本章已定稿锁定，删除后无法从侧栏恢复（可用快照/JSON 备份回滚）。' : '';
     const ok = window.confirm(
       `确定删除第 ${target.number} 章《${target.title || '无标题'}》？\n\n` +
@@ -213,12 +251,12 @@ export function useChapterActions({
     if (!prev) return;
     const list = prev.chapters || [];
     const totalWords = list.reduce(
-      (s, c) => s + (c.wordCount || (c.content || '').replace(/\s+/g, '').length),
+      (s, c) => s + (contentWordsOrFallback(c.content, c.wordCount)),
       0
     );
     const lockedN = list.filter((c) => isChapterLocked(c)).length;
     const withBody = list.filter(
-      (c) => (c.content || '').replace(/\s+/g, '').length > 0
+      (c) => proseWords(c.content) > 0
     ).length;
 
     const ok1 = window.confirm(
@@ -242,7 +280,7 @@ export function useChapterActions({
     const blank: Chapter = {
       id: blankId,
       number: 1,
-      title: '第 1 章 新章',
+      title: '新章',
       summary:
         '章节已清空。在此写梗概，或用右侧闭环 / 向导重新拆章开写。',
       wordCount: 0,
@@ -291,7 +329,7 @@ export function useChapterActions({
       return;
     }
     const withBody = list.filter(
-      (c) => (c.content || '').replace(/\s+/g, '').length > 0
+      (c) => proseWords(c.content) > 0
     ).length;
     const withIntent = list.filter((c) => !!c.intent).length;
     const withBeats = list.filter((c) => (c.beats || []).length > 0).length;
@@ -300,7 +338,7 @@ export function useChapterActions({
       return;
     }
     const totalWords = list.reduce(
-      (s, c) => s + (c.wordCount || (c.content || '').replace(/\s+/g, '').length),
+      (s, c) => s + (contentWordsOrFallback(c.content, c.wordCount)),
       0
     );
     const lockedN = list.filter((c) => isChapterLocked(c)).length;
@@ -351,7 +389,8 @@ export function useChapterActions({
   };
 
   const handleUpdateChapter = (updatedChapter: Chapter) => {
-    handleUpdateAndPersistProject((prev) => {
+    // 击键级编辑（标题/梗概/正文手改/分镜/待修）：状态立即更新、落盘 400ms 去抖
+    handleUpdateAndPersistProjectDebounced((prev) => {
       const prevCh = prev.chapters.find((c) => c.id === updatedChapter.id);
       // 锁定章：禁止通过常规编辑改正文/标题；梗概与元数据可改
       if (prevCh && isChapterLocked(prevCh)) {
@@ -664,6 +703,8 @@ export function useChapterActions({
         styleConfig: proj.styleConfig,
         characters: proj.characters,
         storyMemory: proj.memory,
+        bookGenre: proj.genre,
+        targetWordCount: resolveChapterWordTarget(proj.config),
         onProgress: (m) => {
           setAiTasteScanMessage(m);
           setStatusMessage(`🤖 ${m}`);
@@ -678,9 +719,11 @@ export function useChapterActions({
         return;
       }
 
-      await handleUpdateAndPersistProject({
-        chapters: proj.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
-      });
+      // 函数式更新：await 数分钟的 LLM 任务期间用户可能已编辑其他章，
+      // 必须合并进最新 prev，不能拿 pre-await 快照整表覆盖
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+      }));
       if (r.focusSnippet) setFocusProseSnippet(r.focusSnippet);
       setFocusRevisionTodo({ chapterId: ch.id, todoId: todo.id });
       const msg = r.message || 'AI 修完成';
@@ -698,6 +741,350 @@ export function useChapterActions({
   /** 修第一处 = AI 修第一条优先待修 */
   const handleFixFirstRevision = () => {
     void handleAiFixRevisionTodo();
+  };
+
+  /**
+   * 一键修全部：串行 AI 局部改写全书所有 open 待修。
+   *
+   * 编排纪律（对齐 useGapFiller）：
+   * - 前置互斥同单条版（generatingLockRef / aiTasteScanBusy）；
+   * - 每轮都从 projectRef 取「最新」open 首条：上轮落盘后状态已更新，
+   *   绝不重复修已完成项，也不覆盖批间用户编辑（函数式合并落盘）；
+   * - 停机：fixAllStopRef 轮间软停 + 批级 AbortController 走 llmClient
+   *   活动信号中断当前 in-flight LLM 调用（generateText 未显式传 signal
+   *   时自动采用 setActiveAbortSignal 的活动信号）；
+   * - 单条失败（未替换/异常）计数继续，不中断批次；切书即停机；
+   * - 批间用户切书被 generatingLockRef 拦，但 aiTasteScanBusy 不拦，
+   *   故按 projectId 守卫，防止误修新书的待修。
+   */
+  const handleAiFixAllRevisionTodos = async () => {
+    const proj = projectRef.current;
+    if (!proj) return;
+    if (generatingLockRef.current) {
+      setStatusMessage('⚠️ 生成进行中，无法一键修全部。');
+      return;
+    }
+    if (aiTasteScanBusy) {
+      setStatusMessage('⚠️ 已有扫描/去味/AI 修任务进行中。');
+      return;
+    }
+    const { openCount } = collectRevisionTodos(proj.chapters);
+    if (openCount === 0) {
+      setStatusMessage('✅ 暂无待修项');
+      return;
+    }
+    const ok = window.confirm(
+      `将对全书 ${openCount} 条待修逐条 AI 局部改写（优先跨章/硬伤/去AI）。\n\n` +
+        `每条约 1–3 次 API 调用，合计 ${openCount} 次以上，耗时与费用可能较高。\n` +
+        `建议先导出备份。继续？`
+    );
+    if (!ok) return;
+
+    fixAllStopRef.current = false;
+    const abortController = new AbortController();
+    fixAllAbortRef.current = abortController;
+    setActiveAbortSignal(abortController.signal);
+    setFixAllRunning(true);
+    setAiTasteScanBusy(true);
+    setAiTasteScanMessage(`一键修 0/${openCount} · 准备中…`);
+    setStatusMessage(`⚡ 一键修全部 · 共 ${openCount} 条…`);
+
+    const projectId = proj.id;
+    let success = 0;
+    let failed = 0;
+    let stopped = false;
+    const failures: string[] = [];
+
+    try {
+      for (let i = 0; i < openCount; i++) {
+        if (fixAllStopRef.current || abortController.signal.aborted) {
+          stopped = true;
+          break;
+        }
+        // 每轮最新态读取：上次落盘后（或用户/他处改动后）以最新 project 为准
+        const live = projectRef.current;
+        if (!live || live.id !== projectId) {
+          stopped = true;
+          break;
+        }
+        const first = pickFirstOpenRevision(live.chapters);
+        if (!first) break; // 全部修完（可能某条被他处勾完）
+        const ch = live.chapters.find((c) => c.id === first.chapterId);
+        if (!ch) continue;
+        const todo = (ch.revisionTodos || []).find((t) => t.id === first.todo.id);
+        if (!todo || todo.status === 'done') continue;
+
+        setAiTasteScanMessage(`一键修 ${i + 1}/${openCount} · 第${ch.number}章…`);
+        setStatusMessage(`⚡ 一键修 ${i + 1}/${openCount} · 第${ch.number}章…`);
+        try {
+          const r = await aiFixRevisionTodo({
+            chapter: ch,
+            todo,
+            styleConfig: live.styleConfig,
+            characters: live.characters,
+            storyMemory: live.memory,
+            bookGenre: live.genre,
+            targetWordCount: resolveChapterWordTarget(live.config),
+            onProgress: (m) => {
+              setAiTasteScanMessage(m);
+              setStatusMessage(`⚡ ${m}`);
+            },
+          });
+          if (fixAllStopRef.current || abortController.signal.aborted) {
+            stopped = true;
+            break;
+          }
+          if (!r.replaced) {
+            failed += 1;
+            failures.push(`第${ch.number}章：${(r.message || '未替换').slice(0, 80)}`);
+            continue;
+          }
+          // 函数式更新：await 数分钟 LLM 任务期间用户可能已编辑其他章，
+          // 必须合并进最新 prev，不能拿 pre-await 快照整表覆盖
+          await handleUpdateAndPersistProject((prev) => ({
+            chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+          }));
+          success += 1;
+        } catch (e: unknown) {
+          // 用户中止（停止按钮）视为停机而非失败
+          if (
+            fixAllStopRef.current ||
+            isGenerationAborted(e) ||
+            abortController.signal.aborted
+          ) {
+            stopped = true;
+            break;
+          }
+          const msg = e instanceof Error ? e.message : String(e);
+          failed += 1;
+          failures.push(`第${ch.number}章：${msg.slice(0, 80)}`);
+        }
+      }
+
+      const head =
+        `⚡ 一键修全部结束 · 成功 ${success}/${openCount}` +
+        (failed ? ` · 失败 ${failed}` : '') +
+        (stopped ? ' · 已停止' : '');
+      setStatusMessage(head);
+      setAiTasteScanMessage(
+        failures.length
+          ? `${head}${failures.length > 6 ? `（前 ${6} 条）` : ''}\n` +
+            failures
+              .slice(0, 6)
+              .map((f, idx) => `${idx + 1}. ${f}`)
+              .join('\n')
+          : stopped
+            ? head
+            : null
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatusMessage(`❌ 一键修全部异常停机：${msg}`);
+      setAiTasteScanMessage(msg);
+    } finally {
+      // 只清自己的活动信号，避免误清批间新启动的其他工作流信号
+      if (
+        fixAllAbortRef.current &&
+        getActiveAbortSignal() === fixAllAbortRef.current.signal
+      ) {
+        setActiveAbortSignal(null);
+      }
+      fixAllAbortRef.current = null;
+      fixAllStopRef.current = false;
+      setAiTasteScanBusy(false);
+      setFixAllRunning(false);
+    }
+  };
+
+  /** 停止一键修全部：置软停标志 + 中断当前 in-flight LLM 调用（已修成果保留） */
+  const handleStopAiFixAll = () => {
+    if (!fixAllRunning) return;
+    fixAllStopRef.current = true;
+    fixAllAbortRef.current?.abort();
+    setStatusMessage('⏹ 正在停止一键修全部（已修成果保留，当前条将中断）...');
+  };
+
+  /**
+   * 重跑本审：对本章现有正文重新执行审校（硬伤/文笔/机检/推进度），
+   * **只读复核，绝不动正文一个字**。
+   *
+   * - 锁定章可用（审校只读，不触发改写/解锁）；
+   * - 结果合并回 memoryAudit（保留注入/回写/修复环痕迹），写入新版本锚
+   *   auditedContentAt = 复核正文指纹——正文再改即判过期；
+   * - 不自动变更章 status：绿通状态机仍由管线/人工掌控，本动作只刷新结论。
+   * - 审计失败不写任何东西，原 memoryAudit 原样保留。
+   */
+  const handleRerunHardReview = async (chapterId?: string) => {
+    const proj = projectRef.current;
+    const id = chapterId || activeChapterId;
+    if (!proj || !id) return;
+    if (generatingLockRef.current) {
+      setStatusMessage('⚠️ 生成进行中，无法重跑硬伤审。');
+      return;
+    }
+    if (aiTasteScanBusy) {
+      setStatusMessage('⚠️ 已有扫描/去味/AI 修任务进行中，请稍后再重跑本审。');
+      return;
+    }
+    const ch = proj.chapters.find((c) => c.id === id);
+    if (!ch) {
+      setStatusMessage('⚠️ 章节不存在');
+      return;
+    }
+    if (!(ch.content || '').trim()) {
+      setStatusMessage('⚠️ 本章暂无正文，无可复核内容。');
+      return;
+    }
+    const ok = window.confirm(
+      `重跑硬伤审 · 第${ch.number}章《${ch.title}》\n\n` +
+        `将对当前正文重新执行审计（硬伤/文笔/机检/推进度）。\n` +
+        `复核只读——不改动正文一个字，也不自动变更章状态。\n` +
+        `需调用模型约 1–3 次。继续？`
+    );
+    if (!ok) return;
+
+    setActiveChapterId(ch.id);
+    setActiveTab('workspace');
+    setAiTasteScanBusy(true);
+    setAiTasteScanMessage(`复核第${ch.number}章硬伤审…`);
+    setStatusMessage(`🔍 重跑硬伤审 · 第${ch.number}章…`);
+
+    try {
+      const allChapters = proj.chapters || [];
+      const allCharacters = proj.characters || [];
+      const allSettings = proj.settings || [];
+      const activeChars = allCharacters.filter((c) =>
+        ch.involvedCharacterIds?.includes(c.id)
+      );
+      const activeSets = allSettings.filter((s) =>
+        ch.involvedSettingIds?.includes(s.id)
+      );
+      const contextPack = buildPreviousContextPack(allChapters, ch, {
+        storyMemory: proj.memory,
+        queryTerms: [ch.title, ch.summary || '', ...(ch.intent?.mustDo || [])],
+      });
+      // 与管线审校同口径的记忆/意图上下文（本地拼装，零 LLM）
+      const storyMemoryBlock = formatStoryMemoryForPrompt(proj.memory, allCharacters, {
+        characterIds: ch.involvedCharacterIds,
+      });
+      const chapterIntentBlock = formatIntentForPrompt(ch.intent);
+      const prevChapter = allChapters
+        .filter((c) => c.number < ch.number)
+        .sort((a, b) => b.number - a.number)[0];
+      const genrePack = resolveGenrePackForProject({
+        genre: proj.genre || proj.config?.genre,
+        genrePackId: proj.config?.customParameters?.genrePackId as
+          | string
+          | undefined,
+        override: proj.config?.customParameters?.genrePackOverride,
+      });
+      // 题材附加黑名单叠入本轮风格（与管线审校同口径）
+      const styleSnapshot = { ...(proj.styleConfig || styleConfig) };
+      const styleWithGenre = {
+        ...styleSnapshot,
+        clicheBlacklist: mergeGenreBlacklist(
+          styleSnapshot.clicheBlacklist || [],
+          genrePack
+        ),
+      };
+
+      const result = await auditExistingProse({
+        chapter: ch,
+        characters: activeChars.length ? activeChars : allCharacters,
+        settings: activeSets.length ? activeSets : allSettings,
+        styleConfig: styleWithGenre,
+        contextPack,
+        storyMemoryBlock,
+        chapterIntentBlock,
+        storyMemory: proj.memory,
+        chapterIntent: ch.intent,
+        previousProse: prevChapter?.content || '',
+        targetWordCount: resolveChapterWordTarget(proj.config),
+        onProgress: (m) => {
+          setAiTasteScanMessage(m);
+          setStatusMessage(`🔍 ${m}`);
+        },
+      });
+
+      // 复核只读硬保证：输出 prose 必须与输入一致，否则放弃本次结果
+      if (result.prose !== ch.content) {
+        console.warn(
+          `[重跑本审] 复核返回 prose 与输入不一致（${result.prose.length} vs ${ch.content.length}），已拒绝采用`,
+          result.prose
+        );
+        throw new Error('复核路径意外改写正文，已放弃本次结果（原审校保留）');
+      }
+
+      // 合并到最新章：await 复核期间用户可能已编辑正文，只替换 memoryAudit，
+      // 锚点指纹以「最新 content」为准（若期间被改，下次进入仍判过期）；
+      // 未过关时把新硬伤派生进待修（按文本前缀去重，重复重跑不产生双条目）
+      // P1：本轮运行标识——先清理旧体系/旧运行的自动派生条目，再派生本轮条目并打戳，
+      // 使「全书待修」始终只反映当前正文（手工 todo-* / 跨章 audit-* / 已完成不受影响）。
+      const auditRunId = `run-${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 7)}`;
+      let hardTodosAdded = 0;
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) => {
+          if (c.id !== ch.id) return c;
+          const pruned = pruneStaleAutoTodos(
+            c.revisionTodos || [],
+            auditRunId,
+            { includeLegacyAuto: true }
+          );
+          const base: Chapter = { ...c, revisionTodos: pruned.todos };
+          const refreshed: Chapter = {
+            ...base,
+            memoryAudit: mergeAuditRefresh(
+              base.memoryAudit,
+              result.auditLog,
+              fingerprintProse(base.content),
+              new Date().toISOString()
+            ),
+            lastModified: new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          };
+          const derived = deriveHardTodosAfterRerun(refreshed, result.auditLog, {
+            autoRunId: auditRunId,
+          });
+          const withPost = applyPostWriteViolationsAsRevisionTodos(
+            derived.chapter,
+            result.postWriteViolations || [],
+            { autoRunId: auditRunId }
+          );
+          hardTodosAdded = derived.added + withPost.added;
+          return withPost.chapter;
+        }),
+      }));
+
+      const hard = result.auditLog.hardReview;
+      const passed = hard?.passed ?? false;
+      const hardScore = hard?.score;
+      const score = result.auditLog.verificationScore ?? 0;
+      const rulePassed = result.ruleScan?.passed ?? false;
+      const verdict =
+        passed && rulePassed && score >= MIN_GREEN_VERIFICATION_SCORE
+          ? '✅ 已过关'
+          : passed
+            ? '⚠️ 硬伤已清，但综合/机检仍未达标'
+            : '❌ 仍未过关';
+      const msg =
+        `🔍 第${ch.number}章复核完成 · 硬伤${passed ? '通过' : '未过'}${
+          hardScore != null ? `（${hardScore}分）` : ''
+        } · 综合 ${score} 分 · ${verdict}（未自动变更章状态）` +
+        (hardTodosAdded > 0 ? ` · 待修 +${hardTodosAdded}` : '');
+      setAiTasteScanMessage(null);
+      setStatusMessage(msg);
+    } catch (e: unknown) {
+      // 审计失败不丢原 memoryAudit：不写任何东西
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatusMessage(`❌ 重跑硬伤审失败（原审校结果已保留）：${msg}`);
+      setAiTasteScanMessage(msg);
+    } finally {
+      setAiTasteScanBusy(false);
+    }
   };
 
   const handleClearDoneRevisionTodos = () => {
@@ -727,7 +1114,7 @@ export function useChapterActions({
     }
     const ch = proj.chapters.find((c) => c.id === activeChapterId);
     if (!ch) return;
-    if ((ch.content || '').replace(/\s+/g, '').length < 40) {
+    if (proseWords(ch.content) < 40) {
       setStatusMessage('本章正文过短，无需扫描');
       return;
     }
@@ -735,33 +1122,42 @@ export function useChapterActions({
     setAiTasteScanMessage('正在扫描本章 AI 味…');
     try {
       const r = scanChapterAiTasteOnly(ch, proj.styleConfig, { writeTodos: true });
-      await handleUpdateAndPersistProject({
-        chapters: proj.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
-      });
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+      }));
       const msg = `本章 AI味 ${r.row.tier} · ${r.row.score}分 · ${r.row.summary}${
         r.todosAdded ? ` · 待修+${r.todosAdded}` : ''
       }`;
       setAiTasteScanMessage(msg);
       setStatusMessage(`✨ ${msg}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatusMessage(`❌ 本章 AI 味扫描失败：${msg}`);
+      setAiTasteScanMessage(msg);
     } finally {
       setAiTasteScanBusy(false);
     }
   };
 
-  /** 全书只扫 AI 味 */
-  const handleScanAiTasteBook = async (writeTodos = false) => {
+  /** 全书只扫 AI 味。返回是否真正执行了扫描（用户取消确认 → false） */
+  const handleScanAiTasteBook = async (
+    writeTodos = false,
+    opts?: { skipConfirm?: boolean }
+  ): Promise<boolean> => {
     const proj = projectRef.current;
-    if (!proj) return;
+    if (!proj) return false;
     if (generatingLockRef.current) {
       setStatusMessage('⚠️ 生成进行中，请稍后再扫。');
-      return;
+      return false;
     }
-    const ok = window.confirm(
-      writeTodos
-        ? '扫描全书有正文的章节 AI 味，并将 medium/heavy 写入待修？\n（不改正文）'
-        : '扫描全书有正文的章节 AI 味？（只更新机检报告，不改正文）'
-    );
-    if (!ok) return;
+    if (!opts?.skipConfirm) {
+      const ok = window.confirm(
+        writeTodos
+          ? '扫描全书有正文的章节 AI 味，并将 medium/heavy 写入待修？\n（不改正文）'
+          : '扫描全书有正文的章节 AI 味？（只更新机检报告，不改正文）'
+      );
+      if (!ok) return false;
+    }
     setAiTasteScanBusy(true);
     setAiTasteScanMessage('全书 AI 味扫描中…');
     try {
@@ -774,6 +1170,12 @@ export function useChapterActions({
       }`;
       setAiTasteScanMessage(msg);
       setStatusMessage(`✨ ${msg}`);
+      return true;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatusMessage(`❌ 全书 AI 味扫描失败：${msg}`);
+      setAiTasteScanMessage(msg);
+      return false;
     } finally {
       setAiTasteScanBusy(false);
     }
@@ -806,12 +1208,14 @@ export function useChapterActions({
         styleConfig: proj.styleConfig,
         characters: proj.characters,
         storyMemory: proj.memory,
+        bookGenre: proj.genre,
         maxHits: n,
         onProgress: (m) => setAiTasteScanMessage(m),
       });
-      await handleUpdateAndPersistProject({
-        chapters: proj.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
-      });
+      // 函数式更新：批量去味期间用户可能已编辑其他章，按 id 合并进最新 prev
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+      }));
       const errHint = r.errors.length ? ` · 失败 ${r.errors.length}` : '';
       const msg = `本章去味完成 · 成功 ${r.replaced}/${r.attempted} · ${r.tierBefore}→${r.tierAfter}${errHint}`;
       setAiTasteScanMessage(msg);
@@ -860,18 +1264,21 @@ export function useChapterActions({
         styleConfig: proj.styleConfig,
         characters: proj.characters,
         storyMemory: proj.memory,
+        bookGenre: proj.genre,
         maxPerChapter: maxPer,
         maxChapters: 20,
         onlyMediumPlus: true,
         onProgress: (m) => setAiTasteScanMessage(m),
       });
 
+      // 函数式更新：全书去味耗时最长（可达 20 章×多次调用），
+      // 期间的用户编辑必须保留——按 id 把结果章合并进最新 prev，锁定章不动
       const byId = new Map(r.chapters.map((c) => [c.id, c]));
-      const merged = proj.chapters.map((c) =>
-        lockedIds.has(c.id) ? c : byId.get(c.id) || c
-      );
-
-      await handleUpdateAndPersistProject({ chapters: merged });
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) =>
+          lockedIds.has(c.id) ? c : byId.get(c.id) || c
+        ),
+      }));
       const errHint = r.errors.length ? ` · 失败 ${r.errors.length}` : '';
       const skipLock = lockedIds.size ? ` · 跳过锁${lockedIds.size}` : '';
       const msg = `全书去味 · 动 ${r.chaptersTouched} 章 · 替换 ${r.totalReplaced} 处${skipLock}${errHint}`;
@@ -896,7 +1303,8 @@ export function useChapterActions({
         '尚未发现 AI 味扫描记录。是否先扫全书再导出？\n点「取消」仍会导出（空/旧数据）。'
       );
       if (ok) {
-        void handleScanAiTasteBook(false).then(() => {
+        void handleScanAiTasteBook(false, { skipConfirm: true }).then((scanned) => {
+          if (!scanned) return; // 扫描未真正执行（取消/失败/生成中）→ 不导出旧数据
           const p2 = projectRef.current;
           if (!p2) return;
           const { filename, rowCount } = exportAiTasteCsv(p2.chapters, {
@@ -938,15 +1346,17 @@ export function useChapterActions({
         styleConfig: proj.styleConfig,
         characters: proj.characters,
         storyMemory: proj.memory,
+        bookGenre: proj.genre,
         onProgress: (m) => setAiTasteScanMessage(m),
       });
       if (!r.replaced) {
         setStatusMessage('未替换：正文未命中片段或改写无实质变化');
         return;
       }
-      await handleUpdateAndPersistProject({
-        chapters: proj.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
-      });
+      // 函数式更新：合并进最新 prev，避免覆盖任务期间的用户编辑
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+      }));
       setFocusProseSnippet(r.after.slice(0, 40));
       setStatusMessage(
         `✨ 已局部去AI味 · ${r.before.slice(0, 12)}… → ${r.after.slice(0, 12)}…`
@@ -999,32 +1409,39 @@ export function useChapterActions({
       ch.involvedSettingIds?.includes(s.id)
     );
     setStatusMessage(`第${ch.number}章 · 生成写前大纲...`);
-    const intent = await generateChapterIntent({
-      chapter: ch,
-      characters: activeChars.length ? activeChars : proj.characters || [],
-      settings: activeSets.length ? activeSets : proj.settings || [],
-      previousContext: pack.text,
-      storyMemory: proj.memory,
-      previousContextPack: pack,
-      onProgress: (msg) => setStatusMessage(msg),
-    });
-    await handleUpdateAndPersistProject((prev) => ({
-      chapters: prev.chapters.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              intent,
-              lastModified: new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              }),
-            }
-          : c
-      ),
-    }));
-    setStatusMessage(
-      `📋 第${ch.number}章写前大纲已生成（目标${intent.mustDo.length}/禁止${intent.mustAvoid.length}）· 请确认后开写`
-    );
+    try {
+      const intent = await generateChapterIntent({
+        chapter: ch,
+        characters: activeChars.length ? activeChars : proj.characters || [],
+        settings: activeSets.length ? activeSets : proj.settings || [],
+        previousContext: pack.text,
+        storyMemory: proj.memory,
+        previousContextPack: pack,
+        styleConfig: proj.styleConfig,
+        onProgress: (msg) => setStatusMessage(msg),
+      });
+      await handleUpdateAndPersistProject((prev) => ({
+        chapters: prev.chapters.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                intent,
+                lastModified: new Date().toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }),
+              }
+            : c
+        ),
+      }));
+      setStatusMessage(
+        `📋 第${ch.number}章写前大纲已生成（目标${intent.mustDo.length}/禁止${intent.mustAvoid.length}）· 请确认后开写`
+      );
+    } catch (e: unknown) {
+      // 此前无 catch：API 失败成为 unhandled rejection，状态条永远停在「生成写前大纲...」
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatusMessage(`❌ 第${ch.number}章写前大纲生成失败：${msg}`);
+    }
   };
 
   /** 解锁以便重写 */
@@ -1063,6 +1480,10 @@ export function useChapterActions({
     handleToggleRevisionTodo,
     handleAiFixRevisionTodo,
     handleFixFirstRevision,
+    handleAiFixAllRevisionTodos,
+    handleStopAiFixAll,
+    fixAllRunning,
+    handleRerunHardReview,
     handleClearDoneRevisionTodos,
     handleScanAiTasteChapter,
     handleScanAiTasteBook,

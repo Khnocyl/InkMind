@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type {
   BookProject,
   Character,
@@ -33,6 +33,7 @@ import { useProjectActions } from './hooks/useProjectActions';
 import { useChapterActions } from './hooks/useChapterActions';
 import { useChapterPipeline } from './hooks/useChapterPipeline';
 import { useAutoPilot } from './hooks/useAutoPilot';
+import { useGapFiller } from './hooks/useGapFiller';
 import {
   createSnapshot,
   restoreSnapshot,
@@ -45,8 +46,10 @@ import {
   type GenrePackOverride,
 } from './services/genrePacks';
 import { ReadingPreviewModal } from './components/Workspace/ReadingPreviewModal';
+import { useTheme } from './hooks/useTheme';
 
 export default function App() {
+  useTheme();
   const [projectsList, setProjectsList] = useState<BookProjectSummary[]>([]);
   const [currentProject, setCurrentProject] = useState<BookProject | null>(null);
   const [activeTab, setActiveTab] = useState<'workspace' | 'world' | 'outline' | 'style'>(() => {
@@ -66,8 +69,6 @@ export default function App() {
   const [isSelectorOpen, setIsSelectorOpen] = useState<boolean>(false);
   const [isReadingPreviewOpen, setIsReadingPreviewOpen] = useState(false);
   const [crossAuditBusy, setCrossAuditBusy] = useState(false);
-  /** 向导完成后引导去跑 Doctor */
-  const [postWizardDoctorHint, setPostWizardDoctorHint] = useState(false);
   /** 全书待修 → 画布高亮 todo（消费后清空） */
   const [focusRevisionTodo, setFocusRevisionTodo] = useState<{
     chapterId: string;
@@ -88,6 +89,23 @@ export default function App() {
   const [snapshotRefreshToken, setSnapshotRefreshToken] = useState(0);
   /** 初始化失败时展示可恢复 UI，避免永远转圈像白屏 */
   const [initError, setInitError] = useState<string | null>(null);
+  /** 桌面端（Electron）无边框卡片最大化状态 */
+  const [isDesktopMaximized, setIsDesktopMaximized] = useState(false);
+  const isDesktop = typeof window !== 'undefined' && Boolean(window.electronWindow?.isElectron);
+
+  useEffect(() => {
+    if (!window.electronWindow?.isElectron) return;
+    document.documentElement.classList.add('is-electron');
+    window.electronWindow.isMaximized().then((max) => {
+      setIsDesktopMaximized(max);
+      document.documentElement.classList.toggle('is-maximized', max);
+    }).catch(() => {});
+    const cleanup = window.electronWindow.onMaximizeChange((maximized) => {
+      setIsDesktopMaximized(maximized);
+      document.documentElement.classList.toggle('is-maximized', maximized);
+    });
+    return cleanup;
+  }, []);
 
   /** 始终指向最新 project，避免长异步工作流闭包脏写 */
   const projectRef = useRef<BookProject | null>(null);
@@ -96,6 +114,8 @@ export default function App() {
   const generatingLockRef = useRef(false);
   /** Auto-Pilot 是否在跑（供流水线内判断，避免 setState 闭包滞后） */
   const isAutoPilotingRef = useRef(false);
+  /** 当前生成的中止控制器（三步 / AP 共用；停止按钮触发 abort） */
+  const generationAbortRef = useRef<AbortController | null>(null);
 
   const setProjectSafe = useCallback((next: BookProject | null) => {
     projectRef.current = next;
@@ -103,11 +123,12 @@ export default function App() {
   }, []);
 
   /** R2-3 合并式持久化 + 落盘路径（R1 拆分：见 hooks/useProjectPersistence） */
-  const { handleUpdateAndPersistProject } = useProjectPersistence({
-    projectRef,
-    setProjectSafe,
-    setProjectsList,
-  });
+  const { handleUpdateAndPersistProject, handleUpdateAndPersistProjectDebounced } =
+    useProjectPersistence({
+      projectRef,
+      setProjectSafe,
+      setProjectsList,
+    });
 
   const patchProjectLocal = useCallback((updater: (prev: BookProject) => BookProject) => {
     setCurrentProject((prev) => {
@@ -348,6 +369,7 @@ export default function App() {
     projectRef,
     generatingLockRef,
     isAutoPilotingRef,
+    generationAbortRef,
     styleConfig,
     runChapterPipeline,
     handleUpdateAndPersistProject,
@@ -377,6 +399,10 @@ export default function App() {
     handleToggleRevisionTodo,
     handleAiFixRevisionTodo,
     handleFixFirstRevision,
+    handleAiFixAllRevisionTodos,
+    handleStopAiFixAll,
+    fixAllRunning,
+    handleRerunHardReview,
     handleClearDoneRevisionTodos,
     handleScanAiTasteChapter,
     handleScanAiTasteBook,
@@ -390,6 +416,7 @@ export default function App() {
   } = useChapterActions({
     projectRef,
     generatingLockRef,
+    styleConfig,
     activeChapterId,
     isGenerating,
     isAutoPiloting,
@@ -403,35 +430,133 @@ export default function App() {
     setAiTasteScanMessage,
     setCrossAuditBusy,
     handleUpdateAndPersistProject,
+    handleUpdateAndPersistProjectDebounced,
     bumpSnapshotList,
   });
 
+  // 全书缺口扫描 + 批量补跑（编排纪律同 Auto-Pilot：串行逐章 / 全局 abort / 每章落盘）
+  const {
+    report: gapReport,
+    filling: gapFilling,
+    progress: gapProgress,
+    summary: gapSummary,
+    handleScanGaps: onScanGaps,
+    handleStartFilling: onStartGapFilling,
+    handleStopFilling: onStopGapFilling,
+  } = useGapFiller({
+    projectRef,
+    generatingLockRef,
+    generationAbortRef,
+    runChapterPipeline,
+    handleUpdateAndPersistProject,
+    setStatusMessage,
+    isGenerating,
+    isAutoPiloting,
+    setIsGenerating,
+    setActiveStep,
+  });
+
+  /** 停止单章生成：中断当前全部 in-flight LLM 调用（AP 模式走 handleStopAutoPilot）。
+   *  注意：必须位于条件 return 之前（rules-of-hooks）。 */
+  const handleStopGeneration = useCallback(() => {
+    const ctrl = generationAbortRef.current;
+    if (!ctrl || ctrl.signal.aborted) return;
+    setStatusMessage('⏹ 正在停止生成（已产出部分保留为草稿）...');
+    ctrl.abort();
+  }, [setStatusMessage]);
+
+  /** 大纲页数据：仅在章节数组变化时重建，避免无关状态更新引发时间线全量重渲染。
+   *  注意：必须位于条件 return 之前（rules-of-hooks）。 */
+  const outlineItems = useMemo(
+    () =>
+      (currentProject?.chapters || []).map((c) => ({
+        id: c.id,
+        order: c.number,
+        chapterTitle: c.title,
+        summary: c.summary,
+        involvedCharacterIds: c.involvedCharacterIds,
+        involvedSettingIds: c.involvedSettingIds,
+        wordCountTarget: 3000,
+      })),
+    [currentProject?.chapters]
+  );
+
+  /** 当前章写前前情包（上章摘要 + 正文尾段）：仅章节/激活章/记忆变化时重建，
+   *  避免每次渲染跑全书检索拼装（生成中状态条高频刷新时最明显）。 */
+  const previousContextPack = useMemo(() => {
+    if (!currentProject) return null;
+    const chapters = currentProject.chapters || [];
+    const active = chapters.find((c) => c.id === activeChapterId) || chapters[0];
+    if (!active) return null;
+    return buildPreviousContextPack(chapters, active, {
+      storyMemory: currentProject.memory,
+      queryTerms: [
+        active.title,
+        active.summary || '',
+        ...(active.intent?.mustDo || []),
+      ],
+    });
+  }, [currentProject, activeChapterId]);
+
+  /** 跨章抽检提醒：仅相关数据变化时重估（此前每次渲染都全文扫描数词） */
+  const crossAuditRemind = useMemo(
+    () => (currentProject ? evaluateCrossAuditRemind(currentProject) : null),
+    [
+      currentProject?.chapters,
+      currentProject?.lastCrossAudit,
+      currentProject?.styleConfig,
+      currentProject?.config,
+    ]
+  );
+
   if (!currentProject) {
     return (
-      <div className="min-h-screen bg-white text-black flex items-center justify-center font-sans theme-paper">
-        {initError ? (
-          <div className="flex flex-col items-center space-y-4 max-w-md px-6 text-center">
-            <p className="text-base font-bold text-red-700">书库加载失败</p>
-            <p className="text-xs text-slate-600 break-all">{initError}</p>
-            <button
-              type="button"
-              className="px-4 py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-neutral-800"
-              onClick={() => {
-                void initWorkspace();
-              }}
-            >
-              重试加载
-            </button>
-            <p className="text-[11px] text-slate-500">
-              若持续失败，可尝试清除本站站点数据后刷新，或从备份 JSON 导入。
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center space-y-4 animate-pulse">
-            <div className="w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-semibold">正在从 IndexedDB 安全加载全书图谱与本地引擎...</p>
-          </div>
-        )}
+      <div
+        className={`bg-white text-black flex flex-col font-sans select-none overflow-hidden theme-paper desktop-app-container transition-[border-radius] duration-150 relative ${
+          isDesktop
+            ? `h-full w-full ${
+                isDesktopMaximized
+                  ? 'rounded-none border-0 shadow-none'
+                  : 'rounded-[28px] border border-neutral-300 shadow-2xl'
+              }`
+            : 'h-full w-full overflow-hidden'
+        }`}
+        style={
+          isDesktop && !isDesktopMaximized
+            ? { transform: 'translateZ(0)', isolation: 'isolate' }
+            : undefined
+        }
+      >
+        <div className="flex-1 flex items-center justify-center font-sans theme-paper">
+          {initError ? (
+            <div className="flex flex-col items-center space-y-4 max-w-md px-6 text-center">
+              <p className="text-base font-bold text-red-700">书库加载失败</p>
+              <p className="text-xs text-slate-600 break-all">{initError}</p>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-neutral-800 cursor-pointer"
+                onClick={() => {
+                  void initWorkspace();
+                }}
+              >
+                重试加载
+              </button>
+              <p className="text-[11px] text-slate-500">
+                若持续失败，可尝试清除本站站点数据后刷新，或从备份 JSON 导入。
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center space-y-4 animate-pulse">
+              <img
+                src="/icon.png"
+                alt="InkMind"
+                className="w-14 h-14 rounded-2xl shadow-md object-contain bg-black"
+              />
+              <div className="w-8 h-8 border-3 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm font-semibold">正在从 IndexedDB 安全加载全书图谱与本地引擎...</p>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -439,39 +564,52 @@ export default function App() {
   // 处于向导流程中
   if (isWizardOpen) {
     return (
-
-      <ProjectWizard
-        project={currentProject}
-        onProjectChange={(updated) => {
-          setProjectSafe(updated);
-        }}
-        onComplete={async (finalProject) => {
-          const ready: BookProject = {
-            ...finalProject,
-            wizardStep: 'ready',
-            lastModified: new Date().toISOString(),
-          };
-          await saveProject(ready);
-          await refreshProjectsList();
-          setIsWizardOpen(false);
-          await openProjectInWorkspace(ready, { openWizardIfIncomplete: false });
-          setActiveTab('style');
-          setPostWizardDoctorHint(true);
-          setStatusMessage(
-            '✅ 新书就绪。已跳转「引擎与风格」——建议先跑 Doctor 诊断，确认 API 可用后再开写。'
-          );
-        }}
-        onBackToMenu={async () => {
-          // 退出向导时强制重拉书库，避免列表为空/过期
-          try {
+      <div
+        className={`bg-white text-black flex flex-col font-sans select-none overflow-hidden theme-paper desktop-app-container transition-[border-radius] duration-150 relative ${
+          isDesktop
+            ? `h-full w-full ${
+                isDesktopMaximized
+                  ? 'rounded-none border-0 shadow-none'
+                  : 'rounded-[28px] border border-neutral-300 shadow-2xl'
+              }`
+            : 'h-full w-full overflow-hidden'
+        }`}
+        style={
+          isDesktop && !isDesktopMaximized
+            ? { transform: 'translateZ(0)', isolation: 'isolate' }
+            : undefined
+        }
+      >
+        <ProjectWizard
+          project={currentProject}
+          onProjectChange={(updated) => {
+            setProjectSafe(updated);
+          }}
+          onClose={() => setIsWizardOpen(false)}
+          onComplete={async (finalProject) => {
+            const ready: BookProject = {
+              ...finalProject,
+              wizardStep: 'ready',
+              lastModified: new Date().toISOString(),
+            };
+            await saveProject(ready);
             await refreshProjectsList();
-          } catch (err) {
-            console.error('刷新书库失败:', err);
-          }
-          setIsWizardOpen(false);
-          setIsSelectorOpen(true);
-        }}
-      />
+            setIsWizardOpen(false);
+            await openProjectInWorkspace(ready, { openWizardIfIncomplete: false });
+            setActiveTab('workspace');
+          }}
+          onBackToMenu={async () => {
+            // 退出向导时强制重拉书库，避免列表为空/过期
+            try {
+              await refreshProjectsList();
+            } catch (err) {
+              console.error('刷新书库失败:', err);
+            }
+            setIsWizardOpen(false);
+            setIsSelectorOpen(true);
+          }}
+        />
+      </div>
     );
   }
 
@@ -480,8 +618,6 @@ export default function App() {
   const chapters = currentProject.chapters || [];
   const volumes = currentProject.volumes || [];
   const activeChapter = chapters.find((c) => c.id === activeChapterId) || chapters[0];
-  const totalWords = chapters.reduce((sum, c) => sum + (c.wordCount || 0), 0);
-
   // 增加新角色 / 设定 / 章节（一律基于最新 prev，避免闭包脏写）
   const handleAddCharacter = (newChar: Character) => {
     handleUpdateAndPersistProject((prev) => ({
@@ -502,17 +638,7 @@ export default function App() {
   };
 
 
-  // 当前章写前前情包（上章摘要 + 正文尾段）
-  const previousContextPack = activeChapter
-    ? buildPreviousContextPack(chapters, activeChapter, {
-        storyMemory: currentProject.memory,
-        queryTerms: [
-          activeChapter.title,
-          activeChapter.summary || '',
-          ...(activeChapter.intent?.mustDo || []),
-        ],
-      })
-    : null;
+  // 当前章写前前情包（上章摘要 + 正文尾段）——已 useMemo 化（见条件 return 之前）
 
   /**
    * 单章全链路（1–6）：分镜→正文→审校→修复→recap→记忆→终态落盘。
@@ -550,11 +676,15 @@ export default function App() {
     }
     generatingLockRef.current = true;
     setIsGenerating(true);
+    // 中止控制器：停止按钮可中断本章全部 LLM 调用
+    const abortController = new AbortController();
+    generationAbortRef.current = abortController;
     try {
-      await runChapterPipeline(activeChapter.id, { force });
+      await runChapterPipeline(activeChapter.id, { force, signal: abortController.signal });
     } finally {
       crossTabLock.release();
       generatingLockRef.current = false;
+      generationAbortRef.current = null;
       setIsGenerating(false);
       setActiveStep(0);
     }
@@ -563,14 +693,28 @@ export default function App() {
   // R1：Auto-Pilot 已迁至 hooks/useAutoPilot（逻辑零改动）
 
   return (
-    <div className="min-h-screen bg-white text-black flex flex-col font-sans select-none overflow-hidden theme-paper">
+    <div
+      className={`bg-white text-black flex flex-col font-sans select-none overflow-hidden theme-paper desktop-app-container transition-[border-radius] duration-150 relative ${
+        isDesktop
+          ? `h-full w-full ${
+              isDesktopMaximized
+                ? 'rounded-none border-0 shadow-none'
+                : 'rounded-[28px] border border-neutral-300 shadow-2xl'
+            }`
+          : 'h-full w-full overflow-hidden'
+      }`}
+      style={
+        isDesktop && !isDesktopMaximized
+          ? { transform: 'translateZ(0)', isolation: 'isolate' }
+          : undefined
+      }
+    >
 
       <TopNav
         project={currentProject}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         styleConfig={styleConfig}
-        totalWords={totalWords}
         onOpenProjectSelector={() => setIsSelectorOpen(true)}
         onOpenWizard={() => {
           // 已完成书也可浏览向导，但不会改写 ready；未完成则续孵
@@ -602,7 +746,7 @@ export default function App() {
             dailyWordLog={currentProject.dailyWordLog ?? null}
             crossAuditReport={currentProject.lastCrossAudit ?? null}
             crossAuditBusy={crossAuditBusy}
-            crossAuditRemind={evaluateCrossAuditRemind(currentProject)}
+            crossAuditRemind={crossAuditRemind}
             aiTasteScanBusy={aiTasteScanBusy}
             aiTasteScanMessage={aiTasteScanMessage}
             focusTodoId={
@@ -632,6 +776,7 @@ export default function App() {
             onStartThreeStepWorkflow={handleStartThreeStepWorkflow}
             onStartAutoPilot={handleStartAutoPilot}
             onStopAutoPilot={handleStopAutoPilot}
+            onStopGeneration={handleStopGeneration}
             onUpdateStyleConfig={(updated) =>
               handleUpdateAndPersistProject((prev) => {
                 const base = prev.styleConfig || defaultStyleConfig;
@@ -667,10 +812,21 @@ export default function App() {
             onBatchDeslopBook={handleBatchDeslopBook}
             onExportAiTasteCsv={handleExportAiTasteCsv}
             onFixFirstRevision={handleFixFirstRevision}
+            onAiFixAllRevisionTodos={handleAiFixAllRevisionTodos}
+            onStopAiFixAll={handleStopAiFixAll}
+            aiFixAllRunning={fixAllRunning}
             onAiFixRevisionTodo={(cid, tid) => void handleAiFixRevisionTodo(cid, tid)}
+            onRerunHardReview={(cid) => void handleRerunHardReview(cid)}
             onClearDoneRevisionTodos={handleClearDoneRevisionTodos}
             onMarkAllRevisionTodosDone={handleMarkAllRevisionTodosDone}
             onToggleRevisionTodo={handleToggleRevisionTodo}
+            gapReport={gapReport}
+            gapFilling={gapFilling}
+            gapProgress={gapProgress}
+            gapSummary={gapSummary}
+            onScanGaps={onScanGaps}
+            onStartGapFilling={onStartGapFilling}
+            onStopGapFilling={onStopGapFilling}
           />
         )}
 
@@ -694,15 +850,7 @@ export default function App() {
 
         {activeTab === 'outline' && (
           <TimelinePlanner
-            outlines={chapters.map((c) => ({
-              id: c.id,
-              order: c.number,
-              chapterTitle: c.title,
-              summary: c.summary,
-              involvedCharacterIds: c.involvedCharacterIds,
-              involvedSettingIds: c.involvedSettingIds,
-              wordCountTarget: 3000,
-            }))}
+            outlines={outlineItems}
             characters={characters}
             settings={settings}
           />
@@ -734,8 +882,6 @@ export default function App() {
             }
             genre={currentProject.genre}
             projectConfig={currentProject.config}
-            highlightDoctor={postWizardDoctorHint}
-            onDoctorHintConsumed={() => setPostWizardDoctorHint(false)}
             onUpdateGenre={(genreName, packId) =>
               handleUpdateAndPersistProject((prev) => ({
                 genre: genreName,

@@ -1,8 +1,7 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import type { ProjectConfig, StyleConfig } from '../../types/novel';
+import type { ProjectConfig, StyleConfig, LlmRole, LlmRoleRouting } from '../../types/novel';
 import {
-  ShieldAlert,
   Plus,
   Trash2,
   Cpu,
@@ -19,7 +18,13 @@ import {
   Zap,
   Database,
   PlusCircle,
+  Sun,
+  Moon,
+  Monitor,
+  Palette,
+  Check,
 } from 'lucide-react';
+import { useTheme } from '../../hooks/useTheme';
 
 import {
   getLLMConfig,
@@ -37,6 +42,37 @@ import {
   type LLMProfilePublic,
   type EmbeddingConfigPublic,
 } from '../../services/llmClient';
+import { invalidateEmbeddingConfigCache } from '../../services/embeddingIndex';
+import { resolveChapterWordTarget } from '../../services/proseWords';
+import { ALL_LLM_ROLES, ROLE_LABELS } from '../../services/llmRouting';
+
+/**
+ * 常见模型官方 API 域名。Base URL 落在名单外时视为第三方中转——
+ * 写作正文/设定/记忆会全文发送到该端点，UI 需给出隐私提醒。
+ */
+const OFFICIAL_LLM_HOSTS = new Set([
+  'api.deepseek.com',
+  'api.moonshot.cn',
+  'open.bigmodel.cn',
+  'api.siliconflow.cn',
+  'api.openai.com',
+  'api.anthropic.com',
+  'dashscope.aliyuncs.com',
+  'api.minimax.chat',
+  'api.lingyiwanwu.com',
+]);
+
+/** 返回第三方中转域名；官方端点/空/非法 URL 返回 null */
+function thirdPartyHost(baseURL: string): string | null {
+  const t = (baseURL || '').trim();
+  if (!t) return null;
+  try {
+    const u = new URL(t);
+    return OFFICIAL_LLM_HOSTS.has(u.hostname) ? null : u.hostname;
+  } catch {
+    return null;
+  }
+}
 import {
   runDoctorClient,
   overallLabel,
@@ -63,9 +99,6 @@ interface StyleAndEngineManagerProps {
     packId: string,
     override: import('../../services/genrePacks').GenrePackOverride | null
   ) => void;
-  /** 向导完成后引导：高亮 Doctor 区并可选自动展开说明 */
-  highlightDoctor?: boolean;
-  onDoctorHintConsumed?: () => void;
 }
 
 function statusIcon(status: DoctorCheckStatus) {
@@ -94,6 +127,45 @@ function statusRowClass(status: DoctorCheckStatus): string {
   }
 }
 
+/**
+ * 左侧目录（「一栏里面有什么」）：按大分组列出每个具体设置卡片，
+ * 点击滚动定位到对应卡片。key 与各卡片容器 id 一一对应。
+ */
+const SETTING_NAV: {
+  group: string;
+  items: { key: string; label: string; id: string }[];
+}[] = [
+  {
+    group: '常规与外观',
+    items: [
+      { key: 'appearance', label: '外观设置 · 主题', id: 'sec-appearance' },
+    ],
+  },
+  {
+    group: '模型与成本',
+    items: [
+      { key: 'models', label: '模型配置 · Doctor', id: 'sec-api-config' },
+      { key: 'routing', label: '按角色路由 · 向量检索', id: 'sec-llm-routing' },
+    ],
+  },
+  {
+    group: '写作引擎',
+    items: [
+      { key: 'genre', label: '题材规则包', id: 'sec-genre' },
+      { key: 'targets', label: '全书 · 每日 · 抽检', id: 'sec-targets' },
+      { key: 'autopilot', label: 'Auto-Pilot 参数', id: 'sec-autopilot' },
+    ],
+  },
+  {
+    group: '文风纪律',
+    items: [
+      { key: 'core-switch', label: '核心文风 · 样本库', id: 'sec-core-switch' },
+      { key: 'blacklist', label: '黑名单 / 去AI味', id: 'sec-blacklist' },
+      { key: 'imitate', label: '文风仿写档案', id: 'sec-imitate' },
+    ],
+  },
+];
+
 export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   styleConfig,
   onUpdateStyleConfig,
@@ -104,8 +176,6 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   onUpdateGenre,
   onUpdateProjectConfig,
   onSaveGenreOverride,
-  highlightDoctor = false,
-  onDoctorHintConsumed,
 }) => {
   const [newBlacklistWord, setNewBlacklistWord] = useState('');
   const [newWhitelistWord, setNewWhitelistWord] = useState('');
@@ -133,8 +203,18 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   const [embDims, setEmbDims] = useState('');
   const [embApiKey, setEmbApiKey] = useState('');
   const [embBusy, setEmbBusy] = useState(false);
+  // 按角色路由模型：草稿态（保存时统一写回 + 清掉指向已删档的路由）
+  const [routingEnabled, setRoutingEnabled] = useState(
+    styleConfig.llmRoleRouting?.enabled === true
+  );
+  const [routingRoutes, setRoutingRoutes] = useState<Partial<Record<LlmRole, string>>>(
+    () => styleConfig.llmRoleRouting?.routes || {}
+  );
   /** 浮动 Toast（固定视口，刷新后仍可从 session 恢复） */
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  /** 左侧目录当前选中项（sticky 选中态；仅视图状态） */
+  const [activeSection, setActiveSection] = useState<string>('models');
+  const { mode: currentThemeMode, resolvedTheme, setThemeMode } = useTheme();
   const doctorSectionRef = React.useRef<HTMLDivElement>(null);
   const statusBannerRef = React.useRef<HTMLDivElement>(null);
   const toastTimerRef = React.useRef<number | null>(null);
@@ -142,21 +222,18 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   const STATUS_KEY = 'novel-engine-status-v1';
 
   /** 页内横幅 + 顶栏 Toast + App 状态条；写入 session，防止热重载丢结果 */
+  /** 设置面板提示闸门：仅允许 Doctor 诊断相关的提示出现，其他设置操作保持静默无打扰 */
   const pushStatus = (msg: string) => {
+    // 严格过滤：除 Doctor 诊断提示外，其他一律不展示弹窗与横幅
+    if (!/doctor/i.test(msg)) {
+      return;
+    }
     setSaveStatusMsg(msg);
     setToastMsg(msg);
     onNotifyStatus?.(msg);
-    try {
-      sessionStorage.setItem(
-        STATUS_KEY,
-        JSON.stringify({ msg, at: Date.now() })
-      );
-    } catch {
-      /* ignore */
-    }
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-    // 成功/失败提示多留一会，进行中提示较短
-    const ms = msg.includes('⏳') ? 4000 : 12000;
+    // 进行中提示 3 秒，结果提示 5 秒自动淡出
+    const ms = msg.includes('⏳') ? 3000 : 5000;
     toastTimerRef.current = window.setTimeout(() => {
       setToastMsg((cur) => (cur === msg ? null : cur));
     }, ms);
@@ -211,20 +288,8 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
 
   useEffect(() => {
     void loadAllEngineConfig();
-    // 刷新/热重载后恢复最近一条操作结果
     try {
-      const raw = sessionStorage.getItem(STATUS_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { msg?: string; at?: number };
-        if (
-          parsed?.msg &&
-          typeof parsed.at === 'number' &&
-          Date.now() - parsed.at < 90_000
-        ) {
-          setSaveStatusMsg(parsed.msg);
-          setToastMsg(parsed.msg);
-        }
-      }
+      sessionStorage.removeItem(STATUS_KEY);
     } catch {
       /* ignore */
     }
@@ -234,17 +299,29 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // styleConfig.llmRoleRouting 外部变更（切书/快照恢复/保存写回）时同步草稿
   useEffect(() => {
-    if (!highlightDoctor) return;
-    const t = window.setTimeout(() => {
-      doctorSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      pushStatus(
-        '🩺 新书已就绪：建议先保存 API 配置并跑一次「一键 Doctor 诊断」，确认连通后再开写。'
-      );
-    }, 200);
-    return () => window.clearTimeout(t);
+    setRoutingEnabled(styleConfig.llmRoleRouting?.enabled === true);
+    setRoutingRoutes(styleConfig.llmRoleRouting?.routes || {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlightDoctor]);
+  }, [styleConfig.llmRoleRouting]);
+
+  /** 保存按角色路由：只保留指向现存配置档的路由（已删档自动清空 = 跟随激活档） */
+  const handleSaveRoleRouting = () => {
+    const validIds = new Set(profiles.map((p) => p.id));
+    const routes: Partial<Record<LlmRole, string>> = {};
+    for (const role of ALL_LLM_ROLES) {
+      const id = routingRoutes[role];
+      if (id && validIds.has(id)) routes[role] = id;
+    }
+    const next: LlmRoleRouting = { enabled: routingEnabled, routes };
+    void onUpdateStyleConfig({ ...styleConfig, llmRoleRouting: next });
+    pushStatus(
+      routingEnabled
+        ? `🔀 按角色路由已保存（${Object.keys(routes).length} 个角色指定配置档）`
+        : '按角色路由已关闭：全部跟随当前启用档'
+    );
+  };
 
   const handleSaveBackendConfig = async (e?: React.SyntheticEvent) => {
     e?.preventDefault?.();
@@ -283,6 +360,20 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           });
         }
       } else {
+        // 防误建：已存在「名称 + Base URL + 模型」完全相同的配置档时不再新建，
+        // 避免点「新增模型」后原样重填保存悄悄多出一张重复卡
+        const dup = profiles.find(
+          (p) =>
+            p.name === (inputProfileName.trim() || '新模型') &&
+            p.baseURL === inputBaseURL.trim() &&
+            p.modelName === inputModelName.trim()
+        );
+        if (dup) {
+          pushStatus(
+            `⚠️ 已有完全相同的配置档「${dup.name}」（同 Base URL + 模型）。要改它请点该卡片编辑；确要新建请换个名称。`
+          );
+          return;
+        }
         const pl = await upsertLLMProfile({
           name: inputProfileName.trim() || '新模型',
           provider: inputProvider,
@@ -299,7 +390,9 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
         if (created) handleSelectProfileForEdit(created);
       }
       const editingIsActive = profiles.find((p) => p.id === keepEditId)?.isActive;
-      if (editingIsActive || !keepEditId) {
+      // 仅当编辑的就是当前启用档才同步旧接口；新建配置档绝不能反写启用档
+      //（否则 saveStoredConfig 会把启用档整体改成本档表单值的克隆）
+      if (keepEditId && editingIsActive) {
         await saveLLMConfig({
           provider: inputProvider,
           baseURL: inputBaseURL.trim(),
@@ -392,6 +485,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       });
       setEmbConfig(data);
       if (data.maskedKey) setEmbApiKey(data.maskedKey);
+      invalidateEmbeddingConfigCache(); // 让检索端配置立即生效（不等 60s TTL）
       pushStatus(
         data.enabled
           ? '✅ 保存成功 · 向量检索 API 已启用'
@@ -447,7 +541,6 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       } else {
         pushStatus('❌ Doctor：配置不可用，请按建议修复');
       }
-      onDoctorHintConsumed?.();
     } catch (err: any) {
       pushStatus(`❌ Doctor 失败: ${err?.message || err}`);
     } finally {
@@ -534,6 +627,25 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
     }));
   };
 
+  /** 内容列滚动容器：分区切换后回到顶部（本页窗口不滚动，滚动发生在内容列） */
+  const contentScrollRef = React.useRef<HTMLDivElement>(null);
+
+  /** 左栏切换：点一项，右侧仅展示该面板；分区高度差异大，切后回顶避免跳动 */
+  const selectSection = (key: string) => {
+    setActiveSection(key);
+    contentScrollRef.current?.scrollTo(0, 0);
+  };
+
+  /** 仅把当前可用的条目放进目录（如项目配置未就绪时隐藏题材包卡） */
+  const navAvailable = (key: string): boolean => {
+    switch (key) {
+      case 'genre':
+        return !!projectConfig && !!onUpdateGenre;
+      default:
+        return true;
+    }
+  };
+
   const toastTone =
     toastMsg?.includes('✅') || toastMsg?.includes('成功')
       ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
@@ -544,8 +656,8 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           : 'border-amber-300 bg-amber-50 text-amber-950';
 
   return (
-    <div className="flex-1 bg-white text-slate-900 p-8 lg:p-12 overflow-y-auto max-w-6xl mx-auto space-y-12 animate-fadeIn">
-      {/* 视口顶栏 Toast：不依赖页面滚动，刷新后 90s 内可恢复 */}
+    <div className="flex-1 bg-white text-slate-900 animate-fadeIn flex items-stretch overflow-hidden h-full">
+      {/* 视口顶栏 Toast：不依赖页面滚动；刷新后 90s 窗口内可恢复（手动关闭则不再恢复） */}
       {toastMsg &&
         typeof document !== 'undefined' &&
         createPortal(
@@ -560,8 +672,18 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               <span className="flex-1 leading-relaxed break-words">{toastMsg}</span>
               <button
                 type="button"
-                className="shrink-0 text-xs opacity-70 hover:opacity-100 underline"
-                onClick={() => setToastMsg(null)}
+                className="shrink-0 text-xs px-2.5 py-1 rounded-md bg-black/10 hover:bg-black/20 text-current transition-colors font-bold cursor-pointer"
+                onClick={() => {
+                  setToastMsg(null);
+                  if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+                  // 手动关闭 = 终态：同步清除 session 恢复锚，否则切走再切回
+                  // （组件重挂载读 STATUS_KEY）时 Toast 会原地复活
+                  try {
+                    sessionStorage.removeItem(STATUS_KEY);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
               >
                 关闭
               </button>
@@ -570,54 +692,181 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           document.body
         )}
 
-      {/* 头部标题 */}
-      <div className="pb-6 border-b border-slate-200 flex items-center justify-between">
-        <div>
-          <h1 className="font-bold text-2xl text-slate-900 mb-2 flex items-center space-x-2.5">
-            <ShieldAlert className="text-indigo-600 w-6 h-6" />
-            <span>AI 引擎服务端配置 & 反套路语感控制中心</span>
-          </h1>
-          <p className="text-xs text-slate-600 leading-relaxed">
-            在此管理您的真实大模型 API 密钥（后台高强度加密防泄漏）、禁言黑名单与核心文风克隆标准。
-            保存配置不会刷新整页；结果会在顶部弹出提示。
-          </p>
+      {/* 左侧导航栏：贴屏幕最左、与内容列等高（App 行 overflow-hidden 会让 sticky 失效，
+          故不用 sticky——本页改为「侧栏定高 + 内容列自滚」布局） */}
+      <aside className="w-[200px] shrink-0 overflow-y-auto scrollbar-gutter-stable border-r border-slate-100 px-3 py-6 space-y-4">
+        <div className="text-[10.5px] font-bold text-slate-500 tracking-[0.08em] px-2 pb-1">设置</div>
+        {SETTING_NAV.map((group) => (
+          <div key={group.group}>
+            <div className="text-[10px] font-bold text-slate-400 tracking-[0.06em] px-2 pb-1">
+              {group.group}
+            </div>
+            <div className="space-y-0.5">
+              {group.items.filter((item) => navAvailable(item.key)).map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => selectSection(item.key)}
+                  className={`w-full text-left text-[11.5px] font-medium px-2.5 py-[6px] rounded-lg border transition-colors ${
+                    activeSection === item.key
+                      ? 'bg-[#fafafa] border-[#e5e5e5] text-[#111111]'
+                      : 'border-transparent text-slate-600 hover:bg-[#fafafa] hover:text-[#111111]'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div className="pt-3 mt-1 border-t border-slate-100">
+          <span className="inline-flex items-center gap-1.5 text-[10px] text-emerald-700 border border-emerald-200 bg-emerald-50 rounded-lg px-2 py-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            服务 · Doctor 可体检
+          </span>
         </div>
-      </div>
+      </aside>
+      {/* 右侧内容列：自身滚动（窗口在本页不滚动），内容块居中自适应。
+          不加 space-y——分组包裹层现在每次只显示一个，统一由 py-8 决定起点，
+          避免不同分组的卡片起始高度差 48px 造成切换跳动 */}
+      <div ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto scrollbar-gutter-stable">
+        <div className="w-full max-w-5xl mx-auto px-6 lg:px-8 py-8">
 
-      {/* API Key 与服务端大模型配置 */}
-      <div
-        ref={doctorSectionRef}
-        className={`bg-slate-50 border rounded-2xl p-6 shadow-md space-y-6 transition-shadow ${
-          highlightDoctor
-            ? 'border-teal-400 ring-2 ring-teal-300/60 shadow-teal-100'
-            : 'border-slate-200'
-        }`}
-      >
-        {highlightDoctor && (
-          <div className="flex items-start justify-between gap-3 rounded-xl border border-teal-300 bg-teal-50 px-3.5 py-2.5 text-xs text-teal-950">
-            <div className="flex items-start gap-2">
-              <Stethoscope className="w-4 h-4 text-teal-700 mt-0.5 shrink-0" />
+      {/* ── 分组：常规与外观 ── */}
+      {activeSection === 'appearance' && (
+        <div
+          id="sec-appearance"
+          className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-md space-y-6 animate-fadeIn"
+        >
+          <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+            <div className="flex items-center space-x-2.5">
+              <Palette className="w-5 h-5 text-neutral-800" />
               <div>
-                <div className="font-bold">开写前建议先 Doctor</div>
-                <p className="text-[11px] text-teal-900/85 mt-0.5 leading-relaxed">
-                  新书设定已落盘。请确认 API 已保存，再点「一键 Doctor 诊断」验证文本/JSON/流式连通，避免写到一半才发现配置问题。
+                <h2 className="text-base font-bold text-slate-900">外观设置 · 界面主题</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  个性化定制应用界面的深浅显示模式。支持跟随操作系统实时自动切换。
                 </p>
               </div>
             </div>
-            {onDoctorHintConsumed && (
-              <button
-                type="button"
-                onClick={onDoctorHintConsumed}
-                className="shrink-0 text-[11px] font-semibold text-teal-800 hover:underline"
-              >
-                稍后
-              </button>
-            )}
+            <div className="flex items-center space-x-2 text-xs font-semibold px-3 py-1 rounded-full bg-slate-200 text-slate-800 border border-slate-300">
+              <span>当前生效：{resolvedTheme === 'dark' ? '🌙 深色模式' : '☀️ 浅色模式'}</span>
+            </div>
           </div>
-        )}
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* 跟随系统 */}
+            <button
+              type="button"
+              onClick={() => {
+                setThemeMode('system');
+                pushStatus('✅ 外观设置已切换为：跟随系统（将自动随操作系统深浅切换）');
+              }}
+              className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all cursor-pointer relative ${
+                currentThemeMode === 'system'
+                  ? 'border-neutral-900 bg-white ring-2 ring-neutral-900 shadow-md'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-3">
+                <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center text-slate-800">
+                  <Monitor className="w-5 h-5" />
+                </div>
+                {currentThemeMode === 'system' && (
+                  <span className="flex items-center gap-1 text-[11px] font-bold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded-full">
+                    <Check className="w-3.5 h-3.5" /> 已选
+                  </span>
+                )}
+              </div>
+              <div className="font-bold text-sm text-slate-900 mb-1">跟随系统</div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                自动检测并与操作系统的深浅色模式保持同步。系统主题切换时无需重启或刷新即时生效。
+              </p>
+            </button>
+
+            {/* 浅色模式 */}
+            <button
+              type="button"
+              onClick={() => {
+                setThemeMode('light');
+                pushStatus('✅ 外观设置已强制切换为：浅色模式');
+              }}
+              className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all cursor-pointer relative ${
+                currentThemeMode === 'light'
+                  ? 'border-neutral-900 bg-white ring-2 ring-neutral-900 shadow-md'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600">
+                  <Sun className="w-5 h-5" />
+                </div>
+                {currentThemeMode === 'light' && (
+                  <span className="flex items-center gap-1 text-[11px] font-bold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded-full">
+                    <Check className="w-3.5 h-3.5" /> 已选
+                  </span>
+                )}
+              </div>
+              <div className="font-bold text-sm text-slate-900 mb-1">浅色</div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                经典高清晰度纸面阅读质感，纯白底色黑字排版，适合白天或明亮环境下的长篇码字创作。
+              </p>
+            </button>
+
+            {/* 深色模式 */}
+            <button
+              type="button"
+              onClick={() => {
+                setThemeMode('dark');
+                pushStatus('✅ 外观设置已强制切换为：深色模式');
+              }}
+              className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all cursor-pointer relative ${
+                currentThemeMode === 'dark'
+                  ? 'border-neutral-900 bg-white ring-2 ring-neutral-900 shadow-md'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between w-full mb-3">
+                <div className="w-9 h-9 rounded-lg bg-indigo-900/20 flex items-center justify-center text-indigo-400">
+                  <Moon className="w-5 h-5" />
+                </div>
+                {currentThemeMode === 'dark' && (
+                  <span className="flex items-center gap-1 text-[11px] font-bold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded-full">
+                    <Check className="w-3.5 h-3.5" /> 已选
+                  </span>
+                )}
+              </div>
+              <div className="font-bold text-sm text-slate-900 mb-1">深色</div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                舒适护眼的深灰黑夜间配色，降低屏幕眩光与视觉疲劳，沉浸于深夜灵感爆发与小说执笔。
+              </p>
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600 space-y-1.5 leading-relaxed">
+            <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+              💡 外观配置说明
+            </div>
+            <ul className="list-disc pl-5 space-y-1 text-[11px]">
+              <li>设置默认使用「跟随系统」，支持 Windows / macOS 系统外观的即时响应；</li>
+              <li>手动指定「浅色」或「深色」后将锁定当前模式，且选项会自动永久保存至本地配置；</li>
+              <li>页面重新加载或桌面端应用重启时将无缝恢复您的外观选择，且杜绝任何闪烁现象。</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ── 分组一：模型与成本（多模型配置档 / Doctor / LLM 成本预算；向量检索已并入「按角色路由」卡）── */}
+      <div className="space-y-12 scroll-mt-14">
+      {/* API Key 与服务端大模型配置 */}
+      {activeSection === 'models' && (
+      <div
+        id="sec-api-config"
+        ref={doctorSectionRef}
+        className="bg-slate-50 border border-slate-200 rounded-2xl p-6 shadow-md space-y-6"
+      >
         <div className="flex items-center justify-between border-b border-slate-200 pb-4">
           <div className="flex items-center space-x-2.5">
-            <Cpu className="w-5 h-5 text-indigo-600" />
+            <Cpu className="w-5 h-5 text-neutral-800" />
             <h2 className="text-base font-bold text-slate-900">多模型配置档 · 点启用切换</h2>
           </div>
           <div className="flex items-center space-x-2 text-xs font-semibold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
@@ -631,7 +880,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] text-slate-600">
               可保存多套 Base URL / 模型 / Key；写作与 Doctor 始终使用
-              <strong className="text-indigo-800"> 当前启用 </strong>
+              <strong className="text-neutral-900"> 当前启用 </strong>
               的一档。
               {backendConfig?.activeProfileName && (
                 <span className="ml-1 font-mono text-emerald-800">
@@ -649,7 +898,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               新增模型
             </button>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
             {profiles.map((p) => (
               <div
                 key={p.id}
@@ -657,7 +906,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                   p.isActive
                     ? 'border-emerald-400 bg-emerald-50/80 ring-1 ring-emerald-300'
                     : editingProfileId === p.id
-                      ? 'border-indigo-300 bg-indigo-50/50'
+                      ? 'border-neutral-300 bg-neutral-100/50'
                       : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
@@ -777,7 +1026,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 value={inputProfileName}
                 onChange={(e) => setInputProfileName(e.target.value)}
                 placeholder="如：DeepSeek 主写 / GPT 润色 / 本地中转"
-                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none shadow-sm"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm"
               />
             </div>
             <div>
@@ -789,7 +1038,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 onChange={(e) =>
                   setInputProvider(e.target.value as 'openai' | 'deepseek' | 'custom')
                 }
-                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none shadow-sm"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm"
               >
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
@@ -806,8 +1055,18 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 value={inputBaseURL}
                 onChange={(e) => setInputBaseURL(e.target.value)}
                 placeholder="例如: https://api.deepseek.com"
-                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none shadow-sm"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm"
               />
+              {thirdPartyHost(inputBaseURL) && (
+                <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    非官方端点（{thirdPartyHost(inputBaseURL)}）：生成时
+                    <b>章节正文、设定与记忆会全文发送到该服务器</b>
+                    ，作品数据本身仍只存本地，但请仅在信任该中转服务时使用。
+                  </span>
+                </p>
+              )}
             </div>
 
             <div>
@@ -817,7 +1076,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                   type="button"
                   onClick={handleRefreshModels}
                   disabled={isLoadingModels || isSavingConfig || isDoctorRunning}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-neutral-700 hover:text-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                   title="按当前 Base URL 与 API Key 调用服务商 /models 接口刷新列表"
                 >
                   {isLoadingModels ? (
@@ -835,7 +1094,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                   value={inputModelName}
                   onChange={(e) => setInputModelName(e.target.value)}
                   placeholder="deepseek-chat 或点刷新后选择"
-                  className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none shadow-sm font-mono"
+                  className="flex-1 min-w-0 bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm font-mono"
                 />
                 <button
                   type="button"
@@ -924,7 +1183,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
-                <span>创作创造力温度 (Temperature): <strong className="text-indigo-600">{inputTemperature}</strong></span>
+                <span>创作创造力温度 (Temperature): <strong className="text-neutral-800">{inputTemperature}</strong></span>
                 <span className="text-[11px] text-slate-500">数值越高创意越丰富</span>
               </label>
               <input
@@ -934,7 +1193,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 step={0.05}
                 value={inputTemperature}
                 onChange={(e) => setInputTemperature(Number(e.target.value))}
-                className="w-full accent-indigo-600 mt-2 cursor-pointer"
+                className="w-full accent-neutral-900 mt-2 cursor-pointer"
               />
             </div>
           </div>
@@ -977,15 +1236,103 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           </div>
         </div>
 
-        {/* 向量检索 Embedding API */}
-        <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4 space-y-4">
+        </div>
+      )}
+      {/* 按角色路由模型 + 向量检索 API（合并卡：写作用强模型、审校用轻量模型） */}
+      {activeSection === 'routing' && (
+        <div
+          id="sec-llm-routing"
+          className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="flex items-start gap-2 min-w-0">
+              <Sliders className="w-4 h-4 text-neutral-800 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900">按角色路由模型</h3>
+                <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                  为不同创作角色指定不同配置档（Base URL / 模型 / Key 整体切换）——
+                  例如写作用强模型、审校与记忆回写用便宜模型。未指定的角色跟随当前启用档；
+                  关闭总开关则全部走当前启用档。
+                </p>
+              </div>
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={routingEnabled}
+                onChange={(e) => setRoutingEnabled(e.target.checked)}
+                className="accent-neutral-900"
+              />
+              启用路由
+            </label>
+          </div>
+          {routingEnabled && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+              {ALL_LLM_ROLES.map((role) => {
+                const configured = routingRoutes[role];
+                // 指向已删除配置档的路由：显示为「跟随激活档」，保存时清空
+                const value =
+                  configured && profiles.some((p) => p.id === configured)
+                    ? configured
+                    : '';
+                return (
+                  <label
+                    key={role}
+                    className="grid grid-cols-[112px_minmax(0,1fr)] items-center gap-2 text-xs"
+                  >
+                    <span className="font-semibold text-slate-700 shrink-0">
+                      {ROLE_LABELS[role]}
+                    </span>
+                    <select
+                      value={value}
+                      onChange={(e) =>
+                        setRoutingRoutes((prev) => ({
+                          ...prev,
+                          [role]: e.target.value || undefined,
+                        }))
+                      }
+                      className="flex-1 min-w-0 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-xs text-slate-900 focus:border-neutral-900 focus:outline-none"
+                    >
+                      <option value="">跟随激活档</option>
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}（{p.modelName}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <p className="text-[11px] text-slate-500">
+              {profiles.length === 0
+                ? '尚未加载到配置档；请先到左侧「模型配置 · Doctor」新增并保存。'
+                : '配置档被删除的角色自动回落「跟随激活档」，保存时清空对应路由。'}
+            </p>
+            <button
+              type="button"
+              disabled={isSavingConfig}
+              onClick={handleSaveRoleRouting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-black bg-black text-white text-xs font-bold hover:bg-neutral-800 disabled:opacity-50"
+            >
+              <Save className="w-3.5 h-3.5" />
+              保存路由
+            </button>
+          </div>
+
+          {/* ── 向量检索 API（Embedding）：并入本卡片 ── */}
+          <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-4 space-y-4">
           <div className="flex items-center justify-between gap-2 border-b border-violet-200/80 pb-3">
             <div className="flex items-center gap-2">
               <Database className="w-4 h-4 text-violet-700" />
               <div>
                 <h3 className="text-sm font-bold text-violet-950">向量检索 API（Embedding）</h3>
                 <p className="text-[11px] text-violet-900/70 mt-0.5">
-                  OpenAI 兼容 /v1/embeddings。用于写前语义检索增强；关闭时仍用本地 n-gram。
+                  OpenAI 兼容 /v1/embeddings。启用后写章前的记忆/伏笔/相关章检索改用
+                  <b>真·向量检索</b>：文档向量缓存在本地、仅新增内容与查询调用 API；
+                  未启用或调用失败时自动降级本地 TF-IDF（n-gram），写作不中断。费用极低，不计入 LLM 预算。
                 </p>
               </div>
             </div>
@@ -1022,6 +1369,11 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                     placeholder="https://api.openai.com/v1"
                     className="w-full bg-white border border-violet-200 rounded-lg px-3 py-2 text-sm font-mono"
                   />
+                  {thirdPartyHost(embBaseURL) && (
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                      ⚠️ 非官方端点（{thirdPartyHost(embBaseURL)}）：检索文本（设定/梗概/章摘要）会发送到该服务器，请确认信任。
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-700 mb-1">
@@ -1110,8 +1462,11 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 {saveStatusMsg}
               </p>
             )}
+          </div>
         </div>
-
+      )}
+      {activeSection === 'models' && (
+        <>
         {/* Doctor 报告 */}
         {doctorReport && (
           <div
@@ -1189,7 +1544,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 <ul className="space-y-1">
                   {doctorReport.suggestions.map((s, i) => (
                     <li key={i} className="text-[11px] text-slate-600 leading-relaxed flex gap-1.5">
-                      <span className="text-indigo-500 font-bold shrink-0">{i + 1}.</span>
+                      <span className="text-slate-400 font-bold shrink-0">{i + 1}.</span>
                       <span>{s}</span>
                     </li>
                   ))}
@@ -1198,22 +1553,35 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
             )}
           </div>
         )}
-      </div>
-
-      {projectConfig && onUpdateGenre && (
-        <GenrePackPanel
-          genre={genre || projectConfig.genre || ''}
-          config={projectConfig}
-          onChangeGenre={onUpdateGenre}
-          onSaveOverride={onSaveGenreOverride}
-        />
+        </>
       )}
 
+      </div>
+
+      {/* ── 分组二：写作引擎（题材包 / 全书与单章目标 / 日更目标 / 跨章抽检节奏 / Auto-Pilot 默认参数）── */}
+      <div className="space-y-12 scroll-mt-14">
+      {activeSection === 'genre' && projectConfig && onUpdateGenre && (
+        <div id="sec-genre">
+          <GenrePackPanel
+            genre={genre || projectConfig.genre || ''}
+            config={projectConfig}
+            onChangeGenre={onUpdateGenre}
+            onSaveOverride={onSaveGenreOverride}
+          />
+        </div>
+      )}
+
+      {activeSection === 'targets' && (
+      <div id="sec-targets" className="space-y-6">
+      <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl space-y-6 shadow-sm">
+        <h2 className="text-base font-bold text-slate-900 border-b border-slate-200 pb-3">
+          📏 全书 · 每日 · 抽检目标
+        </h2>
       {projectConfig && onUpdateProjectConfig && (
-        <div className="p-6 bg-sky-50 border border-sky-200 rounded-2xl space-y-4 shadow-sm">
-          <h2 className="text-base font-bold text-slate-900 border-b border-sky-200 pb-3">
+        <div className="p-5 bg-sky-50 border border-sky-200 rounded-xl space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 border-b border-sky-200 pb-2">
             📏 全书与单章目标
-          </h2>
+          </h3>
           <p className="text-[11px] text-slate-600 leading-relaxed">
             单章字数写入正文 Prompt（约 ±15%）；目标章数 × 每章字数 = 全书目标，用于顶栏与仪表盘进度条。不硬截断正文。
           </p>
@@ -1246,11 +1614,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 min={500}
                 max={20000}
                 step={100}
-                value={
-                  projectConfig.targetWordCountPerChapter ??
-                  projectConfig.wordsPerChapter ??
-                  3000
-                }
+                value={resolveChapterWordTarget(projectConfig) ?? 3000}
                 onChange={(e) => {
                   const n = Math.max(500, Math.min(20000, Number(e.target.value) || 3000));
                   onUpdateProjectConfig({
@@ -1266,10 +1630,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           {(() => {
             const ch =
               projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? 100;
-            const per =
-              projectConfig.targetWordCountPerChapter ??
-              projectConfig.wordsPerChapter ??
-              3000;
+            const per = resolveChapterWordTarget(projectConfig) ?? 3000;
             const total = ch * per;
             return (
               <div className="rounded-xl border border-sky-200 bg-white/80 px-3.5 py-2.5 text-xs space-y-1">
@@ -1284,7 +1645,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                   {total >= 10000 ? ` ≈ ${(total / 10000).toFixed(1)} 万字` : ''}
                 </div>
                 <div className="h-1.5 rounded-full bg-sky-100 overflow-hidden mt-1">
-                  <div className="h-full w-full rounded-full bg-gradient-to-r from-sky-300 to-indigo-400 opacity-80" />
+                  <div className="h-full w-full rounded-full bg-gradient-to-r from-neutral-300 to-neutral-500 opacity-80" />
                 </div>
               </div>
             );
@@ -1293,10 +1654,10 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       )}
 
       {/* 日更目标 */}
-      <div className="p-6 bg-orange-50 border border-orange-200 rounded-2xl space-y-3 shadow-sm">
-        <h2 className="text-base font-bold text-slate-900 border-b border-orange-200 pb-3">
+      <div className="p-5 bg-orange-50 border border-orange-200 rounded-xl space-y-3">
+        <h3 className="text-sm font-bold text-slate-900 border-b border-orange-200 pb-2">
           🔥 每日字数目标
-        </h2>
+        </h3>
         <p className="text-[11px] text-slate-600 leading-relaxed">
           按正文净增字数记账（手改 / 流水线写章）。填 0 可关闭达标提示。顶栏与仪表盘会显示今日进度。
         </p>
@@ -1323,10 +1684,10 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       </div>
 
       {/* 跨章抽检节奏 */}
-      <div className="p-6 bg-cyan-50 border border-cyan-200 rounded-2xl space-y-3 shadow-sm">
-        <h2 className="text-base font-bold text-slate-900 border-b border-cyan-200 pb-3">
+      <div className="p-5 bg-cyan-50 border border-cyan-200 rounded-xl space-y-3">
+        <h3 className="text-sm font-bold text-slate-900 border-b border-cyan-200 pb-2">
           📡 跨章抽检提醒
-        </h2>
+        </h3>
         <p className="text-[11px] text-slate-600 leading-relaxed">
           每写满若干章有正文后，工作台会提示再跑跨章连贯抽检（伏笔 / 状态 / 事实）。可随时手动跑。
         </p>
@@ -1350,9 +1711,13 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           />
         </label>
       </div>
+      </div>
+      </div>
+      )}
 
       {/* Auto-Pilot 默认参数 */}
-      <div className="p-6 bg-rose-50 border border-rose-200 rounded-2xl space-y-4 shadow-sm">
+      {activeSection === 'autopilot' && (
+      <div id="sec-autopilot" className="p-6 bg-rose-50 border border-rose-200 rounded-2xl space-y-4 shadow-sm">
         <h2 className="text-base font-bold text-slate-900 border-b border-rose-200 pb-3">
           🚀 Auto-Pilot 连载默认参数
         </h2>
@@ -1409,6 +1774,26 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               }
             />
             AP 自动确认「高置信」伏笔回收（长跑推荐开；medium/low 仍待手确）
+          </label>
+          <label className="flex items-start gap-2 text-xs font-semibold text-slate-700 md:col-span-3">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={styleConfig.progressionReviewEnabled !== false}
+              onChange={(e) =>
+                onUpdateStyleConfig({
+                  ...styleConfig,
+                  progressionReviewEnabled: e.target.checked,
+                })
+              }
+            />
+            <span>
+              启用推进度审（每章 +1 次 LLM 调用）
+              <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
+                检查分镜完成度 / 主线推进 / 注水度 / 伏笔触达；弱推进不自动锁章、转人工确认。
+                关闭后不跑此项检查（省调用，但「水了一章」不再拦截）。
+              </span>
+            </span>
           </label>
           <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 md:col-span-3">
             <input
@@ -1537,54 +1922,21 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           在工作台右侧可一键启动 Auto-Pilot；参数也可在侧栏临时改「本轮章数」。
         </p>
       </div>
+      )}
 
-      {/* R3-B：LLM 成本预算 */}
-      <div className="p-6 bg-amber-50 border border-amber-200 rounded-2xl space-y-4 shadow-sm">
-        <h2 className="text-base font-bold text-slate-900 border-b border-amber-200 pb-3">
-          💰 LLM 成本预算
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          <label className="flex items-center gap-2 font-semibold text-slate-700">
-            <input
-              type="checkbox"
-              checked={styleConfig.llmBudgetEnabled === true}
-              onChange={(e) =>
-                onUpdateStyleConfig({
-                  ...styleConfig,
-                  llmBudgetEnabled: e.target.checked,
-                })
-              }
-            />
-            启用月度预算闸门（超限后 LLM 调用被拦截，正文降级为本地保守稿）
-          </label>
-          <label className="space-y-1">
-            <span className="font-semibold text-slate-700">月度上限（元）</span>
-            <input
-              type="number"
-              min={0}
-              max={100000}
-              step={10}
-              value={styleConfig.llmMonthlyBudgetCny ?? 0}
-              onChange={(e) =>
-                onUpdateStyleConfig({
-                  ...styleConfig,
-                  llmMonthlyBudgetCny: Math.max(0, Number(e.target.value) || 0),
-                })
-              }
-              disabled={!styleConfig.llmBudgetEnabled}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white disabled:opacity-50"
-            />
-            <span className="text-[10px] text-slate-500">
-              0 = 不限；估算口径：中文≈1 token/字，参考 deepseek/kimi/glm/gpt/claude 价目表。
-              顶部栏「🪙 用量」徽标实时显示本月已用。
-            </span>
-          </label>
-        </div>
       </div>
 
-      {/* 核心文风开关：反升华 & Show Don't Tell */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 shadow-sm">
+      {/* ── 分组三：文风纪律（核心文风开关 / 黑名单 / 去AI味 / 文风仿写 / 样本库）── */}
+      <div className="space-y-12 scroll-mt-14">
+      {/* 核心文风 · 风格样本库 */}
+      {activeSection === 'core-switch' && (
+      <div id="sec-core-switch" className="space-y-6">
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-6 shadow-sm">
+        <h2 className="text-base font-bold text-slate-900 border-b border-slate-200 pb-3">
+          🎛 核心文风开关
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="p-5 bg-white border border-slate-200 rounded-xl space-y-4">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3">
             <span className="font-bold text-sm text-slate-900 flex items-center space-x-2">
               <span>🚫 禁止结尾升华与多余哲理说教</span>
@@ -1604,12 +1956,12 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           <p className="text-xs text-slate-600 leading-relaxed">
             AI 常见通病之一是在章节或段落末尾强制进行“人生哲理升华”或“宿命感慨”（如：<i>“在这茫茫天地间，命运的转轮已然悄悄转动……”</i>）。
           </p>
-          <div className="text-[11px] text-indigo-900 font-semibold bg-indigo-50 p-3 border border-indigo-200 rounded-xl">
+          <div className="text-[11px] text-neutral-900 font-semibold bg-neutral-100 p-3 border border-neutral-200 rounded-xl">
             👉 开启后：执笔和自检 Agent 将严厉压制总结倾向，强制要求章节结尾必须<strong>“戛然而止在具体的动作、冲突画面或短语断口上”</strong>。
           </div>
         </div>
 
-        <div className="p-6 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 shadow-sm">
+        <div className="p-5 bg-white border border-slate-200 rounded-xl space-y-4">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3">
             <span className="font-bold text-sm text-slate-900 flex items-center space-x-2">
               <span>🎬 Show, Don't Tell (展示而非阐述)</span>
@@ -1633,10 +1985,93 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
             配合分镜头细纲使用，可以大幅消除注水感，使文字具有沉浸的剧作电影张力。
           </div>
         </div>
+
+        <div className="p-5 bg-white border border-slate-200 rounded-xl space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+            <span className="font-bold text-sm text-slate-900 flex items-center space-x-2">
+              <span>✍️ 破折号白名单（允许「——」）</span>
+            </span>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={styleConfig.allowEmDash === true}
+                onChange={(e) =>
+                  onUpdateStyleConfig({ ...styleConfig, allowEmDash: e.target.checked })
+                }
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-black"></div>
+            </label>
+          </div>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            默认关闭：写后校验会把正文中的破折号「——」记为 error 并阻断绿通（破折号是常见 AI 味标记）。
+          </p>
+          <div className="text-[11px] text-slate-800 bg-white p-3 border border-slate-200 rounded-xl shadow-sm">
+            👉 开启后：写后校验放行破折号，已有/新增的「——」不再计违规。适合以破折号为节奏器官的文风；
+            激活文风档案若声明了省略号/破折号容忍（ellipsis-emphatic），无需开启本开关。
+          </div>
+        </div>
+        </div>
+        <div className="border-t border-slate-200 pt-5">
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+          <div className="font-bold text-base text-slate-900 flex items-center space-x-2">
+            <Eye className="w-5 h-5 text-emerald-600" />
+            <span>Few-Shot 目标短句风格示例克隆库 (Style Cloner)</span>
+          </div>
+          <span className="text-xs text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1 rounded-full font-bold flex items-center space-x-1.5">
+            <CheckCircle2 size={13} className="text-emerald-600" />
+            <span>当前已激活目标语感</span>
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {(styleConfig.fewShotExamples || []).map((example) => {
+            const isSelected = example.id === styleConfig.selectedExampleId;
+            return (
+              <div
+                key={example.id}
+                onClick={() => handleSelectExample(example.id)}
+                className={`p-5 rounded-xl cursor-pointer transition-all border flex flex-col justify-between ${
+                  isSelected
+                    ? 'bg-white border-neutral-900 shadow-lg'
+                    : 'bg-white border-slate-200 hover:border-slate-400 shadow-sm'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className={`font-bold text-sm ${isSelected ? 'text-neutral-800' : 'text-slate-900'}`}>
+                      {example.title}
+                    </span>
+                    {isSelected && (
+                      <span className="text-[10px] bg-black text-white px-2 py-0.5 rounded-full font-bold">
+                        当前激活
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-600 mb-3 border-b border-slate-200 pb-2.5">
+                    <strong className="text-slate-900">行文要诀：</strong>
+                    {example.authorStyle}
+                  </div>
+                  <div className="text-xs text-slate-800 font-serif leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-200 line-clamp-6">
+                    {example.content}
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-slate-200 text-[11px] text-slate-600">
+                  <strong className="text-neutral-800">核心解构：</strong>
+                  {example.analysis}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        </div>
+        </div>
       </div>
+      )}
 
       {/* 黑名单管理 */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-5 shadow-sm">
+      {activeSection === 'blacklist' && (
+      <div id="sec-blacklist" className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-5 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div className="font-bold text-base text-slate-900 flex items-center space-x-2">
             <Sliders className="w-5 h-5 text-purple-600" />
@@ -1677,7 +2112,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               placeholder="添加您想要彻底断绝的 AI 惯用词句（例如：不由得感到一阵心惊……）"
               value={newBlacklistWord}
               onChange={(e) => setNewBlacklistWord(e.target.value)}
-              className="flex-1 text-xs p-2.5 border border-slate-300 rounded-xl text-slate-900 bg-white focus:outline-none focus:border-indigo-600"
+              className="flex-1 text-xs p-2.5 border border-slate-300 rounded-xl text-slate-900 bg-white focus:outline-none focus:border-neutral-900"
             />
             <button
               type="submit"
@@ -1799,85 +2234,36 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           </div>
         </div>
       </div>
-
-      {/* 文风仿写 · InkOS 式 analyze / import */}
-      {!(styleConfig.styleProfiles || []).length && onRecoverStyleProfiles && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="text-xs text-amber-950">
-            <div className="font-bold">当前没有文风仿写档案</div>
-            <p className="text-[11px] text-amber-900/80 mt-0.5">
-              若你曾导入过，可能被其它配置覆盖。可尝试从本书快照找回，或重新粘贴样本分析导入。
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onRecoverStyleProfiles()}
-            className="shrink-0 px-3 py-2 rounded-lg bg-black text-white text-[11px] font-bold hover:bg-neutral-800"
-          >
-            从快照恢复文风
-          </button>
-        </div>
       )}
-      <StyleImitatePanel
-        styleConfig={styleConfig}
-        onUpdateStyleConfig={onUpdateStyleConfig}
-      />
 
-      {/* 风格参考样本库 */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-5 shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-          <div className="font-bold text-base text-slate-900 flex items-center space-x-2">
-            <Eye className="w-5 h-5 text-emerald-600" />
-            <span>Few-Shot 目标短句风格示例克隆库 (Style Cloner)</span>
+      {activeSection === 'imitate' && (
+      <div id="sec-imitate">
+        {!(styleConfig.styleProfiles || []).length && onRecoverStyleProfiles && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="text-xs text-amber-950">
+              <div className="font-bold">当前没有文风仿写档案</div>
+              <p className="text-[11px] text-amber-900/80 mt-0.5">
+                若你曾导入过，可能被其它配置覆盖。可尝试从本书快照找回，或重新粘贴样本分析导入。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onRecoverStyleProfiles()}
+              className="shrink-0 px-3 py-2 rounded-lg bg-black text-white text-[11px] font-bold hover:bg-neutral-800"
+            >
+              从快照恢复文风
+            </button>
           </div>
-          <span className="text-xs text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1 rounded-full font-bold flex items-center space-x-1.5">
-            <CheckCircle2 size={13} className="text-emerald-600" />
-            <span>当前已激活目标语感</span>
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {(styleConfig.fewShotExamples || []).map((example) => {
-            const isSelected = example.id === styleConfig.selectedExampleId;
-            return (
-              <div
-                key={example.id}
-                onClick={() => handleSelectExample(example.id)}
-                className={`p-5 rounded-xl cursor-pointer transition-all border flex flex-col justify-between ${
-                  isSelected
-                    ? 'bg-white border-indigo-600 shadow-lg'
-                    : 'bg-white border-slate-200 hover:border-slate-400 shadow-sm'
-                }`}
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className={`font-bold text-sm ${isSelected ? 'text-indigo-600' : 'text-slate-900'}`}>
-                      {example.title}
-                    </span>
-                    {isSelected && (
-                      <span className="text-[10px] bg-black text-white px-2 py-0.5 rounded-full font-bold">
-                        当前激活
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-slate-600 mb-3 border-b border-slate-200 pb-2.5">
-                    <strong className="text-slate-900">行文要诀：</strong>
-                    {example.authorStyle}
-                  </div>
-                  <div className="text-xs text-slate-800 font-serif leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-200 line-clamp-6">
-                    {example.content}
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-200 text-[11px] text-slate-600">
-                  <strong className="text-indigo-600">核心解构：</strong>
-                  {example.analysis}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        )}
+        <StyleImitatePanel
+          styleConfig={styleConfig}
+          onUpdateStyleConfig={onUpdateStyleConfig}
+        />
       </div>
+      )}
+      </div>
+      </div>
+    </div>
     </div>
   );
 };

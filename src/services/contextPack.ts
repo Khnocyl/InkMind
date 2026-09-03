@@ -1,3 +1,4 @@
+import { proseWords } from './proseWords';
 import type { Chapter, ChapterRecap, StoryMemory } from '../types/novel';
 import { formatAntiEchoPromptBlock, takeContentOpening } from './antiEcho';
 import {
@@ -48,7 +49,7 @@ function sortChapters(chapters: Chapter[]): Chapter[] {
 }
 
 function stripWhitespaceLength(s: string): number {
-  return s.replace(/\s+/g, '').length;
+  return proseWords(s);
 }
 
 /** 取正文末尾 tailChars 个字符（按 Unicode 码点，避免截断奇怪） */
@@ -213,7 +214,8 @@ export function buildPreviousContextPack(
   }
 
   blocks.push(
-    '【衔接硬性要求】① 开头承接上一章**章末**现场与已定结果，禁止重新开书/自我介绍/重铺世界观；② 禁止把上章开篇氛围、同套景物与感官再写一遍；③ 禁止复活/改写上一章已定结果；④ 若有「已钉死事实」不得违背。'
+    '【衔接硬性要求】① 开头第一拍为「应答式」：首 1-3 行直接回应【上章正文尾段】的最后一句钩子（对话答对话/威胁答反击/刺激答生理反应/困境答破局），应答拍之后才引入新内容；' +
+      '② 开头承接上一章**章末**现场与已定结果，禁止重新开书/自我介绍/重铺世界观；③ 禁止把上章开篇氛围、同套景物与感官再写一遍；④ 禁止复活/改写上一章已定结果；⑤ 若有「已钉死事实」不得违背。'
   );
 
   const text = blocks.join('\n');

@@ -1,6 +1,19 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
+import {
+  assertSafeBaseUrl,
+  assertSafeUrl,
+  buildSafeHeaders,
+  resolveRequestApiKey,
+  sameBaseUrlOrigin,
+} from './llmSecurity';
+import {
+  decryptWithKeyAuto,
+  encryptWithKeyGcm,
+} from './keyCipher';
 
 export type LLMProvider = 'openai' | 'deepseek' | 'custom';
 
@@ -52,11 +65,23 @@ export interface LLMServerConfig {
 }
 
 /**
- * 配置目录放在项目根 `.novel-data`（不在 server/ 下）。
- * 旧路径 server/data 若存在会自动迁移，避免 tsx watch 监视写盘导致热重启整页刷新。
+ * 配置目录放在应用根 `.novel-data`（不在 server/ 下）。
+ * 应用根判定：cwd 下有 package.json 视为开发/脚本态（项目根）；
+ * 否则（单文件可执行形态）取可执行文件所在目录——双击运行时数据落在 exe 旁边。
+ * 旧路径 server/data 若存在会自动迁移并清理，避免 tsx watch 监视写盘导致热重启。
  */
-const DATA_DIR = path.join(process.cwd(), '.novel-data');
-const LEGACY_DATA_DIR = path.join(process.cwd(), 'server', 'data');
+const APP_ROOT = process.env.NOVEL_APP_ROOT
+  ? process.env.NOVEL_APP_ROOT
+  : fs.existsSync(path.join(process.cwd(), 'package.json'))
+    ? process.cwd()
+    : path.dirname(process.execPath);
+
+/** 应用根（开发态=项目根；单文件可执行态=exe 所在目录）。备份等磁盘服务共用。 */
+export function getAppRoot(): string {
+  return APP_ROOT;
+}
+const DATA_DIR = path.join(APP_ROOT, '.novel-data');
+const LEGACY_DATA_DIR = path.join(APP_ROOT, 'server', 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SECRET_FILE = path.join(DATA_DIR, '.secret');
 
@@ -73,8 +98,131 @@ function migrateLegacyDataDir() {
         fs.copyFileSync(from, to);
       }
     }
+    // 新位置已齐备：删除旧目录残留（含旧密钥副本），杜绝密文多份留存
+    for (const name of ['config.json', '.secret']) {
+      fs.rmSync(path.join(LEGACY_DATA_DIR, name), { force: true });
+    }
+    fs.rmSync(LEGACY_DATA_DIR, { recursive: true, force: true });
+    console.log('[config] 旧 server/data 已迁移并清理');
   } catch (err) {
     console.warn('[config] legacy data migrate skipped:', err);
+  }
+}
+
+// ─── 主密钥：机器绑定派生，不落盘 ───────────────────────────────────────
+// 此前 32 字节密钥明文写在 .novel-data/.secret，与密文同目录——能读到密文
+// 就能读到密钥，加密形同虚设。现改为运行时从机器指纹（Windows MachineGuid /
+// macOS IOPlatformUUID / Linux machine-id）+ 当前用户名派生，密钥不再存在
+// 任何文件里，.novel-data 整个目录被拷走也无法在别处解密。
+// 威胁模型不变：能以同一用户身份在本机执行代码者仍可解密（本地工具的边界）。
+
+let cachedFingerprint: string | null = null;
+
+function machineFingerprint(): string {
+  if (cachedFingerprint) return cachedFingerprint;
+  let fp = '';
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(
+        'reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid',
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      const m = out.match(/MachineGuid\s+REG_SZ\s+(\S+)/);
+      if (m) fp = m[1];
+    } else if (process.platform === 'darwin') {
+      const out = execSync(
+        'ioreg -rd1 -c IOPlatformExpertDevice',
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      const m = out.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
+      if (m) fp = m[1];
+    } else {
+      fp = fs.readFileSync('/etc/machine-id', 'utf-8').trim();
+    }
+  } catch {
+    // 指纹不可得时降级为 hostname（弱一些但稳定，保证功能可用）
+  }
+  cachedFingerprint = fp || os.hostname() || 'unknown-host';
+  return cachedFingerprint;
+}
+
+let cachedMasterKey: Buffer | null = null;
+
+function getSecretKey(): Buffer {
+  if (!cachedMasterKey) {
+    cachedMasterKey = crypto
+      .createHash('sha256')
+      .update('novel-studio-master-key-v2\x00')
+      .update(machineFingerprint())
+      .update('\x00')
+      .update(os.userInfo().username || 'user')
+      .digest();
+  }
+  return cachedMasterKey;
+}
+
+/** 旧 .secret 文件密钥（迁移期兜底；迁移成功后文件删除、这里返回 null） */
+let legacyKeyCache: Buffer | null | undefined;
+
+function readLegacySecretKey(): Buffer | null {
+  if (legacyKeyCache !== undefined) return legacyKeyCache;
+  try {
+    if (fs.existsSync(SECRET_FILE)) {
+      const hex = fs.readFileSync(SECRET_FILE, 'utf-8').trim();
+      legacyKeyCache = /^[0-9a-f]{64}$/i.test(hex) ? Buffer.from(hex, 'hex') : null;
+    } else {
+      legacyKeyCache = null;
+    }
+  } catch {
+    legacyKeyCache = null;
+  }
+  return legacyKeyCache;
+}
+
+/**
+ * 一次性升级：存在旧 .secret 时，把配置里全部密文字段用旧钥解出、
+ * 以机器绑定钥重加密落盘，然后删除 .secret。失败则保留 .secret，
+ * decryptKey 仍以旧钥兜底，功能不中断。
+ */
+function migrateSecretKeyIfNeeded(): void {
+  if (!fs.existsSync(SECRET_FILE)) return;
+  try {
+    const legacyKey = readLegacySecretKey();
+    if (!legacyKey) {
+      fs.rmSync(SECRET_FILE, { force: true });
+      return;
+    }
+    if (fs.existsSync(CONFIG_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')) as {
+        version?: number;
+        profiles?: { encryptedApiKey?: string }[];
+        embedding?: { encryptedApiKey?: string };
+      };
+      if (raw?.version === 2) {
+        let changed = false;
+        const reencrypt = (cipher?: string): string | undefined => {
+          if (!cipher || !cipher.includes(':')) return cipher;
+          const plain = decryptWithKey(legacyKey, cipher);
+          if (!plain) return cipher; // 已是新钥密文或无法解：原样保留
+          changed = true;
+          return encryptWithKey(getSecretKey(), plain);
+        };
+        for (const p of raw.profiles || []) {
+          p.encryptedApiKey = reencrypt(p.encryptedApiKey);
+        }
+        if (raw.embedding) {
+          raw.embedding.encryptedApiKey = reencrypt(raw.embedding.encryptedApiKey);
+        }
+        if (changed) {
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2), 'utf-8');
+        }
+      }
+    }
+    fs.rmSync(SECRET_FILE, { force: true });
+    legacyKeyCache = null;
+    console.log('[config] 主密钥已升级为机器绑定派生，旧 .secret 已删除');
+  } catch (err) {
+    console.warn('[config] .secret 密钥迁移失败（保留旧文件，运行时旧钥兜底）:', err);
   }
 }
 
@@ -83,26 +231,84 @@ function ensureDirectories() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!fs.existsSync(SECRET_FILE)) {
-    const randomSecret = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(SECRET_FILE, randomSecret, 'utf-8');
+  hardenFilePermissions(DATA_DIR, true);
+  migrateSecretKeyIfNeeded();
+  migrateCipherToGcmIfNeeded();
+}
+
+/**
+ * 收紧文件/目录权限（安全加固 P1）：POSIX chmod 600/700；Windows 用 icacls
+ * 移除继承并仅保留当前用户完全控制。失败静默（尽力而为，不阻塞启动）。
+ * @param p 目标路径
+ * @param isDir 目录=true（POSIX 700 / Windows 加 (OI)(CI)），文件=false（POSIX 600）
+ */
+export function hardenFilePermissions(p: string, isDir: boolean): void {
+  try {
+    if (process.platform === 'win32') {
+      const user = process.env.USERNAME || process.env.USER || '当前用户';
+      const suffix = isDir ? '(OI)(CI)F' : 'F';
+      execSync(`icacls "${p}" /inheritance:r /grant:r "${user}:${suffix}"`, {
+        stdio: 'ignore',
+      });
+    } else {
+      fs.chmodSync(p, isDir ? 0o700 : 0o600);
+    }
+  } catch {
+    /* 权限收紧失败不阻塞 */
   }
 }
 
-function getSecretKey(): Buffer {
-  ensureDirectories();
-  const hex = fs.readFileSync(SECRET_FILE, 'utf-8').trim();
-  return Buffer.from(hex, 'hex');
+/**
+ * 一次性升级（安全审计 P3-1）：把配置里仍是旧版 CBC 格式（无 `gcm:` 前缀）的
+ * 密文用当前主密钥解出并以 GCM 重加密落盘。失败保留原密文（解密兼容读兜底）。
+ */
+function migrateCipherToGcmIfNeeded(): void {
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')) as {
+      version?: number;
+      profiles?: { encryptedApiKey?: string }[];
+      embedding?: { encryptedApiKey?: string };
+    };
+    if (raw?.version !== 2) return;
+    let changed = false;
+    const upgrade = (cipher?: string): string | undefined => {
+      if (!cipher || cipher.startsWith('gcm:')) return cipher;
+      const plain = decryptWithKey(getSecretKey(), cipher);
+      if (!plain) return cipher; // 异机/损坏：无法迁移，解密时自然拒绝
+      changed = true;
+      return encryptWithKey(getSecretKey(), plain);
+    };
+    for (const p of raw.profiles || []) {
+      p.encryptedApiKey = upgrade(p.encryptedApiKey);
+    }
+    if (raw.embedding) {
+      raw.embedding.encryptedApiKey = upgrade(raw.embedding.encryptedApiKey);
+    }
+    if (changed) {
+      fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2), 'utf-8');
+      console.log('[config] API Key 密文已升级为 aes-256-gcm（带认证标签）');
+    }
+  } catch (err) {
+    console.warn('[config] CBC→GCM 迁移跳过（解密兼容读兜底）:', err);
+  }
+}
+
+function encryptWithKey(key: Buffer, plainText: string): string {
+  // v2：aes-256-gcm（带认证标签，防密文篡改）——旧 CBC 密文由启动迁移统一升级
+  return encryptWithKeyGcm(key, plainText);
+}
+
+function decryptWithKey(key: Buffer, cipherTextWithIv: string): string {
+  // 自动格式：gcm: 前缀 → GCM；否则按旧版 CBC 兼容读（迁移兜底）
+  return decryptWithKeyAuto(key, cipherTextWithIv);
 }
 
 export function encryptKey(plainText: string): string {
   if (!plainText) return '';
   try {
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', getSecretKey(), iv);
-    let encrypted = cipher.update(plainText, 'utf-8', 'hex');
-    encrypted += cipher.final('hex');
-    return `${iv.toString('hex')}:${encrypted}`;
+    ensureDirectories();
+    return encryptWithKey(getSecretKey(), plainText);
   } catch (err) {
     console.error('Failed to encrypt key:', err);
     return '';
@@ -112,12 +318,12 @@ export function encryptKey(plainText: string): string {
 export function decryptKey(cipherTextWithIv?: string): string {
   if (!cipherTextWithIv || !cipherTextWithIv.includes(':')) return '';
   try {
-    const [ivHex, encryptedHex] = cipherTextWithIv.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-cbc', getSecretKey(), iv);
-    let decrypted = decipher.update(encryptedHex, 'hex', 'utf-8');
-    decrypted += decipher.final('utf-8');
-    return decrypted;
+    ensureDirectories();
+    const byMaster = decryptWithKey(getSecretKey(), cipherTextWithIv);
+    if (byMaster) return byMaster;
+    // 迁移失败遗留的旧密文：以旧 .secret 钥兜底
+    const legacy = readLegacySecretKey();
+    return legacy ? decryptWithKey(legacy, cipherTextWithIv) : '';
   } catch (err) {
     console.error('Failed to decrypt key:', err);
     return '';
@@ -242,6 +448,37 @@ function getActiveProfile(cfg?: ConfigFileV2): LLMProfile {
   );
 }
 
+/**
+ * 安全加固 P0：更换 baseURL 到不同 origin 且未提供新 key 时，不再沿用旧加密密钥
+ * （防止把已存 key 发往攻击者可控的 baseURL）。origin 比较忽略路径差异（/v1 等）。
+ */
+function shouldKeepExistingKey(
+  existingBaseURL: string,
+  nextBaseURL: string,
+  incomingKey?: string
+): boolean {
+  const key = (incomingKey || '').trim();
+  if (key && !key.startsWith('sk-****')) return true; // 显式提供新 key → 用新的
+  if (!nextBaseURL.trim()) return true; // baseURL 未变
+  if (!existingBaseURL.trim()) return false; // 之前无 baseURL → 无旧 key 可沿用
+  return sameBaseUrlOrigin(existingBaseURL, nextBaseURL);
+}
+
+/** 服务端模型白名单：当前所有配置档的 modelName（供 /api/llm/generate 校验 model） */
+export function resolveAllowedModels(): string[] {
+  const file = loadConfigFile();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of file.profiles) {
+    const m = (p.modelName || '').trim();
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
 /** 当前启用 LLM（callLLMService 等使用） */
 export function getStoredConfig(): LLMServerConfig {
   const file = loadConfigFile();
@@ -264,6 +501,9 @@ export function saveStoredConfig(
 ): LLMServerConfig {
   const file = loadConfigFile();
   const active = getActiveProfile(file);
+  if (newConfig.baseURL && newConfig.baseURL.trim()) {
+    assertSafeBaseUrl(newConfig.baseURL);
+  }
   const updated: LLMProfile = {
     ...active,
     provider: (newConfig.provider as LLMProvider) || active.provider,
@@ -277,8 +517,11 @@ export function saveStoredConfig(
   };
   if (newConfig.apiKey && !newConfig.apiKey.startsWith('sk-****')) {
     updated.encryptedApiKey = encryptKey(newConfig.apiKey);
-  } else {
+  } else if (shouldKeepExistingKey(active.baseURL, updated.baseURL, newConfig.apiKey)) {
     updated.encryptedApiKey = active.encryptedApiKey;
+  } else {
+    // 安全加固 P0：更换 baseURL 到不同 origin 且未提供新 key → 清空密钥，防旧 key 外泄
+    updated.encryptedApiKey = undefined;
   }
 
   file.profiles = file.profiles.map((p) => (p.id === active.id ? updated : p));
@@ -334,6 +577,9 @@ export function upsertProfile(input: {
   activate?: boolean;
 }): ReturnType<typeof listProfilesPublic> {
   const file = loadConfigFile();
+  if (input.baseURL && input.baseURL.trim()) {
+    assertSafeBaseUrl(input.baseURL);
+  }
   const existing = input.id
     ? file.profiles.find((p) => p.id === input.id)
     : undefined;
@@ -352,6 +598,9 @@ export function upsertProfile(input: {
     };
     if (input.apiKey && !input.apiKey.startsWith('sk-****')) {
       next.encryptedApiKey = encryptKey(input.apiKey);
+    } else if (!shouldKeepExistingKey(existing.baseURL, next.baseURL, input.apiKey)) {
+      // 安全加固 P0：更换 baseURL 到不同 origin 且未提供新 key → 清空密钥，防旧 key 外泄
+      next.encryptedApiKey = undefined;
     }
     file.profiles = file.profiles.map((p) => (p.id === existing.id ? next : p));
     if (input.activate) file.activeProfileId = existing.id;
@@ -448,6 +697,9 @@ export function saveEmbeddingConfig(input: {
   apiKey?: string;
 }): ReturnType<typeof getEmbeddingConfigPublic> {
   const file = loadConfigFile();
+  if (input.baseURL && input.baseURL.trim()) {
+    assertSafeBaseUrl(input.baseURL);
+  }
   const emb = { ...defaultEmbedding(), ...(file.embedding || {}) };
   if (input.enabled !== undefined) emb.enabled = !!input.enabled;
   if (input.useSameAsLlm !== undefined) emb.useSameAsLlm = !!input.useSameAsLlm;
@@ -494,13 +746,16 @@ export async function createEmbeddings(
 ): Promise<{ vectors: number[][]; model: string; dimensions: number }> {
   const cred = resolveEmbeddingCredentials();
   const baseURL = (options?.baseURL?.trim() || cred.baseURL || '').trim();
-  let apiKey = options?.apiKey?.trim() || '';
-  if (!apiKey || apiKey.startsWith('sk-****')) {
-    apiKey = cred.apiKey;
-  }
+  if (!baseURL) throw new Error('Embedding Base URL 为空');
+  assertSafeBaseUrl(baseURL);
+  const apiKey = resolveRequestApiKey({
+    requestedBaseURL: options?.baseURL,
+    storedBaseURL: cred.baseURL,
+    requestedApiKey: options?.apiKey,
+    storedApiKey: cred.apiKey,
+  });
   const model = options?.modelName || cred.modelName;
 
-  if (!baseURL) throw new Error('Embedding Base URL 为空');
   if (!apiKey) throw new Error('Embedding API Key 未配置');
   if (!texts.length) throw new Error('texts 为空');
 
@@ -524,7 +779,9 @@ export async function createEmbeddings(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_UPSTREAM_TIMEOUT_MS),
   });
+  assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Embedding 失败 [${response.status}]: ${text.slice(0, 400)}`);
@@ -617,24 +874,26 @@ export async function listLLMModels(options?: {
   if (!baseURL) {
     throw new Error('请先填写 API Base URL');
   }
+  assertSafeBaseUrl(baseURL);
 
-  let apiKey = '';
-  const rawKey = options?.apiKey?.trim() || '';
-  if (rawKey && !rawKey.startsWith('sk-****')) {
-    apiKey = rawKey;
-  } else {
-    apiKey = decryptKey(profile.encryptedApiKey);
-  }
+  const apiKey = resolveRequestApiKey({
+    requestedBaseURL: options?.baseURL,
+    storedBaseURL: profile.baseURL,
+    requestedApiKey: options?.apiKey,
+    storedApiKey: decryptKey(profile.encryptedApiKey),
+  });
 
   if (!apiKey) {
     throw new Error('未配置 API Key：请先填写密钥并保存，或在刷新前粘贴有效 Key');
   }
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
-    Accept: 'application/json',
-    ...profile.customHeaders,
-  };
+  const headers: Record<string, string> = buildSafeHeaders(
+    {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    },
+    profile.customHeaders
+  );
 
   const endpoints = resolveModelsEndpoints(baseURL);
   let lastError = '';
@@ -644,7 +903,9 @@ export async function listLLMModels(options?: {
       const response = await fetch(endpoint, {
         method: 'GET',
         headers,
+        signal: AbortSignal.timeout(30_000),
       });
+      assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
       const text = await response.text();
       if (!response.ok) {
         lastError = `[${response.status}] ${text.slice(0, 400)}`;
@@ -715,17 +976,64 @@ export async function listLLMModels(options?: {
   );
 }
 
+/**
+ * 输出 token 上限（字数达标的关键之一）：不传时由服务商/中转默认值决定，
+ * 常见 4096 token ≈ 2000+ 中文字即被截断——目标 3000 字的章必然写不完。
+ * 默认 8192（主流 OpenAI 兼容端安全值），可用环境变量 NOVEL_LLM_MAX_TOKENS 覆盖。
+ */
+const DEFAULT_LLM_MAX_TOKENS = Number(process.env.NOVEL_LLM_MAX_TOKENS) > 0
+  ? Number(process.env.NOVEL_LLM_MAX_TOKENS)
+  : 8192;
+
+/**
+ * 上游请求硬超时（毫秒）：此前三处上游 fetch 均无超时——上游挂死时
+ * HTTP 响应永不结束，连接与内存持续累积；前端 120s 超时放弃后后端仍完整跑完并全额计费。
+ * 默认 10 分钟（长文流式生成 + 多轮补写的安全上限），NOVEL_LLM_TIMEOUT_MS 可调。
+ */
+const LLM_UPSTREAM_TIMEOUT_MS = Number(process.env.NOVEL_LLM_TIMEOUT_MS) > 0
+  ? Number(process.env.NOVEL_LLM_TIMEOUT_MS)
+  : 600_000;
+
 export async function callLLMService(options: {
   messages: { role: string; content: string }[];
   temperature?: number;
   response_format?: { type: 'json_object' | 'text' };
   stream?: boolean;
   onChunk?: (chunk: string) => void;
+  /** 流结束回调：finish_reason=length 表示被 max_tokens 截断（上游可见） */
+  onFinish?: (info: { finishReason?: string }) => void;
   /** R3 收尾：请求级模型覆盖（未传则用激活配置档的 modelName） */
   model?: string;
+  /**
+   * 按角色路由：命中已保存配置档 → 整体切换到该档
+   * （baseURL / 解密 Key / modelName / 温度 / 自定义头 / provider）。
+   * 未传、档不存在时回退激活档——与不传 profileId 完全等价。
+   */
+  profileId?: string;
+  maxTokens?: number;
+  /** 客户端断连/取消信号：中止后停止向上游拉流，避免无人消费还全额计费 */
+  signal?: AbortSignal;
 }): Promise<string> {
   const config = getStoredConfig();
-  const apiKey = decryptKey(config.encryptedApiKey);
+
+  // 按角色路由：请求级 profileId 命中已保存档时，用该档的完整凭据发起上游请求
+  let effectiveConfig = config;
+  if (options.profileId) {
+    const routed = loadConfigFile().profiles.find((p) => p.id === options.profileId);
+    if (routed) {
+      effectiveConfig = {
+        provider: routed.provider,
+        baseURL: routed.baseURL,
+        modelName: routed.modelName,
+        temperature: routed.temperature,
+        encryptedApiKey: routed.encryptedApiKey,
+        customHeaders: routed.customHeaders,
+        activeProfileId: routed.id,
+        activeProfileName: routed.name,
+      };
+    }
+  }
+  const apiKey = decryptKey(effectiveConfig.encryptedApiKey);
 
   if (!apiKey) {
     throw new Error(
@@ -733,7 +1041,8 @@ export async function callLLMService(options: {
     );
   }
 
-  let baseURL = (config.baseURL || 'https://api.openai.com').replace(/\/+$/, '');
+  let baseURL = (effectiveConfig.baseURL || 'https://api.openai.com').replace(/\/+$/, '');
+  assertSafeBaseUrl(baseURL);
   let endpoint = `${baseURL}/v1/chat/completions`;
   if (baseURL.endsWith('/v1/chat/completions') || baseURL.endsWith('/chat/completions')) {
     endpoint = baseURL;
@@ -742,36 +1051,81 @@ export async function callLLMService(options: {
   }
 
   const payload: any = {
-    model: options.model?.trim() || config.modelName || 'deepseek-chat',
+    model: options.model?.trim() || effectiveConfig.modelName || 'deepseek-chat',
     messages: options.messages,
     temperature:
-      options.temperature !== undefined ? options.temperature : config.temperature,
+      options.temperature !== undefined ? options.temperature : effectiveConfig.temperature,
     stream: !!options.stream,
+    // 字数达标关键：显式给输出上限，避免中转/默认 4096 截断
+    max_tokens: options.maxTokens ?? DEFAULT_LLM_MAX_TOKENS,
   };
 
-  if (options.response_format && (config.provider === 'openai' || config.provider === 'deepseek')) {
-    if (config.provider === 'openai' && (config.modelName || '').includes('gpt-4')) {
+  if (options.response_format && (effectiveConfig.provider === 'openai' || effectiveConfig.provider === 'deepseek')) {
+    if (effectiveConfig.provider === 'openai' && (effectiveConfig.modelName || '').includes('gpt-4')) {
       payload.response_format = options.response_format;
-    } else if (config.provider === 'deepseek' && config.modelName === 'deepseek-chat') {
+    } else if (effectiveConfig.provider === 'deepseek' && effectiveConfig.modelName === 'deepseek-chat') {
       payload.response_format = { type: 'json_object' };
     }
   }
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-    ...config.customHeaders,
-  };
+  const headers: Record<string, string> = buildSafeHeaders(
+    {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    effectiveConfig.customHeaders
+  );
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
+  /**
+   * 上游请求（带共享池耐心重试）：429/502/503/504 属「稍后重试可解」——
+   * OpenRouter 类共享池限流、网关抖动。退避 2s/8s/20s ±抖动，最多 4 次尝试。
+   * 客户端已断开（options.signal aborted）绝不重试；一旦进入流式消费阶段
+   * （已有 onChunk 发出）也不重试，避免内容重复。
+   */
+  let response!: Response;
+  const maxAttempts = 4;
+  for (let attempt = 1; ; attempt += 1) {
+    if (options.signal?.aborted) {
+      throw new Error('客户端已断开，取消上游请求');
+    }
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        // 上游硬超时（防挂死连接累积）+ 客户端断连中止（防白烧计费）
+        signal: AbortSignal.any([
+          AbortSignal.timeout(LLM_UPSTREAM_TIMEOUT_MS),
+          ...(options.signal ? [options.signal] : []),
+        ]),
+      });
+    } catch (err: any) {
+      // 客户端主动断开：直接上抛；其余网络异常按可重试处理
+      if (options.signal?.aborted) throw err;
+      if (attempt >= maxAttempts) throw err;
+      const delay = [2000, 8000, 20000][attempt - 1] ?? 8000;
+      console.warn(
+        `[LLM] 上游网络异常（第${attempt}/${maxAttempts}次）: ${err?.message || err} · ${delay}ms 后重试`
+      );
+      await new Promise((r) => setTimeout(r, delay));
+      continue;
+    }
+    // 重定向复检（P3-2）：在重试环外抛出，安全违规绝不重试盲打
+    assertSafeUrl(response.url || endpoint);
 
-  if (!response.ok) {
+    if (response.ok) break;
+
     const errText = await response.text();
-    throw new Error(`LLM API 请求失败 [${response.status}]: ${errText}`);
+    const retryable = [429, 502, 503, 504].includes(response.status);
+    if (!retryable || attempt >= maxAttempts) {
+      throw new Error(`LLM API 请求失败 [${response.status}]: ${errText}`);
+    }
+    const delay = [2000, 8000, 20000][attempt - 1] ?? 8000;
+    console.warn(
+      `[LLM] 上游 ${response.status}（第${attempt}/${maxAttempts}次）· ${delay}ms 后重试` +
+        `: ${errText.slice(0, 160)}`
+    );
+    await new Promise((r) => setTimeout(r, delay));
   }
 
   if (options.stream && response.body) {
@@ -779,6 +1133,10 @@ export async function callLLMService(options: {
     const decoder = new TextDecoder('utf-8');
     let fullContent = '';
     let buffer = '';
+    let finishReason: string | undefined;
+    // 调试口（NOVEL_DEBUG_SSE=1）：抓原始 SSE 帧样本——定位「finish=length 但 0 字符」类问题
+    const debugSse = process.env.NOVEL_DEBUG_SSE === '1';
+    const rawSamples: string[] = [];
 
     while (true) {
       const { done, value } = await reader.read();
@@ -791,10 +1149,14 @@ export async function callLLMService(options: {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith('data: ')) continue;
         const dataStr = trimmed.slice(6).trim();
+        if (debugSse && rawSamples.length < 8) rawSamples.push(dataStr.slice(0, 300));
         if (dataStr === '[DONE]') continue;
         try {
           const parsed = JSON.parse(dataStr);
           const chunk = parsed.choices?.[0]?.delta?.content || '';
+          if (parsed.choices?.[0]?.finish_reason) {
+            finishReason = parsed.choices[0].finish_reason;
+          }
           if (chunk) {
             fullContent += chunk;
             if (options.onChunk) {
@@ -806,9 +1168,43 @@ export async function callLLMService(options: {
         }
       }
     }
+    if (debugSse) {
+      console.log(
+        `[SSE-DEBUG] model=${payload.model} finish=${finishReason} chars=${fullContent.length} 原始帧样本:\n` +
+          rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')
+      );
+    }
+    // 异常守卫：预算耗尽（length）却没有一个正文字符——典型于推理模型把
+    // 输出预算全部花在思考上、或中转站上游异常路由。必须显式失败，
+    // 让调用方走降级链（保守稿），绝不把「空成功」交给管线当正常稿。
+    if (finishReason === 'length' && !fullContent.trim()) {
+      console.error(
+        `[LLM] 异常：finish=length 但正文 0 字符（model=${payload.model}）。` +
+          '多为推理模型思考烧尽输出预算或中转异常；换非推理模型 / 调大 NOVEL_LLM_MAX_TOKENS 可解。' +
+          (rawSamples.length
+            ? `原始帧样本:\n${rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')}`
+            : '')
+      );
+      throw new Error(
+        '上游返回截断信号但正文为空（疑似推理模型思考烧尽输出预算，或中转站异常）——' +
+          '请换非推理模型（如 glm-5 / kimi-k2.5），或调大 NOVEL_LLM_MAX_TOKENS 后重试。'
+      );
+    }
+    if (finishReason === 'length') {
+      console.warn(
+        `[LLM] 输出被 max_tokens 截断（finish=length，产出 ${fullContent.length} 字符）。` +
+          `若目标字数仍不足：换更长上限的模型，或设置环境变量 NOVEL_LLM_MAX_TOKENS 调大。`
+      );
+    }
+    options.onFinish?.({ finishReason });
     return fullContent;
   } else {
     const data = (await response.json()) as any;
+    const finishReason: string | undefined = data.choices?.[0]?.finish_reason;
+    if (finishReason === 'length') {
+      console.warn(`[LLM] 输出被 max_tokens 截断（finish=length）。`);
+    }
+    options.onFinish?.({ finishReason });
     return data.choices?.[0]?.message?.content || '';
   }
 }

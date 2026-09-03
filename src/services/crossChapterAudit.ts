@@ -4,7 +4,8 @@ import type {
   CrossChapterAuditReport,
   CrossChapterIssue,
 } from '../types/novel';
-import { generateJSON } from './llmClient';
+import { proseWords } from './proseWords';
+import { generateJSON, resolveRoleRouteAsync } from './llmClient';
 import { listActiveFacts, listActiveThreads } from './storyMemory';
 
 function sortChapters(chapters: Chapter[]): Chapter[] {
@@ -131,7 +132,7 @@ export function runHeuristicCrossAudit(
       end &&
       protag.currentLocation.length >= 2 &&
       !end.includes(protag.currentLocation) &&
-      (last.content || '').length > 200
+      proseWords(last.content) > 200
     ) {
       // 不强制报错，仅提示可能未回写
       issues.push({
@@ -339,6 +340,11 @@ ${chapterBrief || '无章节'}
       },
     ];
 
+    // 角色路由（默认关闭 → undefined = 跟随激活档，行为与从前一致）
+    const route = await resolveRoleRouteAsync(
+      project.styleConfig?.llmRoleRouting,
+      'crossAudit'
+    );
     const res = await generateJSON<{
       score?: number;
       summary?: string;
@@ -350,7 +356,11 @@ ${chapterBrief || '无章节'}
         chapterNumbers?: number[];
         suggestion?: string;
       }[];
-    }>(messages, 0.4);
+    }>(
+      messages,
+      0.4,
+      route ? { profileId: route.profileId, model: route.modelName } : undefined
+    );
 
     const llmIssues: CrossChapterIssue[] = (res.issues || [])
       .map((i, idx): CrossChapterIssue => {

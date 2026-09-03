@@ -1,5 +1,5 @@
 /**
- * 写前记忆检索（InkOS 强项的轻量移植）：
+ * 写前记忆检索：
  * - 按本章意图/梗概/角色名做词项相关筛选（非全量最近 N）
  * - 时序事实：validFrom / validUntil
  * - 伏笔债务：静默过久强制提示推进/回收/延期
@@ -30,6 +30,7 @@ import { factsLinkedToCharacters, inferFactSubject } from './subjectIndex';
 import {
   formatRelatedChaptersForPrompt,
   semanticBoostMap,
+  type SemanticBoostMaps,
 } from './semanticIndex';
 import { formatEntitiesForPrompt } from './entityState';
 
@@ -51,6 +52,12 @@ export interface MemoryQueryInput {
   };
   /** 关闭语义加持（默认开） */
   disableSemantic?: boolean;
+  /**
+   * 预计算的语义打分（由 embeddingIndex.semanticBoostMapAsync 产出）。
+   * 提供（且 disableSemantic 未关）时内部不再跑本地 TF-IDF——写章主链路
+   * 用真·向量结果，同步调用方（意图生成/写前检查）不传则维持本地检索。
+   */
+  semantic?: SemanticBoostMaps | null;
 }
 
 export interface ScoredFact {
@@ -212,6 +219,24 @@ function scoreTextMatch(text: string, terms: string[]): { score: number; hits: s
 /**
  * 核心：相关记忆检索 + 债务伏笔 + 快照。
  */
+/** 构造语义检索 query 文本（标题 + 梗概 + 钩子 + mustDo + 检索词） */
+export function buildMemoryQueryBlob(input: MemoryQueryInput): string {
+  const terms = extractMemoryQueryTerms({
+    chapter: input.chapter,
+    characters: input.characters,
+    intent: input.chapter.intent,
+  });
+  return [
+    input.chapter.title,
+    input.chapter.summary,
+    input.chapter.intent?.endingHook,
+    ...(input.chapter.intent?.mustDo || []),
+    ...terms,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function retrieveMemoryForChapter(input: MemoryQueryInput): MemoryRetrievalResult {
   const chapterNumber = input.chapterNumber ?? input.chapter.number;
   const budget = longformInjectionBudget(chapterNumber);
@@ -227,20 +252,13 @@ export function retrieveMemoryForChapter(input: MemoryQueryInput): MemoryRetriev
     intent: input.chapter.intent,
   });
 
-  const queryBlob = [
-    input.chapter.title,
-    input.chapter.summary,
-    input.chapter.intent?.endingHook,
-    ...(input.chapter.intent?.mustDo || []),
-    ...terms,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const queryBlob = buildMemoryQueryBlob(input);
 
   const semantic =
     input.disableSemantic === true
       ? null
-      : semanticBoostMap(queryBlob, {
+      : input.semantic ??
+        semanticBoostMap(queryBlob, {
           memory,
           chapters: input.allChapters || [],
           chapterNumber,

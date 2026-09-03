@@ -11,7 +11,7 @@ import {
   MIN_GREEN_VERIFICATION_SCORE,
 } from '../services/aiEngine';
 import {
-  runChapterPipeline as runInkosStyleEngine,
+  runChapterPipeline as runEnginePipeline,
   type ChapterPipelineResult as EngineChapterResult,
   type EngineProgress,
   type EngineViolation,
@@ -46,7 +46,11 @@ import {
   syncLedgerEntitiesToMemory,
 } from '../services/factLedger';
 import { applyAiTasteHitsAsRevisionTodos } from '../services/aiTasteScan';
-import { retrieveMemoryForChapter } from '../services/memoryRetrieval';
+import { pruneStaleAutoTodos } from '../services/revisionTodos';
+import { fingerprintProse } from '../services/auditFreshness';
+import { retrieveMemoryForChapterAsync } from '../services/embeddingIndex';
+import { scheduleAutoBackup } from '../services/autoBackup';
+import { resolveChapterWordTarget, proseWords } from '../services/proseWords';
 import { consolidateMemoryAfterChapter } from '../services/longformMemory';
 import {
   buildFallbackChapterIntent,
@@ -113,7 +117,12 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
   const runChapterPipeline = useCallback(
     async (
       chapterId: string,
-      options?: { force?: boolean; writeMode?: AutoPilotWriteMode }
+      options?: {
+        force?: boolean;
+        writeMode?: AutoPilotWriteMode;
+        /** 用户中止信号：贯通到引擎与全部 LLM 调用 */
+        signal?: AbortSignal;
+      }
     ): Promise<ChapterPipelineResult> => {
       const writeMode: AutoPilotWriteMode = options?.writeMode || 'until_green';
       const projectAtStart = projectRef.current;
@@ -211,14 +220,15 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
       const activeSets = allSettings.filter((s) =>
         liveChapter.involvedSettingIds?.includes(s.id)
       );
-      // 写前记忆检索（相关事实 + 伏笔债务 + 快照，InkOS 风格）
+      // 写前记忆检索（相关事实 + 伏笔债务 + 快照）
       let workingChapter = liveChapter;
-      let memoryRetrieval = retrieveMemoryForChapter({
+      let memoryRetrieval = await retrieveMemoryForChapterAsync({
         chapter: workingChapter,
         memory: liveProject.memory,
         characters: allCharacters,
         allChapters,
         chapterNumber: workingChapter.number,
+        projectId: liveProject.id,
       });
       let storyMemoryBlock = formatStoryMemoryForPrompt(
         liveProject.memory,
@@ -230,11 +240,36 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
       );
 
       let streamBuffer = '';
+      // 流式 UI 节流（性能）：LLM chunk 频率远高于人眼需要——120ms 合并
+      // 一次 setState（每 chunk 全项目 setState 会卡长书）；草稿备份自带 800ms 去抖不受影响
+      let lastStreamUiAt = 0;
+      let streamUiTimer: ReturnType<typeof setTimeout> | null = null;
+      let pendingStreamText: string | null = null;
+      const flushStreamUi = () => {
+        lastStreamUiAt = Date.now();
+        const text = pendingStreamText;
+        if (text == null) return;
+        patchChapterLocal(chapterId, {
+          content: text,
+          wordCount: proseWords(text),
+          status: '正文草稿',
+          locked: false,
+        });
+      };
       /** 流水线开始时正文字数，用于日更净增（中间 patch 不清空账本） */
       const pipelineStartWords = countContentWords(
         workingChapter.content,
         workingChapter.wordCount
       );
+      /** 测速：管线墙钟时间与生成速度（成功消息附带） */
+      const pipelineStartedAt = Date.now();
+      const formatTiming = (words: number): string => {
+        const sec = Math.max(1, Math.round((Date.now() - pipelineStartedAt) / 1000));
+        const perMin = Math.round((words / sec) * 60);
+        const dur =
+          sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60}秒` : `${sec}秒`;
+        return `⏱ 用时${dur} · 约${perMin}字/分`;
+      };
 
       try {
         // 写前意图：须在 try 内，避免 AP 只跑完大纲就因未捕获异常整段停机
@@ -258,6 +293,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               previousContext,
               storyMemory: liveProject.memory,
               previousContextPack: contextPack,
+              styleConfig: liveProject.styleConfig,
               onProgress: (msg) => {
                 if (ap && /待确认/.test(msg)) {
                   setStatusMessage(
@@ -284,12 +320,13 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
 
           if (nextIntent) {
             workingChapter = { ...workingChapter, intent: nextIntent };
-            memoryRetrieval = retrieveMemoryForChapter({
+            memoryRetrieval = await retrieveMemoryForChapterAsync({
               chapter: workingChapter,
               memory: projectRef.current?.memory || liveProject.memory,
               characters: allCharacters,
               allChapters: projectRef.current?.chapters || allChapters,
               chapterNumber: workingChapter.number,
+              projectId: (projectRef.current || liveProject).id,
             });
             storyMemoryBlock = formatStoryMemoryForPrompt(
               projectRef.current?.memory || liveProject.memory,
@@ -342,12 +379,13 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
         }
 
         // 意图已确认但上面未重检索时，用当前 working 再检一次保证一致
-        memoryRetrieval = retrieveMemoryForChapter({
+        memoryRetrieval = await retrieveMemoryForChapterAsync({
           chapter: workingChapter,
           memory: projectRef.current?.memory || liveProject.memory,
           characters: allCharacters,
           allChapters: projectRef.current?.chapters || allChapters,
           chapterNumber: workingChapter.number,
+          projectId: (projectRef.current || liveProject).id,
         });
         storyMemoryBlock = formatStoryMemoryForPrompt(
           projectRef.current?.memory || liveProject.memory,
@@ -402,12 +440,9 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           .sort((a, b) => b.number - a.number)[0];
         const previousProse = prevChapterForEcho?.content || '';
 
-        const chapterWordTarget =
-          liveProject.config?.targetWordCountPerChapter ??
-          liveProject.config?.wordsPerChapter ??
-          null;
+        const chapterWordTarget = resolveChapterWordTarget(liveProject.config);
 
-        const engineResult: EngineChapterResult = await runInkosStyleEngine(
+        const engineResult: EngineChapterResult = await runEnginePipeline(
           {
             project: {
               ...liveProject,
@@ -426,6 +461,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
             targetWordCount: chapterWordTarget,
             writeMode,
             maxReviseRounds: 2,
+            signal: options?.signal,
           },
           {
             onProgress: ({ stage, message }: EngineProgress) => {
@@ -438,12 +474,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
             },
             onStreamProse: (text: string) => {
               streamBuffer = text;
-              patchChapterLocal(chapterId, {
-                content: text,
-                wordCount: text.replace(/\s+/g, '').length,
-                status: '正文草稿',
-                locked: false,
-              });
+              pendingStreamText = text;
               // 流式草稿去抖落盘：崩溃/刷新后可从 IndexedDB 恢复
               scheduleDraftBackup({
                 projectId: liveProject.id,
@@ -452,6 +483,16 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
                 chapterTitle: workingChapter.title,
                 content: text,
               });
+              // 120ms 节流合并 UI 更新（首个 chunk 立即上屏）
+              const now = Date.now();
+              if (now - lastStreamUiAt >= 120) {
+                flushStreamUi();
+              } else if (!streamUiTimer) {
+                streamUiTimer = setTimeout(() => {
+                  streamUiTimer = null;
+                  flushStreamUi();
+                }, 120);
+              }
             },
             onBeats: (b: PlotBeat[]) => {
               beats = b;
@@ -484,7 +525,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               ...workingChapter,
               ...(projectRef.current?.chapters.find((c) => c.id === chapterId) || {}),
               content: streamBuffer,
-              wordCount: streamBuffer.replace(/\s+/g, '').length,
+              wordCount: proseWords(streamBuffer),
               status: '正文草稿',
               locked: false,
               lockedAt: undefined,
@@ -529,7 +570,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               /* ignore */
             }
             setStatusMessage(
-              `📝 第${workingChapter.number}章草稿完成（引擎 draft_only）· ${draftChapter.wordCount} 字`
+              `📝 第${workingChapter.number}章草稿完成（引擎 draft_only）· ${draftChapter.wordCount} 字 · ${formatTiming(draftChapter.wordCount)}`
             );
             return {
               chapterId,
@@ -569,12 +610,31 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           ...liveChapter,
           ...(projectRef.current?.chapters.find((c) => c.id === chapterId) || {}),
         };
+        // P1 防跨运行堆积：本轮审校运行标识；先清理同章旧运行残留的 open 自动条目
+        // （旧运行的「字数不足」「综合分」「套话」等与当前正文无关，会误导人工与 AI 修复）。
+        // 手工条目（无 autoRunId）、已完成条目、跨章抽检等无运行标识来源不受影响。
+        const auditRunId = `audit-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 7)}`;
+        {
+          const pruned = pruneStaleAutoTodos(
+            chapterForTodos.revisionTodos || [],
+            auditRunId,
+            { includeLegacyAuto: true }
+          );
+          if (pruned.pruned > 0) {
+            chapterForTodos = {
+              ...chapterForTodos,
+              revisionTodos: pruned.todos,
+            };
+          }
+        }
         let hardTodosAdded = 0;
         if (!greenOk && auditLog.hardReview?.issues?.length) {
           const applied = applyHardIssuesAsRevisionTodos(
             chapterForTodos,
             auditLog.hardReview.issues,
-            { errorsOnly: true, max: 10 }
+            { errorsOnly: true, max: 10, autoRunId: auditRunId }
           );
           chapterForTodos = applied.chapter;
           hardTodosAdded = applied.added;
@@ -594,6 +654,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               tier: tasteTier,
               errorsOnly: tasteTier === 'light' || tasteTier === 'clean',
               max: 10,
+              autoRunId: auditRunId,
             }
           );
           chapterForTodos = tasteApplied.chapter;
@@ -626,6 +687,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
                   text: scoreTodoText.slice(0, 280),
                   status: 'open' as const,
                   createdAt: new Date().toISOString(),
+                  autoRunId: auditRunId,
                 },
                 ...existing,
               ].slice(0, 40),
@@ -648,6 +710,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               text: `[引擎·${v.rule}] ${v.description} → ${v.suggestion}`.slice(0, 280),
               status: 'open' as const,
               createdAt: new Date().toISOString(),
+              autoRunId: auditRunId,
             }))
             .filter(
               (t: { text: string }) =>
@@ -683,7 +746,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
         const finalChapter: Chapter = {
           ...chapterForTodos,
           content: polishedProse,
-          wordCount: polishedProse.replace(/\s+/g, '').length,
+          wordCount: proseWords(polishedProse),
           status: chapterStatus,
           locked: autoLocked,
           lockedAt,
@@ -691,6 +754,9 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           beats,
           memoryAudit: {
             ...auditLog,
+            // 审校版本锚：锚定「审的是哪版正文」——正文再被改动即判过期（isAuditStale）
+            auditedContentAt: fingerprintProse(polishedProse),
+            lastHardReviewAt: new Date().toISOString(),
             memoryInjectionSummary: memoryRetrieval.snapshot.preview,
             memoryDebtCount: memoryRetrieval.debtThreads.length,
             logicConflicts: [
@@ -816,6 +882,9 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           console.warn('章后快照失败:', snapErr);
         }
 
+        // 章末自动备份到磁盘（去抖 15s：连写多章合并一次，失败静默下次重试）
+        scheduleAutoBackup(() => projectRef.current);
+
         const score = auditLog.verificationScore ?? ruleScan.score;
         const digestN = consolidatedMemory.spanDigests?.length || 0;
         const megaN =
@@ -875,14 +944,18 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               ? ' · 已锁定'
               : '';
         const engineHint = ` · 引擎${engineResult.reviseRounds || 0}轮修`;
+        const finalWords = proseWords(polishedProse);
+        const timingHint = formatTiming(finalWords);
         setStatusMessage(
-          greenOk && writeMode === 'until_green'
-            ? `✅ 第${workingChapter.number}章完成 · ${hardLabel}/${styleLabel} · 综合${score}≥${MIN_GREEN_VERIFICATION_SCORE}${tasteHint}${modeHint}${engineHint}${memHint}`
-            : greenOk && writeMode === 'until_review'
-              ? `📋 第${workingChapter.number}章审校通过 · ${hardLabel}/${styleLabel} · 综合${score}≥${MIN_GREEN_VERIFICATION_SCORE}${tasteHint}${modeHint}${engineHint}${memHint}`
-              : scoreFail
-                ? `⚠️ 第${workingChapter.number}章不予通过 · 综合${score}<${MIN_GREEN_VERIFICATION_SCORE}需重写 · ${hardLabel}/${styleLabel} · 机检:${ruleScan.summary}${tasteHint}${recapHint}${todoHint}${engineHint}${memHint}`
-                : `⚠️ 第${workingChapter.number}章待人工 · ${hardLabel} · 机检:${ruleScan.summary} · ${score}${tasteHint}${recapHint}${scoreHint}${todoHint}${engineHint}${memHint}`
+          (
+            greenOk && writeMode === 'until_green'
+              ? `✅ 第${workingChapter.number}章完成 · ${hardLabel}/${styleLabel} · 综合${score}≥${MIN_GREEN_VERIFICATION_SCORE}${tasteHint}${modeHint}${engineHint}`
+              : greenOk && writeMode === 'until_review'
+                ? `📋 第${workingChapter.number}章审校通过 · ${hardLabel}/${styleLabel} · 综合${score}≥${MIN_GREEN_VERIFICATION_SCORE}${tasteHint}${modeHint}${engineHint}`
+                : scoreFail
+                  ? `⚠️ 第${workingChapter.number}章不予通过 · 综合${score}<${MIN_GREEN_VERIFICATION_SCORE}需重写 · ${hardLabel}/${styleLabel} · 机检:${ruleScan.summary}${tasteHint}${recapHint}${todoHint}${engineHint}`
+                  : `⚠️ 第${workingChapter.number}章待人工 · ${hardLabel} · 机检:${ruleScan.summary} · ${score}${tasteHint}${recapHint}${scoreHint}${todoHint}${engineHint}`
+          ) + `${memHint} · ${timingHint}`
         );
 
         return {
@@ -901,7 +974,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           '';
         patchChapterLocal(chapterId, {
           content: partialContent,
-          wordCount: partialContent.replace(/\s+/g, '').length,
+          wordCount: proseWords(partialContent),
           status: '正文草稿',
           locked: false,
           lastModified: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -913,7 +986,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
                 ? {
                     ...c,
                     content: partialContent,
-                    wordCount: partialContent.replace(/\s+/g, '').length,
+                    wordCount: proseWords(partialContent),
                     status: '正文草稿' as const,
                     locked: false,
                     contentUpdatedAt: new Date().toISOString(),

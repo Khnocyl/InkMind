@@ -1,4 +1,5 @@
 import { toLocalDateKey } from './writingActivity';
+import { proseWords } from './proseWords';
 
 /** 日更字数账本：YYYY-MM-DD → 当日净增字数（可负，若删文） */
 export type DailyWordLog = Record<string, number>;
@@ -73,8 +74,8 @@ export function evaluateDailyGoal(
   };
 }
 
-/** 正文字数（与 pipeline 一致） */
+/** 正文字数（日更账本契约：wordCount 字段 ≥0 即权威，含 0）——口径委托 proseWords */
 export function countContentWords(content: string | undefined, wordCount?: number): number {
   if (typeof wordCount === 'number' && wordCount >= 0) return wordCount;
-  return (content || '').replace(/\s+/g, '').length;
+  return proseWords(content);
 }

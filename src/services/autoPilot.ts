@@ -1,3 +1,4 @@
+import { contentWordsOrFallback } from './proseWords';
 import type { Chapter, StyleConfig } from '../types/novel';
 import { isChapterLocked, shouldAutoPilotSkip } from './chapterLock';
 
@@ -91,7 +92,7 @@ export function isChapterEffectivelyDone(ch: Chapter): boolean {
     return true;
   }
   if (ch.status === '待人工确认' || ch.status === '机检未通过') return true;
-  const words = ch.wordCount || (ch.content || '').replace(/\s+/g, '').length;
+  const words = contentWordsOrFallback(ch.content, ch.wordCount);
   return words >= 200 && !!ch.recap;
 }
 
@@ -103,7 +104,7 @@ export function isChapterWriteCandidate(ch: Chapter): boolean {
   if (ch.status === '待人工确认' || ch.status === '机检未通过') return false;
   const summary = (ch.summary || '').trim();
   if (summary.length < 8) return false;
-  const words = ch.wordCount || (ch.content || '').replace(/\s+/g, '').length;
+  const words = contentWordsOrFallback(ch.content, ch.wordCount);
   // 已有长正文且曾绿通：不自动重写
   if (words >= 200 && ch.status === '校验通过') return false;
   return true;

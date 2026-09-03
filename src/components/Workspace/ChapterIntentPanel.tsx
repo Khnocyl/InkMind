@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { Chapter, ChapterIntent } from '../../types/novel';
 import {
   confirmIntent,
@@ -34,7 +34,7 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
   onGenerate,
   onSaveIntent,
 }) => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const intent = normalizeChapterIntent(chapter.intent || emptyIntent());
   const confirmed = isIntentConfirmed(intent);
@@ -106,7 +106,7 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
         className="w-full flex items-center justify-between"
       >
         <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-          <Target size={14} className="text-orange-600" />
+          <Target size={14} className="text-[#111111]" />
           写前大纲确认
         </span>
         <span className="flex items-center gap-1.5">
@@ -127,8 +127,11 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
 
       {open && (
         <div className="space-y-2.5">
-          <p className="text-[10px] text-slate-500 leading-relaxed">
-            开写前先定：必须完成 / 禁止事项 / 章末钩子。确认后分镜与正文会严格执行。编辑字段会取消确认。
+          <p
+            className="text-[10px] text-slate-500 leading-relaxed"
+            title="确认后分镜与正文会严格执行；编辑任一字段会自动取消确认。"
+          >
+            开写前先定：必须完成 / 禁止事项 / 章末钩子。
           </p>
 
           {!confirmed && missing.length > 0 && (

@@ -1,6 +1,5 @@
 /**
  * 「不是…而是/是…」否定铺垫翻转扫描
- * 移植自 oh-story story-deslop/scripts/check-ai-patterns.js
  * 只报告，不改写。
  */
 

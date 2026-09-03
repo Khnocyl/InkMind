@@ -6,6 +6,7 @@
  * - recap 质量门槛（绿通附加条件）
  */
 
+import { proseWords } from './proseWords';
 import type {
   Character,
   ChapterIntent,
@@ -79,7 +80,7 @@ export function runLocalFactGuard(input: {
 }): FactGuardResult {
   const prose = input.prose || '';
   const issues: FactGuardHit[] = [];
-  if (prose.replace(/\s+/g, '').length < 40) {
+  if (proseWords(prose) < 40) {
     return {
       passed: true,
       score: 100,

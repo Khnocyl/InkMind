@@ -1,0 +1,30 @@
+# 直接复用 node_modules 里已解压的 Electron 发行版，跳过 zip 下载/解压/重命名
+# （绕开 Windows Defender 对新解压 electron.exe 的实时扫描导致的 rename EPERM）
+electronDist: node_modules/electron/dist
+appId: com.inkmind.desktop
+productName: InkMind
+directories:
+  output: release-electron
+  buildResources: build
+# 服务端需要以真实文件路径读取 dist/ 与 userData，禁用 asar 避免 fs 边缘问题
+asar: false
+files:
+  - electron/main.cjs
+  - electron/preload.cjs
+  - build/electron/server.cjs
+  - build/icon.ico
+  - build/icon.png
+  - dist/**/*
+  - package.json
+win:
+  target:
+    - nsis
+  icon: build/icon.ico
+  artifactName: ${productName}-${version}-${os}-${arch}-Setup.${ext}
+nsis:
+  artifactName: ${productName}-${version}-${os}-${arch}-Setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: InkMind

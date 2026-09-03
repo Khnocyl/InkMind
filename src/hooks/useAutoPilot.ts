@@ -13,6 +13,7 @@ import {
   type ChapterPipelineResult,
 } from '../services/autoPilot';
 import { step0_AutoPlanNextChapter } from '../services/aiEngine';
+import { setActiveAbortSignal } from '../services/llmClient';
 import {
   runHeuristicCrossAudit,
 } from '../services/crossChapterAudit';
@@ -29,12 +30,18 @@ export interface UseAutoPilotDeps {
   generatingLockRef: MutableRefObject<boolean>;
   /** Auto-Pilot 运行态（与 useChapterPipeline 共享） */
   isAutoPilotingRef: MutableRefObject<boolean>;
+  /** 当前生成的 AbortController（三步 / AP 共用；App 持有） */
+  generationAbortRef: MutableRefObject<AbortController | null>;
   /** 组件级 styleConfig 回退（渲染层派生） */
   styleConfig: StyleConfig;
   /** 单章管线（来自 useChapterPipeline） */
   runChapterPipeline: (
     chapterId: string,
-    options?: { force?: boolean; writeMode?: AutoPilotWriteMode }
+    options?: {
+      force?: boolean;
+      writeMode?: AutoPilotWriteMode;
+      signal?: AbortSignal;
+    }
   ) => Promise<ChapterPipelineResult>;
   /** 落盘路径（来自 useProjectPersistence） */
   handleUpdateAndPersistProject: (
@@ -61,13 +68,16 @@ export interface UseAutoPilotDeps {
  * 周期抽检/完成）→ 收尾状态与跨章抽检提醒。
  *
  * autoPilotAbortRef 为 hook 私有（仅 stop/start 使用）；
- * isAutoPilotingRef 由 App 持有并共享给 useChapterPipeline。
+ * isAutoPilotingRef 由 App 持有并共享给 useChapterPipeline；
+ * generationAbortRef（App 持有）使「停止」即中断当前章的全部 LLM 调用，
+ * 已流式产出部分由管线失败路径保留为草稿。
  */
 export function useAutoPilot(deps: UseAutoPilotDeps) {
   const {
     projectRef,
     generatingLockRef,
     isAutoPilotingRef,
+    generationAbortRef,
     styleConfig,
     runChapterPipeline,
     handleUpdateAndPersistProject,
@@ -83,10 +93,13 @@ export function useAutoPilot(deps: UseAutoPilotDeps) {
   /** Auto-Pilot 用户中止 */
   const autoPilotAbortRef = useRef(false);
 
+  /** Auto-Pilot 用户中止：置标志（停下一章）+ 中止当前 in-flight 生成 */
   const handleStopAutoPilot = useCallback(() => {
     autoPilotAbortRef.current = true;
-    setStatusMessage('⏹ 正在停止 Auto-Pilot（当前章写完后停）...');
-  }, [setStatusMessage]);
+    // 立即中断当前章的全部 LLM 调用（管线在阶段边界收尾，已产出部分保留为草稿）
+    generationAbortRef.current?.abort();
+    setStatusMessage('⏹ 正在停止 Auto-Pilot（中断当前章生成，草稿保留）...');
+  }, [generationAbortRef, setStatusMessage]);
 
   const handleStartAutoPilot = useCallback(async () => {
     if (generatingLockRef.current || isGenerating || isAutoPiloting) return;
@@ -99,6 +112,10 @@ export function useAutoPilot(deps: UseAutoPilotDeps) {
     autoPilotAbortRef.current = false;
     isAutoPilotingRef.current = true;
     generatingLockRef.current = true;
+    // 循环级中止信号：覆盖管线内（逐章传入）与管线外调用（AP 补规划等）
+    const abortController = new AbortController();
+    generationAbortRef.current = abortController;
+    setActiveAbortSignal(abortController.signal);
     setIsAutoPiloting(true);
     setIsGenerating(true);
     setAutoPilotProgress({ done: 0, target: cfg.targetChapters });
@@ -172,7 +189,15 @@ export function useAutoPilot(deps: UseAutoPilotDeps) {
           `Auto-Pilot ${done + 1}/${cfg.targetChapters} · 执笔第 ${next.number} 章《${next.title}》...`
         );
 
-        const result = await runChapterPipeline(next.id, { writeMode: cfg.writeMode });
+        const result = await runChapterPipeline(next.id, {
+          writeMode: cfg.writeMode,
+          signal: abortController.signal,
+        });
+
+        if (abortController.signal.aborted && autoPilotAbortRef.current) {
+          stopReason = 'user_abort';
+          break;
+        }
 
         if (!result.ok) {
           stopReason = 'api_error';
@@ -291,6 +316,8 @@ export function useAutoPilot(deps: UseAutoPilotDeps) {
       autoPilotAbortRef.current = false;
       isAutoPilotingRef.current = false;
       generatingLockRef.current = false;
+      setActiveAbortSignal(null);
+      generationAbortRef.current = null;
       setIsAutoPiloting(false);
       setIsGenerating(false);
       setActiveStep(0);
@@ -299,6 +326,7 @@ export function useAutoPilot(deps: UseAutoPilotDeps) {
     projectRef,
     generatingLockRef,
     isAutoPilotingRef,
+    generationAbortRef,
     styleConfig,
     runChapterPipeline,
     handleUpdateAndPersistProject,

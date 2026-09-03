@@ -4,6 +4,7 @@
  * 生成一段结构完整、可读、非空的过渡正文，保证单章闭环在 API 全挂时仍能产出可用稿。
  * 纯函数、确定性输出（无随机），便于单测与重放。
  */
+import { proseWords } from './proseWords';
 import type { Character, PlotBeat, WorldSetting } from '../types/novel';
 
 export interface ConservativeProseInput {
@@ -196,7 +197,7 @@ export function buildConservativeProse(
   const prose = paragraphs.filter(Boolean).join('\n\n').trim();
   return {
     prose,
-    wordCount: prose.replace(/\s+/g, '').length,
+    wordCount: proseWords(prose),
     reason:
       'LLM 执笔接口连续失败，已生成本地保守稿（模板化、非 AI 生成）。请检查模型配置后重跑本章以获取正式稿。',
   };

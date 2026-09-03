@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { Chapter } from '../../types/novel';
 import { collectRevisionTodos } from '../../services/revisionTodos';
 import { isChapterLocked } from '../../services/chapterLock';
@@ -13,6 +13,8 @@ import {
   Wrench,
   Trash2,
   CheckCheck,
+  Square,
+  Zap,
 } from 'lucide-react';
 
 interface RevisionTodosPanelProps {
@@ -27,6 +29,12 @@ interface RevisionTodosPanelProps {
   onOpenForRewrite?: (chapterId: string, todoId?: string) => void;
   /** AI 修第一条（优先跨章 / 硬伤 / 去AI） */
   onFixFirst?: () => void;
+  /** 一键修全部：串行 AI 局部改写全书所有 open 待修 */
+  onFixAll?: () => void;
+  /** 停止一键修全部（软停 + 中断当前 in-flight LLM 调用） */
+  onStopFixAll?: () => void;
+  /** 一键修全部运行中（按钮切换为「停止」） */
+  fixAllRunning?: boolean;
   /** AI 修指定待修条目 */
   onAiFixTodo?: (chapterId: string, todoId: string) => void;
   /** 清空全书已完成待修 */
@@ -43,15 +51,19 @@ export const RevisionTodosPanel: React.FC<RevisionTodosPanelProps> = ({
   onJumpChapter,
   onOpenForRewrite,
   onFixFirst,
+  onFixAll,
+  onStopFixAll,
+  fixAllRunning = false,
   onAiFixTodo,
   onClearDone,
   onMarkAllDone,
   onToggleTodo,
   busy = false,
 }) => {
-  const [open, setOpen] = useState(true);
-  const [showDone, setShowDone] = useState(false);
+  // 渐进披露：默认收起成一行（避免右栏一进就占满一堆待修）
   const overview = useMemo(() => collectRevisionTodos(chapters), [chapters]);
+  const [open, setOpen] = useState(false);
+  const [showDone, setShowDone] = useState(false);
   const chapterById = useMemo(() => {
     const m = new Map<string, Chapter>();
     for (const c of chapters) m.set(c.id, c);
@@ -116,20 +128,47 @@ export const RevisionTodosPanel: React.FC<RevisionTodosPanelProps> = ({
           </div>
 
           {/* 批量 / 修第一处 */}
-          {(onFixFirst || onClearDone || onMarkAllDone) && (
+          {(onFixFirst || onFixAll || onClearDone || onMarkAllDone) && (
             <div className="flex flex-wrap gap-1.5">
               {onFixFirst && overview.openCount > 0 && (
                 <button
                   type="button"
                   disabled={busy}
                   onClick={onFixFirst}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-black text-white text-[10px] font-bold hover:bg-neutral-800 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-black text-white text-[11px] font-bold hover:bg-neutral-800 disabled:opacity-50"
                   title="AI 局部改写第一条优先待修（跨章/硬伤/去AI），成功后自动勾完成"
                 >
                   <Wrench size={11} />
                   AI修第一处
                 </button>
               )}
+              {onFixAll &&
+                (fixAllRunning ? (
+                  onStopFixAll && (
+                    <button
+                      type="button"
+                      onClick={onStopFixAll}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-rose-600 text-white text-[10px] font-bold hover:bg-rose-700"
+                      title="停止一键修全部：置软停标志并中断当前 AI 调用，已修成果保留"
+                    >
+                      <Square size={11} />
+                      ⏹ 停止
+                    </button>
+                  )
+                ) : (
+                  overview.openCount > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={onFixAll}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-indigo-600 text-white text-[10px] font-bold hover:bg-indigo-700 disabled:opacity-50"
+                      title="串行 AI 局部改写全书所有未完成待修（优先跨章/硬伤/去AI），带进度与失败容忍"
+                    >
+                      <Zap size={11} />
+                      ⚡ 一键修全部 ({overview.openCount})
+                    </button>
+                  )
+                ))}
               {onClearDone && overview.doneCount > 0 && (
                 <button
                   type="button"
@@ -147,7 +186,7 @@ export const RevisionTodosPanel: React.FC<RevisionTodosPanelProps> = ({
                   type="button"
                   disabled={busy}
                   onClick={onMarkAllDone}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-black bg-black text-white text-[10px] font-semibold hover:bg-neutral-800 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-black bg-black text-white text-[11px] font-bold hover:bg-neutral-800 disabled:opacity-50"
                   title="将全书未完成待修全部标为完成（不改正文）"
                 >
                   <CheckCheck size={11} />

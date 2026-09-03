@@ -1,17 +1,25 @@
 {
-  "name": "novel",
+  "name": "inkmind",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "AI 长篇小说创作工作台（本地优先）",
+  "author": "InkMind",
+  "license": "AGPL-3.0-or-later",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"vite\"",
     "server": "tsx watch --watch-path ./server ./server/index.ts",
     "client": "vite",
+    "start": "npm run build && node scripts/start-all.mjs",
+    "once": "npm run build && node scripts/start-all.mjs",
     "build": "tsc -b && vite build",
+    "build:exe": "npm run build && node scripts/build-exe.mjs",
+    "electron:dev": "node scripts/build-electron.mjs && electron .",
+    "electron:dist": "npm run build && node scripts/build-electron.mjs && electron-builder --win",
     "test": "vitest run",
-    "test:watch": "vitest",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "prepare": "node scripts/setup-hooks.mjs"
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -30,6 +38,8 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
+    "electron": "^44.1.1",
+    "electron-builder": "^26.15.3",
     "fake-indexeddb": "^6.2.5",
     "oxlint": "^1.71.0",
     "tailwindcss": "^4.3.3",

@@ -1,3 +1,4 @@
+import { contentWordsOrFallback } from './proseWords';
 import type { BookProject } from '../types/novel';
 import { initDB, STORE_META, STORE_SNAPSHOTS, saveProject } from './storage';
 import { sanitizeProjectForExport } from './projectTransfer';
@@ -97,7 +98,7 @@ export async function readSnapshotProject(
 
 function countWords(project: BookProject): number {
   return (project.chapters || []).reduce(
-    (sum, c) => sum + (c.wordCount || (c.content || '').replace(/\s+/g, '').length || 0),
+    (sum, c) => sum + (contentWordsOrFallback(c.content, c.wordCount) || 0),
     0
   );
 }

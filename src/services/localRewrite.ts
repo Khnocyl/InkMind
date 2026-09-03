@@ -37,6 +37,8 @@ export interface LocalRewriteContext {
   settings?: WorldSetting[];
   styleConfig?: StyleConfig | null;
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   /** 选区前后各取若干字作为语境 */
   surroundingBefore?: string;
   surroundingAfter?: string;
@@ -62,6 +64,7 @@ function buildContextBlock(ctx: LocalRewriteContext): string {
     profileMaxChars: 1000,
     fewShotMaxChars: 260,
     blacklistMax: 25,
+    bookGenre: ctx.bookGenre,
   });
   if (styleBlock) parts.push(styleBlock);
   if (ctx.surroundingBefore?.trim()) {

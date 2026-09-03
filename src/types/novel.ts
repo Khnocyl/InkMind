@@ -115,11 +115,41 @@ export type HardIssueType =
   | '人称混乱'
   | '其他硬伤';
 
+/** 硬伤指控的证据引文（防幻觉硬伤：引文必须逐字，供确定性核验） */
+export interface HardReviewEvidence {
+  /** 来源：memory=书级记忆 | intent=写前意图 | previous=前情 | chapter=本章其他位置 */
+  source?: 'memory' | 'intent' | 'previous' | 'chapter';
+  /** 逐字引文（禁止转述/概括/省略号拼接） */
+  quote?: string;
+  /** 可选：引用的事实/条目 ID */
+  ref?: string;
+}
+
+/** 引用核验结果（确定性代码产出，非 LLM 判断） */
+export interface HardIssueVerifyResult {
+  status:
+    | 'verified'
+    | 'quote-a-miss'
+    | 'evidence-b-miss'
+    | 'quote-b-miss'
+    | 'no-evidence'
+    | 'defense-refuted';
+  reasons: string[];
+}
+
 export interface HardReviewIssue {
   type: HardIssueType;
   severity: 'error' | 'warn';
   description: string;
   suggestion: string;
+  /** 指控位置证据（本章原文逐字摘录） */
+  evidenceA?: HardReviewEvidence;
+  /** 冲突依据证据（记忆/前情/意图原文逐字摘录） */
+  evidenceB?: HardReviewEvidence;
+  /** 引用核验结果：未通过核验的 error 已被降级为 warn，不参与硬伤计分 */
+  verify?: HardIssueVerifyResult;
+  /** 降级前的原始 severity（核验降级时保留原值供 UI 展示） */
+  originalSeverity?: 'error' | 'warn';
 }
 
 /** 阶段 A：硬伤审 */
@@ -141,6 +171,24 @@ export interface StyleReviewResult {
   removedSublimationsCount: number;
   polishedApplied: boolean;
   source?: 'llm' | 'fallback';
+}
+
+/** 推进度审：本章是否真的推动了故事（区别于一致性审校） */
+export interface ProgressionReviewResult {
+  /** 0–100；<60 视为弱推进 */
+  score: number;
+  passed: boolean;
+  summary: string;
+  /** 分镜完成情况（未写透的 beat 序号） */
+  unfinishedBeats: { order: number; reason: string }[];
+  /** 本章是否推进了主线/核心冲突 */
+  mainLineAdvanced: boolean;
+  /** 注水度 0–10（越高越水） */
+  wateriness: number;
+  /** 触达的伏笔/暗线（thread 文本片段） */
+  touchedThreads: string[];
+  suggestions: string[];
+  source: 'llm' | 'fallback';
 }
 
 export interface MemoryAuditLog {
@@ -188,6 +236,24 @@ export interface MemoryAuditLog {
   /** 硬伤是否阻断定稿 */
   hardBlocked?: boolean;
   /**
+   * 润色改动摘要（审计与润色分离）：润色稿相对送审稿的字数/句子增删；
+   * materiallyChanged=true 时已对润色稿复硬审，绿通以最终稿为准。
+   */
+  polishDiff?: {
+    beforeWords: number;
+    afterWords: number;
+    removedSentences: number;
+    addedSentences: number;
+    /** 字数变化 >8% 或删句 >5 视为重大改动（触发复硬审） */
+    materiallyChanged: boolean;
+    note?: string;
+  };
+  /** 推进度审：分镜完成度 + 主线推进 + 伏笔触达（弱推进压分待人工） */
+  progressionReview?: ProgressionReviewResult;
+  /** 推进度弱 → 阻断自动锁章（同 recap 弱的处置） */
+  progressionBlocked?: boolean;
+  progressionSummary?: string;
+  /**
    * recap 质量未达标时附加阻断自动锁章。
    * 仍可沉淀 recap，但 until_green 不因「机检过」而锁。
    */
@@ -200,6 +266,16 @@ export interface MemoryAuditLog {
   fixRounds?: number;
   /** 修复是否在机检意义上解决 */
   fixResolved?: boolean;
+    /** 修复环升级档：补丁轮失败后已执行 beat 级重写 */
+  beatRewriteApplied?: boolean;
+  /**
+   * 审校版本锚：审校完成时该章 content 的内容指纹（auditFreshness.fingerprintProse）。
+   * 手改正文 / AI 修待修 / 去味后指纹失配 → isAuditStale 判过期，UI 提示「重跑本审」。
+   * 旧数据缺省 = 无法证明未过期（诚实视为过期）。
+   */
+  auditedContentAt?: string;
+  /** 最近一次审校（含重跑复核）完成时间 ISO（与 auditedContentAt 同写） */
+  lastHardReviewAt?: string;
   /** 各轮修复摘要 */
   fixHistory?: {
     round: number;
@@ -221,6 +297,25 @@ export interface MemoryAuditLog {
     /** 局部补丁应用数 */
     localPatchesApplied?: number;
   }[];
+  /**
+   * 修复环回退记录。每轮修复前落快照，单轮净降分 ≥3 提前止损、
+   * 或循环结束最终态非最高分时，回退到综合分最高的快照（同分比硬伤分）。
+   * 旧数据缺省 = 未发生回退（原行为）。
+   */
+  revisionRollback?: {
+    /** 回退前（最终态）综合分 */
+    fromScore: number;
+    /** 回退后（最优快照）综合分 */
+    toScore: number;
+    /** net-loss=单轮净降分止损；best-snapshot=循环结束择优回退 */
+    reason: 'net-loss' | 'best-snapshot';
+  };
+  /**
+   * 审稿结论不可信安全判定（硬伤审整体 API 失败无可信结论 / 硬伤审零问题
+   * 但综合分与机检分背离 >25）。置位后 reviser 冻结全部自动修稿，交人工确认。
+   * 旧数据缺省 = 结论可信（原行为）。
+   */
+  auditUnreliable?: boolean;
 }
 
 /**
@@ -325,6 +420,8 @@ export interface ChapterRevisionTodo {
   status: ChapterRevisionTodoStatus;
   createdAt: string;
   doneAt?: string;
+  /** 自动派生运行标识：同一章后续审校运行会清理旧运行的 open 条目（手工条目无此字段，永不清理） */
+  autoRunId?: string;
 }
 
 export interface Volume {
@@ -357,7 +454,7 @@ export interface FewShotExample {
 }
 
 /**
- * 文风统计指纹（对齐 InkOS style analyze 的可量化部分）
+ * 文风统计指纹（可量化特征层）
  * 句长分布、对白占比、节奏与标点密度等，供写作注入与对照。
  */
 export interface StyleFingerprint {
@@ -387,7 +484,7 @@ export interface StyleFingerprint {
 
 /**
  * 文风仿写档案：指纹 + LLM 风格指南 + 样本摘录。
- * 激活后注入正文/扩写 Prompt（类 InkOS style import）。
+ * 激活后注入正文/扩写 Prompt。
  */
 export interface StyleProfile {
   id: string;
@@ -397,6 +494,8 @@ export interface StyleProfile {
   fingerprint: StyleFingerprint;
   /** LLM 生成的可执行风格指南（可手改） */
   styleGuide: string;
+  /** 结构层创作方法论（世界观/大纲/拆章/分镜设计时的作家大脑；与句法腔调层分离，可选） */
+  structureGuide?: string;
   /** 要做 */
   doList: string[];
   /** 不要做 */
@@ -405,18 +504,63 @@ export interface StyleProfile {
   authorStyle: string;
   /** 代表性摘录（截自参考文，作 few-shot content） */
   sampleExcerpt: string;
+  /** 多场景范文选段（语感锚定：不同场景类型的代表段落，注入时按标签展示） */
+  sampleExcerpts?: { label: string; text: string }[];
   /** 风格解构说明 */
   analysis: string;
+  /**
+   * 标点风格偏好：'ellipsis-emphatic' 时豁免「少用省略号/禁破折号」类
+   * 通用禁令（该类文风以省略号为节奏器官，通用去AI味规则会误伤）。
+   */
+  punctuationTolerance?: 'default' | 'ellipsis-emphatic';
+  /**
+   * 题材适配标签（如 ['玄幻','修真','热血']）。缺省/空 = 题材通用。
+   * 书的题材与标签全部不匹配时：结构层方法论不注入，正文层降级为
+   * 只学文笔层（节奏/对白/白描），题材性机制被显式禁用——防止例如
+   * 「唐家三少·团战六拍」带进言情/都市书。
+   */
+  genreTags?: string[];
+  /**
+   * 题材性机制清单（如 ['团战六拍','招式喊名与口号']）。题材不匹配时
+   * 这些机制被显式禁止执行，只保留文笔层。
+   */
+  genreMechanisms?: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 按角色路由模型：创作角色 = 管线五阶段（plan/write/audit/revise/settle）
+ * + 两个管线外 LLM 任务（intent=写前意图、crossAudit=跨章抽检）。
+ * 写作用强模型、审校用轻量模型。
+ */
+export type LlmRole =
+  | 'write'
+  | 'audit'
+  | 'revise'
+  | 'plan'
+  | 'settle'
+  | 'intent'
+  | 'crossAudit';
+
+/** 角色 → 配置档 id 路由表；总开关关闭时全部跟随激活档（零行为变化） */
+export interface LlmRoleRouting {
+  /** 总开关：true 才生效；undefined/false = 全部走激活档 */
+  enabled?: boolean;
+  /** 未配置的角色/档已删除的角色 → 跟随激活档 */
+  routes?: Partial<Record<LlmRole, string>>;
 }
 
 export interface StyleConfig {
   clicheBlacklist: string[]; // 禁用的套话列表
   customBlacklist: string[]; // 用户额外追加
   /**
+   * 破折号白名单：true 时写后校验放行「——」（文风以破折号为节奏器官的作者开启）。
+   * 与激活文风档案的 punctuationTolerance='ellipsis-emphatic' 任一命中即放行。
+   */
+  allowEmDash?: boolean;
+  /**
    * 去AI味白名单：命中片段含子串则跳过告警（功法名/绰号/专名）。
-   * 对齐 story-deslop `.deslop-whitelist`。
    */
   deslopWhitelist?: string[];
   /** @deprecated 同 deslopWhitelist，兼容旧字段 */
@@ -435,7 +579,7 @@ export interface StyleConfig {
   fewShotExamples: FewShotExample[];
   selectedExampleId: string;
   /**
-   * 文风仿写档案库（InkOS 风格：analyze → import → 写作注入）
+   * 文风仿写档案库（采样分析 → 风格指南 → 写作注入）
    */
   styleProfiles?: StyleProfile[];
   /** 当前激活的仿写档案 id；空=不注入指纹指南 */
@@ -449,6 +593,10 @@ export interface StyleConfig {
   /** R3-B：LLM 月度预算开关与上限（元）；未启用或 0 = 不限 */
   llmBudgetEnabled?: boolean;
   llmMonthlyBudgetCny?: number;
+  /** 按角色路由模型（默认关闭）：角色 → 配置档 id；未配置走激活档 */
+  llmRoleRouting?: LlmRoleRouting;
+  /** 推进度审（分镜完成度/主线推进/注水/伏笔触达）；默认开，关闭省每章 1 次 LLM 调用 */
+  progressionReviewEnabled?: boolean;
   /** Auto-Pilot 本轮目标连写章数（默认 3） */
   autoPilotTargetChapters?: number;
   autoPilotMode?: boolean;
@@ -534,7 +682,7 @@ export interface PlotThread {
   note?: string;
   /** 主线级伏笔：静默阈值更严（债务压力） */
   coreHook?: boolean;
-  /** 埋线时的原文摘录（回收时优先注入，仿 InkOS Hook Seed） */
+  /** 埋线时的原文摘录（伏笔种子，回收时优先注入） */
   seedExcerpt?: string;
 }
 
@@ -604,7 +752,7 @@ export interface HookResolveSuggestion {
   suggestedAt: string;
 }
 
-/** 世界轻量实体：地点 / 道具（吃书高发区，NovelForge 式多实体） */
+/** 世界轻量实体：地点 / 道具（吃书高发区，设定与事实追踪） */
 export type WorldEntityKind = 'location' | 'item';
 
 export interface WorldEntityState {

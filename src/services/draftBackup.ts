@@ -5,6 +5,7 @@
  * 标签页关闭/断网中断，草稿只存在于内存，刷新即丢。
  * 本服务把最新正文去抖落盘到 meta store，页面重新打开时提示恢复。
  */
+import { proseWords } from './proseWords';
 import { initDB, STORE_META } from './storage';
 
 export interface DraftBackup {
@@ -78,7 +79,7 @@ export async function saveDraftBackup(input: SaveDraftInput): Promise<void> {
     chapterNumber: input.chapterNumber,
     chapterTitle: input.chapterTitle,
     content: input.content,
-    wordCount: input.content.replace(/\s+/g, '').length,
+    wordCount: proseWords(input.content),
     updatedAt: new Date().toISOString(),
   };
   await putMeta(draftKey(input.projectId, input.chapterId), backup);

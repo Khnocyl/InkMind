@@ -1,6 +1,5 @@
 /**
- * 去 AI 味模块（对齐 oh-story-claudecode / story-deslop）
- * https://github.com/worldwonderer/oh-story-claudecode
+ * 去 AI 味模块
  */
 
 export {

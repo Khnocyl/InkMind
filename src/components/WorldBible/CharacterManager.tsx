@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import type { Character, CharacterRole, CharacterStatus } from '../../types/novel';
 import { UserPlus, ShieldAlert, Heart, MapPin, Eye, Award } from 'lucide-react';
 
@@ -75,8 +75,8 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
   };
 
   return (
-    <div className="flex-1 bg-white flex h-[calc(100vh-57px)] overflow-hidden">
-      <aside className="w-80 border-r border-[#e5e5e5] flex flex-col bg-[#fafafa]">
+    <div className="flex-1 bg-white flex h-full overflow-hidden">
+      <aside className="w-80 border-r border-[#e5e5e5] flex flex-col bg-[#fafafa] rounded-bl-[28px]">
         <div className="p-4 border-b border-[#e5e5e5] flex items-center justify-between">
           <span className="font-bold text-sm text-black">角色追踪表 ({characters.length})</span>
           <button
@@ -128,7 +128,7 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
 
       <main className="flex-1 overflow-y-auto p-8 bg-white">
         {isCreating ? (
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-3xl mx-auto">
             <h3 className="font-bold text-lg text-black mb-4 pb-2 border-b border-[#e5e5e5]">
               录入新角色（系统将在 RAG 检索时自动抓取本设定）
             </h3>
@@ -249,7 +249,7 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
             </form>
           </div>
         ) : selectedChar ? (
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div className="max-w-5xl mx-auto space-y-6">
             <div className="flex items-start justify-between pb-4 border-b border-[#e5e5e5]">
               <div>
                 <div className="flex items-center space-x-3 mb-1">

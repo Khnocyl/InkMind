@@ -1,5 +1,5 @@
 /**
- * Settler Agent — 对齐 InkOS settler：章末 recap + 角色状态回写。
+ * Settler Agent — 记忆沉淀：章末摘要提炼与实体状态回写。
  */
 import type {
   ChapterRecap,

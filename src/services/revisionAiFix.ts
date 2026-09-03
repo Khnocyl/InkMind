@@ -24,6 +24,8 @@ import {
   formatStyleConstraintsForRewrite,
   getActiveStyleProfile,
 } from './styleImitate';
+import { ensureProseWordCount } from './wordCount';
+import { proseWords } from './proseWords';
 
 export interface AiFixRevisionResult {
   chapter: Chapter;
@@ -244,6 +246,54 @@ function classifyTodo(todoText: string): {
   };
 }
 
+/** 去空白长度（与章字数口径一致）——委托唯一口径出口 */
+function stripWsLen(s: string): number {
+  return proseWords(s);
+}
+
+/**
+ * 待修改写的等量替换字数带（治「越修越长」）：
+ * 去 AI 味类收紧到 +25%（纯文风修理不该长肉），其余 +50%（修硬伤偶需多一两句交代）；
+ * 下限 75%——修复是等量替换，禁止大幅压缩成稿（缩水由章级补写兜底，但源头先收紧）。
+ * 锚定选区原文长度而非全章；章级区间约束见 resolveFixMaxChars 与 aiFixRevisionTodo 的补写闸。
+ */
+export function revisionFixBand(
+  selectedChars: number,
+  kind: 'aitaste' | 'hard' | 'audit' | 'generic'
+): { minChars: number; maxChars: number } {
+  const n = Math.max(0, Math.round(selectedChars));
+  const maxRatio = kind === 'aitaste' ? 1.25 : 1.5;
+  return {
+    minChars: Math.max(8, Math.round(n * 0.75)),
+    maxChars: Math.max(16, Math.round(n * maxRatio)),
+  };
+}
+
+/**
+ * 章级预算下的改写稿上限：本章余量（上限 − 选区外字数）不足时收紧到余量，
+ * 但不低于等量替换（选区原长）——章节已在超写状态时不再恶化，只做等量修理。
+ */
+export function resolveFixMaxChars(
+  bandMax: number,
+  selectedWords: number,
+  chapterWordsBefore: number,
+  chapterMaxWords: number
+): number {
+  const headroom = chapterMaxWords - (chapterWordsBefore - selectedWords);
+  return Math.max(selectedWords, Math.min(bandMax, headroom));
+}
+
+/** 句界截短到预算内（中文句读密集，通常能在预算内找到句界；找不到则硬截兜底） */
+export function trimToSentenceBudget(text: string, maxChars: number): string {
+  if (!text || text.length <= maxChars) return text;
+  const window = text.slice(0, Math.max(1, maxChars));
+  const floor = Math.floor(maxChars * 0.4);
+  for (let i = window.length - 1; i >= floor; i -= 1) {
+    if ('。！？…”'.includes(window[i])) return window.slice(0, i + 1);
+  }
+  return window;
+}
+
 async function runTodoGuidedRewrite(input: {
   selected: string;
   todoText: string;
@@ -251,8 +301,13 @@ async function runTodoGuidedRewrite(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   surroundingBefore?: string;
   surroundingAfter?: string;
+  /** 章级字数契约：本章选区外字数与全章上限（传入后改写稿上限收紧到章内余量） */
+  chapterWordsBefore?: number;
+  chapterMaxWords?: number;
 }): Promise<string> {
   const { kind, actionHint } = classifyTodo(input.todoText);
   const parts: string[] = [];
@@ -278,6 +333,7 @@ async function runTodoGuidedRewrite(input: {
     profileMaxChars: 1100,
     fewShotMaxChars: 280,
     blacklistMax: 22,
+    bookGenre: input.bookGenre,
   });
   if (styleBlock) parts.push(styleBlock);
 
@@ -293,11 +349,41 @@ async function runTodoGuidedRewrite(input: {
     ? `改写后的文气必须服从已激活文风仿写「${activeName}」（句长、对白密度、要做/不要做）；禁止写成另一套通用 AI 网文腔。`
     : '改写须对齐下方【目标文风】few-shot / 约束；禁止滑回通用 AI 套话腔。';
 
+  const selectedChars = stripWsLen(input.selected);
+  const band = revisionFixBand(selectedChars, kind);
+  // 章级字数契约：上限受本章余量约束（不低于等量替换）
+  const effMax =
+    input.chapterMaxWords && input.chapterWordsBefore != null
+      ? resolveFixMaxChars(
+          band.maxChars,
+          selectedChars,
+          input.chapterWordsBefore,
+          input.chapterMaxWords
+        )
+      : band.maxChars;
+  const bandHint =
+    kind === 'aitaste'
+      ? `不超过选区的 1.25 倍，约 ${effMax} 字`
+      : `不超过选区的 1.5 倍，约 ${effMax} 字`;
+
+  const callModel = async (msgs: { role: string; content: string }[]) => {
+    const out = (await generateText(msgs, 0.55)).trim();
+    if (!out) throw new Error('模型返回空结果');
+    let t = out;
+    if (t.startsWith('```')) {
+      const lines = t.split('\n');
+      if (lines[0].startsWith('```')) lines.shift();
+      if (lines[lines.length - 1]?.startsWith('```')) lines.pop();
+      t = lines.join('\n').trim();
+    }
+    return t;
+  };
+
   const system = `你是连载小说的「待修自动精修」编辑（类型：${kind}），同时必须守住本书文风设定。
 硬性规则：
 1. 只输出改写后的纯正文片段，无解释、无标题、无 markdown。
-2. 必须针对【待修问题】做最小必要修改；能换词不换句，能改一句不改整段。
-3. 不得推翻书级钉死事实与写前禁止项；不得改变选区外情节。
+2. 必须针对【待修问题】做最小必要修改；能换词不换句，能改一句不改整段；改写稿总长须与选区相当（${bandHint}），禁止借机扩写、加厚或补写场景。
+3. 不得推翻书级钉死事实与写前禁止项；不得改变选区外情节；**不得新增人物、地点、道具、伏笔**——新增描写仅限无事实含量的感官与动作细节。
 4. 与前后语境自然衔接；禁止新开黑名单套话与章末式升华。
 5. ${actionHint}
 6. **文风铁律**：${styleRule}`;
@@ -312,23 +398,38 @@ ${input.todoText.slice(0, 400)}
 【待处理选区】
 ${input.selected}`;
 
-  const out = (
-    await generateText(
-      [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      0.55
-    )
-  ).trim();
+  const baseMessages = [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ];
 
-  if (!out) throw new Error('模型返回空结果');
-  let text = out;
-  if (text.startsWith('```')) {
-    const lines = text.split('\n');
-    if (lines[0].startsWith('```')) lines.shift();
-    if (lines[lines.length - 1]?.startsWith('```')) lines.pop();
-    text = lines.join('\n').trim();
+  let text = await callModel(baseMessages);
+
+  // 等量替换闸：越带（过长/过短截断）→ 带反馈重试一次
+  if (stripWsLen(text) > effMax || stripWsLen(text) < band.minChars) {
+    try {
+      text = await callModel([
+        ...baseMessages,
+        {
+          role: 'assistant',
+          content: text.slice(0, 800),
+        },
+        {
+          role: 'user',
+          content:
+            `你返回的改写稿约 ${stripWsLen(text)} 字，允许区间约 ${band.minChars}–${effMax} 字` +
+            `（选区原文 ${selectedChars} 字）。请按【最小必要修改】做等量替换：` +
+            '保留原有信息量、情节结果与收尾落点，不新增情节/人物/地点/道具，只输出改后正文。',
+        },
+      ]);
+    } catch {
+      // 反馈重试失败：沿用首轮结果，交由下方句界截短兜底
+    }
+  }
+
+  // 终闸：仍超长 → 句界截短，杜绝「越修越长」
+  if (stripWsLen(text) > effMax) {
+    text = trimToSentenceBudget(text, effMax + 40);
   }
   return text;
 }
@@ -342,6 +443,11 @@ export async function aiFixRevisionTodo(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
+  /** 每章字数目标：传入后执行章级字数契约——
+   *  改写稿上限受本章余量约束；修复后全章低于下限自动补写回目标（治「越修越短」） */
+  targetWordCount?: number | null;
   /** 成功后是否自动标 done，默认 true */
   markDone?: boolean;
   onProgress?: (msg: string) => void;
@@ -368,7 +474,7 @@ export async function aiFixRevisionTodo(input: {
   }
 
   const prose = chapter.content || '';
-  if (!prose.replace(/\s+/g, '').length) {
+  if (!proseWords(prose)) {
     return {
       chapter,
       replaced: false,
@@ -403,6 +509,12 @@ export async function aiFixRevisionTodo(input: {
     };
   }
 
+  // 章级字数契约的目标（未传/非法则不做章级约束）
+  const target =
+    input.targetWordCount && input.targetWordCount > 0
+      ? Math.round(input.targetWordCount)
+      : 0;
+
   input.onProgress?.(
     `AI 修第${chapter.number}章 · ${todo.text.slice(0, 28)}…（${range.mode}）`
   );
@@ -415,11 +527,14 @@ export async function aiFixRevisionTodo(input: {
       styleConfig: input.styleConfig,
       characters: input.characters,
       storyMemory: input.storyMemory,
+      bookGenre: input.bookGenre,
       surroundingBefore: prose.slice(Math.max(0, range.start - 120), range.start),
       surroundingAfter: prose.slice(
         range.end,
         Math.min(prose.length, range.end + 120)
       ),
+      chapterWordsBefore: target > 0 ? stripWsLen(prose) : undefined,
+      chapterMaxWords: target > 0 ? Math.round(target * 1.1) : undefined,
     })
   ).trim();
 
@@ -438,13 +553,43 @@ export async function aiFixRevisionTodo(input: {
   const rawSlice = prose.slice(range.start, range.end);
   const leadWs = rawSlice.match(/^\s*/)?.[0] || '';
   const trailWs = rawSlice.match(/\s*$/)?.[0] || '';
-  const newProse =
+  let finalProse =
     prose.slice(0, range.start) + leadWs + after + trailWs + prose.slice(range.end);
+
+  // —— 章级字数契约：修复后全章低于目标区间下限 → 自动补写回目标（治「越修越短」）——
+  if (target > 0 && stripWsLen(finalProse) < Math.round(target * 0.9)) {
+    input.onProgress?.(
+      ` [字数契约] 修复后全章 ${stripWsLen(finalProse)} 字 < 下限 ${Math.round(
+        target * 0.9
+      )}，自动补写回目标 ${target}…`
+    );
+    try {
+      const topped = await ensureProseWordCount({
+        prose: finalProse,
+        targetWordCount: target,
+        chapter: {
+          number: chapter.number,
+          title: chapter.title,
+          summary: chapter.summary,
+        },
+        beats: chapter.beats || [],
+        characters: input.characters || [],
+        styleConfig: input.styleConfig,
+        maxRounds: 1,
+        onProgress: input.onProgress,
+      });
+      finalProse = topped.prose;
+    } catch (err: any) {
+      input.onProgress?.(
+        ` [字数契约] 补写失败（保留修复结果）：${err?.message || err}`
+      );
+    }
+  }
 
   chapter = {
     ...chapter,
-    content: newProse,
-    wordCount: newProse.replace(/\s+/g, '').length,
+    content: finalProse,
+    wordCount: proseWords(finalProse),
     contentUpdatedAt: new Date().toISOString(),
     lastModified: new Date().toLocaleTimeString([], {
       hour: '2-digit',
@@ -483,6 +628,10 @@ export async function aiFixFirstOpenRevision(input: {
   styleConfig: StyleConfig;
   characters?: Character[];
   storyMemory?: StoryMemory | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
+  /** 每章字数目标（透传 aiFixRevisionTodo 的章级字数契约） */
+  targetWordCount?: number | null;
   pickFirst: (chapters: Chapter[]) => {
     chapterId: string;
     todo: ChapterRevisionTodo;
@@ -526,6 +675,8 @@ export async function aiFixFirstOpenRevision(input: {
     styleConfig: input.styleConfig,
     characters: input.characters,
     storyMemory: input.storyMemory,
+    bookGenre: input.bookGenre,
+    targetWordCount: input.targetWordCount,
     onProgress: input.onProgress,
   });
   return {

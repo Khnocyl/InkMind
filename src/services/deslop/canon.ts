@@ -1,13 +1,11 @@
 /**
- * 去 AI 味规范 canon —— 对齐 oh-story-claudecode / story-deslop。
- * 来源：https://github.com/worldwonderer/oh-story-claudecode
- * （本地 skill：~/.claude/skills/story-deslop）
+ * 去 AI 味规范 canon
  *
  * 原则：改味不改剧；改最少；不整段删情节；Gate A–G。
  */
 
 /** 写前 / 文笔审 / 局部去味共用的硬提示（中文） */
-export const DESLOP_PHILOSOPHY_ZH = `## 去AI味（对齐 oh-story / story-deslop）
+export const DESLOP_PHILOSOPHY_ZH = `## 去AI味核心准则
 
 **核心信念**：AI 味主要不是语法错，而是过度圆滑、工整、解释充分。目标是保留剧情功能，增加口语、停顿、跳跃与具体动作。
 
@@ -37,13 +35,13 @@ export const DESLOP_PHILOSOPHY_ZH = `## 去AI味（对齐 oh-story / story-deslo
 **删除比例上限（按 AI 味等级）**：轻度≤15% · 中度≤25% · 重度≤35%。不得整段删掉有剧情功能的内容。`;
 
 /** 注入 Writer / 文笔审的精简版（省 token） */
-export const DESLOP_COMPACT_ZH = `## 去AI味（oh-story / story-deslop）
+export const DESLOP_COMPACT_ZH = `## 去AI味精炼准则
 改味不改剧；改最少。禁：不是…而是…；…带着…；声音不大却…；眼中闪过/嘴角勾起；深吸一口气；章末升华；她不知道的是/殊不知/之所以…是因为/这意味着。
 心理→身体动作；排比打断；对话少「说道」；结尾停在动作/对白。少用……与——。`;
 
 /**
  * Gate A 一级禁用词/短语（出现即应替换）
- * 同步 story-deslop/references/banned-words.md 一级表 + 最毒句式锚点。
+ * 一级表 + 最毒句式锚点。
  */
 export const OH_STORY_PRIMARY_BANNED: string[] = [
   // 最毒句式锚（短语扫描；完整否定翻转另有 notIs 扫描器）

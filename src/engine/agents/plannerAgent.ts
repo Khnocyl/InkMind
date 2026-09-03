@@ -1,8 +1,9 @@
 /**
- * Planner Agent — 对齐 InkOS planner：本章怎么拍，不写正文。
+ * Planner Agent — 分镜编排：本章节奏与分镜设计，不写正文。
  */
 import type { PlotBeat } from '../../types/novel';
 import { step1_GenerateBeats } from '../../services/aiEngine';
+import { formatStyleStructureForPrompt, getActiveStyleProfile } from '../../services/styleImitate';
 import type { AgentContext } from '../types';
 import { PROSE_DISCIPLINE_ZH } from '../discipline';
 
@@ -60,7 +61,11 @@ export async function runPlannerAgent(ctx: AgentContext): Promise<PlannerOutput>
       [input.chapterIntentBlock, PROSE_DISCIPLINE_ZH, input.genrePackBlock]
         .filter(Boolean)
         .join('\n\n'),
-      input.genrePackBlock
+      input.genrePackBlock,
+      formatStyleStructureForPrompt(
+        getActiveStyleProfile(input.styleConfig),
+        input.project.genre
+      )
     );
   } catch (err: any) {
     report('plan', `[Planner] 分镜失败，使用梗概兜底：${err?.message || err}`);

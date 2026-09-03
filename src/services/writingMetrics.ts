@@ -1,5 +1,6 @@
 import type { Chapter, ProjectConfig, StyleConfig } from '../types/novel';
 import { DEFAULT_SUBLIMATION_PATTERNS, DEFAULT_TELL_PATTERNS } from './ruleScan';
+import { resolveChapterWordTarget, proseWords } from './proseWords';
 
 export interface ChapterMetrics {
   chapterId: string;
@@ -38,7 +39,7 @@ export interface BookMetricsSummary {
 }
 
 function countWords(text: string): number {
-  return text.replace(/\s+/g, '').length;
+  return proseWords(text);
 }
 
 /** 粗算中文对话：引号「」"" 内字符 */
@@ -135,10 +136,7 @@ export function computeChapterMetrics(
   const sublimationHits = countPhraseHits(content, DEFAULT_SUBLIMATION_PATTERNS);
   const paddingScore = estimatePadding(content);
 
-  const targetWords =
-    options?.projectConfig?.targetWordCountPerChapter ??
-    options?.projectConfig?.wordsPerChapter ??
-    null;
+  const targetWords = resolveChapterWordTarget(options?.projectConfig);
   const targetDelta =
     targetWords && targetWords > 0 ? wordCount - targetWords : null;
 

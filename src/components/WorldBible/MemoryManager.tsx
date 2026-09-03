@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { proseWords } from '../../services/proseWords';
 import type { Character, StoryMemory } from '../../types/novel';
 import {
   addPinnedFact,
@@ -145,7 +146,7 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
   /** 从已有 recap 的章节重建事实账本（本地启发式） */
   const handleRebuildLedger = () => {
     const withRecap = [...chapters]
-      .filter((c) => c.recap && ((c.wordCount || 0) > 50 || (c.content || '').length > 50))
+      .filter((c) => c.recap && ((c.wordCount || 0) > 50 || proseWords(c.content) > 50))
       .sort((a, b) => a.number - b.number);
     if (!withRecap.length) {
       setLedgerMsg('没有带 recap 的章节可建账本。请先完整闭环写几章。');

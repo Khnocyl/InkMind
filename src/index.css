@@ -1,58 +1,148 @@
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * 全局主题：黑字白底（纸面阅读向）
- * 将 slate 灰阶压成中性黑白灰，避免蓝灰底/深色壳。
+ * 主题系统 Token 定义
+ * 支持 light（浅色）与 dark（深色）动态切换与系统跟随
  */
-@theme {
-  --color-slate-50: #ffffff;
-  --color-slate-100: #fafafa;
-  --color-slate-200: #e8e8e8;
-  --color-slate-300: #d4d4d4;
-  --color-slate-400: #a3a3a3;
-  --color-slate-500: #737373;
-  --color-slate-600: #525252;
-  --color-slate-700: #3f3f3f;
-  --color-slate-800: #262626;
-  --color-slate-900: #111111;
-  --color-slate-950: #000000;
-
-  --color-zinc-50: #ffffff;
-  --color-zinc-100: #fafafa;
-  --color-zinc-200: #e8e8e8;
-  --color-zinc-300: #d4d4d4;
-  --color-zinc-400: #a3a3a3;
-  --color-zinc-500: #737373;
-  --color-zinc-600: #525252;
-  --color-zinc-700: #3f3f3f;
-  --color-zinc-800: #262626;
-  --color-zinc-900: #111111;
-  --color-zinc-950: #000000;
-
-  --color-neutral-50: #ffffff;
-  --color-neutral-100: #fafafa;
-  --color-neutral-200: #e8e8e8;
-  --color-neutral-900: #111111;
-  --color-neutral-950: #000000;
-
-  --color-stone-50: #ffffff;
-  --color-stone-100: #fafafa;
-  --color-stone-200: #e8e8e8;
-  --color-stone-900: #111111;
-}
-
 @layer base {
   :root {
     color-scheme: light;
     --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-serif: 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* 语义化主题 Token（浅色） */
     --app-bg: #ffffff;
-    --app-fg: #111111;
-    --app-fg-muted: #444444;
-    --app-border: #e5e5e5;
+    --app-surface: #ffffff;
+    --app-surface-subtle: #fafafa;
+    --app-surface-hover: #f4f4f5;
+    --app-card: #ffffff;
+    --app-card-muted: #f8fafc;
+    --app-border: #e8e8e8;
+    --app-border-subtle: #f0f0f0;
+    --app-text-primary: #0f172a;
+    --app-text-secondary: #334155;
+    --app-text-muted: #64748b;
+    --app-input-bg: #ffffff;
+    --app-input-border: #cbd5e1;
+    --app-scrollbar-track: #ffffff;
+    --app-scrollbar-thumb: #94a3b8;
+    --app-scrollbar-thumb-hover: #64748b;
+    --app-modal-bg: #ffffff;
+    --app-modal-border: #cbd5e1;
+    --app-button-primary-bg: #000000;
+    --app-button-primary-fg: #ffffff;
+    --app-button-primary-hover: #1e293b;
+
+    /* 浅色阶映射（高对比度清晰排版：告别发灰模糊，次级文字饱满易读） */
+    --theme-slate-50: #f8fafc;
+    --theme-slate-100: #f1f5f9;
+    --theme-slate-200: #e2e8f0;
+    --theme-slate-300: #cbd5e1;
+    --theme-slate-400: #475569;
+    --theme-slate-500: #334155;
+    --theme-slate-600: #1e293b;
+    --theme-slate-700: #0f172a;
+    --theme-slate-800: #020617;
+    --theme-slate-900: #000000;
+    --theme-slate-950: #000000;
   }
+
+  html.dark,
+  :root.dark {
+    color-scheme: dark;
+
+    /* 语义化主题 Token（深色高对比清晰度） */
+    --app-bg: #121214;
+    --app-surface: #18181b;
+    --app-surface-subtle: #202024;
+    --app-surface-hover: #27272a;
+    --app-card: #18181b;
+    --app-card-muted: #202024;
+    --app-border: #2e2e34;
+    --app-border-subtle: #27272a;
+    --app-text-primary: #ffffff;
+    --app-text-secondary: #e4e4e7;
+    --app-text-muted: #a1a1aa;
+    --app-input-bg: #18181b;
+    --app-input-border: #3f3f46;
+    --app-scrollbar-track: #18181b;
+    --app-scrollbar-thumb: #3f3f46;
+    --app-scrollbar-thumb-hover: #52525b;
+    --app-modal-bg: #18181b;
+    --app-modal-border: #2e2e34;
+    --app-button-primary-bg: #ffffff;
+    --app-button-primary-fg: #121214;
+    --app-button-primary-hover: #e4e4e7;
+
+    /* 深色阶映射（显著提高对比度：低阶深底、中高阶清晰高亮） */
+    --theme-slate-50: #18181b;
+    --theme-slate-100: #202024;
+    --theme-slate-200: #2e2e34;
+    --theme-slate-300: #3f3f46;
+    --theme-slate-400: #a1a1aa;
+    --theme-slate-500: #d4d4d8;
+    --theme-slate-600: #e4e4e7;
+    --theme-slate-700: #f4f4f5;
+    --theme-slate-800: #ffffff;
+    --theme-slate-900: #ffffff;
+    --theme-slate-950: #ffffff;
+  }
+}
+
+@theme {
+  --color-slate-50: var(--theme-slate-50);
+  --color-slate-100: var(--theme-slate-100);
+  --color-slate-200: var(--theme-slate-200);
+  --color-slate-300: var(--theme-slate-300);
+  --color-slate-400: var(--theme-slate-400);
+  --color-slate-500: var(--theme-slate-500);
+  --color-slate-600: var(--theme-slate-600);
+  --color-slate-700: var(--theme-slate-700);
+  --color-slate-800: var(--theme-slate-800);
+  --color-slate-900: var(--theme-slate-900);
+  --color-slate-950: var(--theme-slate-950);
+
+  --color-zinc-50: var(--theme-slate-50);
+  --color-zinc-100: var(--theme-slate-100);
+  --color-zinc-200: var(--theme-slate-200);
+  --color-zinc-300: var(--theme-slate-300);
+  --color-zinc-400: var(--theme-slate-400);
+  --color-zinc-500: var(--theme-slate-500);
+  --color-zinc-600: var(--theme-slate-600);
+  --color-zinc-700: var(--theme-slate-700);
+  --color-zinc-800: var(--theme-slate-800);
+  --color-zinc-900: var(--theme-slate-900);
+  --color-zinc-950: var(--theme-slate-950);
+
+  --color-neutral-50: var(--theme-slate-50);
+  --color-neutral-100: var(--theme-slate-100);
+  --color-neutral-200: var(--theme-slate-200);
+  --color-neutral-300: var(--theme-slate-300);
+  --color-neutral-400: var(--theme-slate-400);
+  --color-neutral-500: var(--theme-slate-500);
+  --color-neutral-600: var(--theme-slate-600);
+  --color-neutral-700: var(--theme-slate-700);
+  --color-neutral-800: var(--theme-slate-800);
+  --color-neutral-900: var(--theme-slate-900);
+  --color-neutral-950: var(--theme-slate-950);
+
+  --color-stone-50: var(--theme-slate-50);
+  --color-stone-100: var(--theme-slate-100);
+  --color-stone-200: var(--theme-slate-200);
+  --color-stone-300: var(--theme-slate-300);
+  --color-stone-400: var(--theme-slate-400);
+  --color-stone-500: var(--theme-slate-500);
+  --color-stone-600: var(--theme-slate-600);
+  --color-stone-700: var(--theme-slate-700);
+  --color-stone-800: var(--theme-slate-800);
+  --color-stone-900: var(--theme-slate-900);
+  --color-stone-950: var(--theme-slate-950);
+}
+
+@layer base {
 
   * {
     box-sizing: border-box;
@@ -65,15 +155,23 @@
   #root {
     width: 100%;
     height: 100%;
-    min-height: 100vh;
-    background-color: #ffffff;
-    color: #111111;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: var(--app-bg);
+    color: var(--app-text-primary);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* 表单控件默认黑字白底，避免浏览器深色自动配色 */
+/* 页内独立滚动区（设置页内容列/侧栏）：滚动条占位恒定，
+   避免有的分区溢出、有的恰好放下导致居中内容横移 3px */
+.scrollbar-gutter-stable {
+  scrollbar-gutter: stable;
+}
+
+  /* 表单控件黑字白底 / 深色自适应 */
   input,
   textarea,
   select,
@@ -84,8 +182,9 @@
   input:not([type='checkbox']):not([type='radio']),
   textarea,
   select {
-    background-color: #ffffff;
-    color: #111111;
+    background-color: var(--app-input-bg);
+    color: var(--app-text-primary);
+    border-color: var(--app-input-border);
   }
 
   /* 链接与正文可读性 */
@@ -94,20 +193,20 @@
   }
 }
 
-/* 自定义滚动条：浅底深条 */
+/* 自定义滚动条：跟随主题深浅 */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #ffffff;
+  background: var(--app-scrollbar-track);
 }
 ::-webkit-scrollbar-thumb {
-  background: #c4c4c4;
+  background: var(--app-scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #888888;
+  background: var(--app-scrollbar-thumb-hover);
 }
 
 /* 渐变与动画辅助 */
@@ -126,10 +225,10 @@
   animation: fadeIn 0.25s ease-out forwards;
 }
 
-/* 阅读区/画布：强调白底黑字 */
+/* 阅读区/画布：动态适配主题 */
 .theme-paper {
-  background-color: #ffffff;
-  color: #111111;
+  background-color: var(--app-bg);
+  color: var(--app-text-primary);
 }
 
 /*
@@ -246,3 +345,859 @@ button.bg-black:hover:not(:disabled) {
   background-color: #262626 !important;
   color: #ffffff !important;
 }
+
+/* 桌面端（Electron）无边框拖拽与控件区域 */
+.app-region-drag {
+  -webkit-app-region: drag;
+}
+
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* 桌面端窗口全屏/非全屏适配 */
+html.is-electron,
+html.is-electron body,
+html.is-electron #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
+/* 桌面端非全屏卡片样式与 GPU 裁剪（解决底角灰色直角穿透问题） */
+html.is-electron:not(.is-maximized) .desktop-app-container {
+  border-radius: 28px !important;
+  overflow: hidden !important;
+  transform: translateZ(0);
+  isolation: isolate;
+  -webkit-mask-image: -webkit-radial-gradient(white, black);
+}
+
+/* 桌面端全屏（最大化）卡片展平 */
+html.is-electron.is-maximized .desktop-app-container {
+  border-radius: 0 !important;
+  -webkit-mask-image: none;
+}
+
+/* 模态窗全屏遮罩/底色虚化：桌面非全屏时严格跟随 28px 圆角，彻底消除直角边缘灰阶虚化 */
+html.is-electron:not(.is-maximized) [data-modal-backdrop="true"],
+html.is-electron:not(.is-maximized) .modal-backdrop-layer {
+  border-radius: 28px !important;
+  overflow: hidden !important;
+  -webkit-mask-image: -webkit-radial-gradient(white, black);
+}
+
+/* 模态窗最大化时铺满平直窗口 */
+html.is-electron.is-maximized [data-modal-backdrop="true"],
+html.is-electron.is-maximized .modal-backdrop-layer {
+  border-radius: 0 !important;
+  -webkit-mask-image: none;
+}
+
+/* ────────────────────────────────────────────────────────────
+ * 深色模式全局样式适配系统
+ * ──────────────────────────────────────────────────────────── */
+
+/* 深色模式下的根背景与文字 */
+html.dark body,
+html.dark #root {
+  background-color: var(--app-bg) !important;
+  color: var(--app-text-primary) !important;
+}
+
+/* 桌面端非全屏卡片在深色模式下的边框与底色 */
+html.dark.is-electron:not(.is-maximized) .desktop-app-container {
+  border-color: var(--app-border) !important;
+  background-color: var(--app-bg) !important;
+}
+
+/* 通用白底 → 深色卡片底 */
+html.dark .bg-white {
+  background-color: var(--app-surface) !important;
+}
+
+/* 浅色微底 → 深色微底 */
+html.dark .bg-\[\#fafafa\],
+html.dark .bg-slate-50,
+html.dark .bg-slate-100,
+html.dark .bg-stone-50,
+html.dark .bg-zinc-50,
+html.dark .bg-zinc-100,
+html.dark .bg-neutral-50,
+html.dark .bg-neutral-100 {
+  background-color: var(--app-surface-subtle) !important;
+}
+
+/* 浅色边框 → 深色边框 */
+html.dark .border-slate-200,
+html.dark .border-slate-100,
+html.dark .border-neutral-200,
+html.dark .border-neutral-300,
+html.dark .border-\[\#e5e5e5\],
+html.dark .border-stone-200 {
+  border-color: var(--app-border) !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 深色高对比度排版系统（解决暗灰字、黑底黑字与低对比度模糊）
+ * ══════════════════════════════════════════════════════════ */
+
+/* 一级主文字（最高对比度纯白）：包含标题、重点内容、黑字与 800+ 级别 */
+html.dark .text-black,
+html.dark .text-\[\#111111\],
+html.dark .text-\[\#000000\],
+html.dark .text-slate-950,
+html.dark .text-slate-900,
+html.dark .text-slate-800,
+html.dark .text-neutral-950,
+html.dark .text-neutral-900,
+html.dark .text-neutral-800,
+html.dark .text-zinc-950,
+html.dark .text-zinc-900,
+html.dark .text-zinc-800,
+html.dark .text-stone-950,
+html.dark .text-stone-900,
+html.dark .text-stone-800 {
+  color: #ffffff !important;
+}
+
+/* 二级清晰文字（高亮浅灰，对比度 > 11:1）：副标题、正文描述、列表项 */
+html.dark .text-slate-700,
+html.dark .text-slate-600,
+html.dark .text-neutral-700,
+html.dark .text-neutral-600,
+html.dark .text-zinc-700,
+html.dark .text-zinc-600,
+html.dark .text-stone-700,
+html.dark .text-stone-600,
+html.dark .text-\[\#3f3f3f\],
+html.dark .text-\[\#555555\] {
+  color: #e4e4e7 !important;
+}
+
+/* 三级次要文字（明亮浅灰，对比度 > 6.5:1，远超 WCAG 4.5:1 标准）：提示文案、时间戳、次级标签 */
+html.dark .text-slate-500,
+html.dark .text-slate-400,
+html.dark .text-neutral-500,
+html.dark .text-neutral-400,
+html.dark .text-zinc-500,
+html.dark .text-zinc-400,
+html.dark .text-stone-500,
+html.dark .text-stone-400,
+html.dark .text-\[\#777777\],
+html.dark .text-\[\#999999\] {
+  color: #a1a1aa !important;
+}
+
+/* 图标文字色彩同步强化 */
+html.dark svg.text-neutral-500,
+html.dark svg.text-neutral-600,
+html.dark svg.text-neutral-700,
+html.dark svg.text-neutral-800,
+html.dark svg.text-slate-400,
+html.dark svg.text-slate-500,
+html.dark svg.text-slate-600,
+html.dark svg.text-slate-700 {
+  color: #d4d4d8 !important;
+}
+
+/* 浮动与悬浮背景 */
+html.dark .hover\:bg-\[\#fafafa\]:hover,
+html.dark .hover\:bg-slate-50:hover,
+html.dark .hover\:bg-slate-100:hover,
+html.dark .hover\:bg-stone-100:hover {
+  background-color: var(--app-surface-hover) !important;
+}
+
+/* 弹窗与浮层容器适配 */
+html.dark [data-modal-backdrop="true"] > div,
+html.dark .modal-backdrop-layer > div {
+  background-color: var(--app-modal-bg) !important;
+  border-color: var(--app-modal-border) !important;
+  color: #ffffff !important;
+}
+
+/* 弹窗遮罩加深 */
+html.dark [data-modal-backdrop="true"],
+html.dark .modal-backdrop-layer {
+  background-color: rgba(0, 0, 0, 0.75) !important;
+}
+
+/* 深色模式下的表单输入控件 */
+html.dark input:not([type='checkbox']):not([type='radio']),
+html.dark textarea:not(.text-transparent),
+html.dark select {
+  background-color: var(--app-input-bg) !important;
+  color: #ffffff !important;
+  border-color: var(--app-input-border) !important;
+}
+html.dark textarea.text-transparent {
+  color: transparent !important;
+}
+
+/* 深色模式下的主按钮（高对比浅底黑字） */
+html.dark .btn-primary,
+html.dark button.btn-primary {
+  background-color: var(--app-button-primary-bg) !important;
+  color: var(--app-button-primary-fg) !important;
+  border-color: var(--app-button-primary-bg) !important;
+}
+html.dark .btn-primary:hover:not(:disabled),
+html.dark button.btn-primary:hover:not(:disabled) {
+  background-color: var(--app-button-primary-hover) !important;
+  color: var(--app-button-primary-fg) !important;
+}
+
+/* 彩底转黑底按钮在深色模式下的适配 */
+html.dark button.bg-indigo-600,
+html.dark button.bg-indigo-700,
+html.dark button.bg-purple-600,
+html.dark button.bg-purple-700,
+html.dark button.bg-rose-600,
+html.dark button.bg-rose-700,
+html.dark button.bg-emerald-600,
+html.dark button.bg-emerald-700,
+html.dark button.bg-teal-600,
+html.dark button.bg-teal-700,
+html.dark button.bg-violet-600,
+html.dark button.bg-violet-700,
+html.dark button.bg-amber-500,
+html.dark button.bg-amber-600,
+html.dark button.bg-amber-700,
+html.dark button.bg-cyan-600,
+html.dark button.bg-cyan-700,
+html.dark button.bg-fuchsia-600,
+html.dark button.bg-fuchsia-700,
+html.dark a.bg-indigo-600,
+html.dark a.bg-purple-600,
+html.dark button.bg-black {
+  background-color: var(--app-button-primary-bg) !important;
+  color: var(--app-button-primary-fg) !important;
+  border-color: var(--app-button-primary-bg) !important;
+}
+
+html.dark button.bg-indigo-600:hover:not(:disabled),
+html.dark button.bg-indigo-700:hover:not(:disabled),
+html.dark button.bg-black:hover:not(:disabled) {
+  background-color: var(--app-button-primary-hover) !important;
+  color: var(--app-button-primary-fg) !important;
+}
+
+/* 状态徽标弱色背景透光感优化（避免浅白底刺眼） */
+html.dark .bg-emerald-50,
+html.dark .bg-emerald-50\/40,
+html.dark .bg-emerald-50\/80,
+html.dark .bg-emerald-100 {
+  background-color: rgba(6, 78, 59, 0.25) !important;
+  color: #6ee7b7 !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+html.dark .bg-amber-50,
+html.dark .bg-amber-50\/40,
+html.dark .bg-amber-50\/50,
+html.dark .bg-amber-50\/80,
+html.dark .bg-amber-100 {
+  background-color: rgba(120, 53, 15, 0.25) !important;
+  color: #fcd34d !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+html.dark .bg-rose-50,
+html.dark .bg-rose-50\/50,
+html.dark .bg-rose-50\/80,
+html.dark .bg-rose-100,
+html.dark .bg-red-50,
+html.dark .bg-red-50\/50,
+html.dark .bg-red-50\/60,
+html.dark .bg-red-50\/80,
+html.dark .bg-red-100 {
+  background-color: rgba(136, 19, 55, 0.25) !important;
+  color: #fda4af !important;
+  border-color: rgba(244, 63, 94, 0.3) !important;
+}
+html.dark .bg-indigo-50,
+html.dark .bg-indigo-100 {
+  background-color: rgba(49, 46, 129, 0.25) !important;
+  color: #a5b4fc !important;
+  border-color: rgba(99, 102, 241, 0.3) !important;
+}
+html.dark .bg-teal-50,
+html.dark .bg-teal-100 {
+  background-color: rgba(19, 78, 74, 0.25) !important;
+  color: #5eead4 !important;
+  border-color: rgba(20, 184, 166, 0.3) !important;
+}
+
+/* ────────────────────────────────────────────────────────────
+ * 彩色容器内部深字（950/900/800 级）在深色模式下的反色提亮
+ * 解决原先黑绿、黑红、黑黄字在暗底容器内看不清的问题
+ * ──────────────────────────────────────────────────────────── */
+html.dark .text-emerald-950,
+html.dark .text-emerald-900,
+html.dark .text-emerald-800,
+html.dark .text-emerald-700,
+html.dark .text-green-950,
+html.dark .text-green-900,
+html.dark .text-green-800,
+html.dark .text-green-700 {
+  color: #6ee7b7 !important;
+}
+html.dark .text-emerald-900\/80,
+html.dark .text-emerald-900\/70,
+html.dark .text-emerald-800\/80 {
+  color: #a7f3d0 !important;
+}
+
+html.dark .text-amber-950,
+html.dark .text-amber-900,
+html.dark .text-amber-800,
+html.dark .text-amber-700,
+html.dark .text-yellow-950,
+html.dark .text-yellow-900,
+html.dark .text-yellow-800 {
+  color: #fcd34d !important;
+}
+html.dark .text-amber-900\/80,
+html.dark .text-amber-900\/70,
+html.dark .text-amber-800\/80 {
+  color: #fde68a !important;
+}
+
+html.dark .text-rose-950,
+html.dark .text-rose-900,
+html.dark .text-rose-800,
+html.dark .text-rose-700,
+html.dark .text-red-950,
+html.dark .text-red-900,
+html.dark .text-red-800,
+html.dark .text-red-700 {
+  color: #fda4af !important;
+}
+html.dark .text-rose-900\/80,
+html.dark .text-rose-800\/60,
+html.dark .text-rose-800\/70,
+html.dark .text-red-900\/80,
+html.dark .text-red-800\/90,
+html.dark .text-red-800\/80 {
+  color: #fecdd3 !important;
+}
+
+html.dark .text-indigo-950,
+html.dark .text-indigo-900,
+html.dark .text-indigo-800,
+html.dark .text-indigo-700,
+html.dark .text-violet-950,
+html.dark .text-violet-900,
+html.dark .text-violet-800,
+html.dark .text-violet-700,
+html.dark .text-blue-950,
+html.dark .text-blue-900,
+html.dark .text-blue-800,
+html.dark .text-blue-700 {
+  color: #c7d2fe !important;
+}
+
+html.dark .text-teal-950,
+html.dark .text-teal-900,
+html.dark .text-teal-800,
+html.dark .text-teal-700 {
+  color: #5eead4 !important;
+}
+
+/* 针对深色模式下的特定浅色 Hex 文本与背景补充 */
+html.dark .text-\[\#3f3f3f\],
+html.dark .text-\[\#555555\] {
+  color: #e4e4e7 !important;
+}
+html.dark .text-\[\#777777\],
+html.dark .text-\[\#999999\] {
+  color: #a1a1aa !important;
+}
+html.dark .bg-\[\#f0f0f0\],
+html.dark .bg-\[\#f3f3f3\],
+html.dark .bg-\[\#f5f5f5\] {
+  background-color: var(--app-surface-subtle) !important;
+}
+html.dark .border-\[\#f0f0f0\] {
+  border-color: var(--app-border-subtle) !important;
+}
+html.dark .divide-\[\#f0f0f0\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--app-border-subtle) !important;
+}
+html.dark .border-\[\#999999\] {
+  border-color: var(--app-border) !important;
+}
+html.dark .bg-\[\#f0f9f4\] {
+  background-color: rgba(6, 78, 59, 0.25) !important;
+}
+html.dark .text-\[\#1b5e20\] {
+  color: #6ee7b7 !important;
+}
+html.dark .border-\[\#2e8b57\] {
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+html.dark .bg-\[\#fff5f5\] {
+  background-color: rgba(136, 19, 55, 0.25) !important;
+}
+html.dark .text-\[\#b71c1c\] {
+  color: #fda4af !important;
+}
+html.dark .border-\[\#d32f2f\] {
+  border-color: rgba(244, 63, 94, 0.3) !important;
+}
+html.dark .border-white {
+  border-color: var(--app-bg) !important;
+}
+
+/* 文本选择高亮与光标 */
+html.dark textarea,
+html.dark input {
+  caret-color: var(--app-text-primary) !important;
+}
+html.dark ::selection {
+  background-color: rgba(99, 102, 241, 0.35) !important;
+  color: #ffffff !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 深色模式补丁：补齐带透明度修饰符的彩色面板、悬停白底、
+ * 半透明白底卡片与任意 Hex 色值（修复仪表盘棕底、页签白底、
+ * 角色关系卡白底等漏覆盖问题）
+ * ══════════════════════════════════════════════════════════ */
+
+/* 悬停白底/浅灰底（TopNav 未选中页签等）→ 深色悬停底 */
+html.dark .hover\:bg-white:hover,
+html.dark .hover\:bg-slate-200:hover,
+html.dark .hover\:bg-neutral-100:hover,
+html.dark .hover\:bg-stone-200:hover,
+html.dark .hover\:bg-zinc-100:hover,
+html.dark .hover\:bg-\[\#f3f3f3\]:hover,
+html.dark .hover\:bg-\[\#e0e0e0\]:hover {
+  background-color: var(--app-surface-hover) !important;
+}
+
+/* 半透明白底卡片 → 深色微底 */
+html.dark .bg-white\/80,
+html.dark .bg-white\/70,
+html.dark .bg-white\/60 {
+  background-color: var(--app-surface-subtle) !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 主色块翻转一致性：黑底白字元素（含非按钮）统一翻为白底黑字，
+ * 并连带修正其内部显式 text-white 子元素（否则白底白字隐形）
+ * ══════════════════════════════════════════════════════════ */
+html.dark .bg-black.text-white,
+html.dark .bg-slate-900.text-white,
+html.dark .bg-\[\#111111\].text-white {
+  background-color: var(--app-button-primary-bg) !important;
+  color: var(--app-button-primary-fg) !important;
+  border-color: var(--app-button-primary-bg) !important;
+}
+/* 翻转后的黑底容器内部：显式白字子元素与白色半透明徽标同步反色 */
+html.dark .bg-black .text-white,
+html.dark .bg-\[\#111111\] > .text-white,
+html.dark button.bg-black .text-white\/70 {
+  color: var(--app-button-primary-fg) !important;
+}
+html.dark .bg-black .bg-white\/20 {
+  background-color: rgba(18, 18, 20, 0.12) !important;
+}
+/* 保留红底白字等彩色徽标不跟随父级反色 */
+html.dark .bg-\[\#111111\] > span.text-white {
+  color: #ffffff !important;
+}
+html.dark .bg-\[\#111111\] > span.bg-\[\#be123c\].text-white,
+html.dark .bg-\[\#111111\] > span.bg-\[\#b45309\].text-white {
+  color: #ffffff !important;
+}
+
+/* 开关（toggle）选中态：黑轨翻白轨、白钮翻黑钮 */
+html.dark .peer:checked ~ .peer-checked\:bg-black {
+  background-color: var(--app-button-primary-bg) !important;
+}
+html.dark .peer:checked ~ .peer-checked\:bg-black::after {
+  background-color: var(--app-button-primary-fg) !important;
+  border-color: var(--app-button-primary-fg) !important;
+}
+
+/* 彩底转白底的按钮在深色下悬停：压过亮色模式的全局 :hover 深灰规则，
+   避免白底按钮悬停瞬间闪成深灰底深字 */
+html.dark button.bg-indigo-600:hover:not(:disabled),
+html.dark button.bg-indigo-700:hover:not(:disabled),
+html.dark button.bg-purple-600:hover:not(:disabled),
+html.dark button.bg-purple-700:hover:not(:disabled),
+html.dark button.bg-rose-600:hover:not(:disabled),
+html.dark button.bg-rose-700:hover:not(:disabled),
+html.dark button.bg-emerald-600:hover:not(:disabled),
+html.dark button.bg-emerald-700:hover:not(:disabled),
+html.dark button.bg-teal-600:hover:not(:disabled),
+html.dark button.bg-teal-700:hover:not(:disabled),
+html.dark button.bg-violet-600:hover:not(:disabled),
+html.dark button.bg-violet-700:hover:not(:disabled),
+html.dark button.bg-amber-500:hover:not(:disabled),
+html.dark button.bg-amber-600:hover:not(:disabled),
+html.dark button.bg-amber-700:hover:not(:disabled),
+html.dark button.bg-cyan-600:hover:not(:disabled),
+html.dark button.bg-cyan-700:hover:not(:disabled),
+html.dark button.bg-fuchsia-600:hover:not(:disabled),
+html.dark button.bg-fuchsia-700:hover:not(:disabled),
+html.dark button.bg-\[\#111111\]:hover:not(:disabled) {
+  background-color: var(--app-button-primary-hover) !important;
+  color: var(--app-button-primary-fg) !important;
+  border-color: var(--app-button-primary-hover) !important;
+}
+
+/* 彩色悬停底 → 深色微透彩底（消除暗底上的刺眼浅色悬停块） */
+html.dark .hover\:bg-rose-50:hover,
+html.dark .hover\:bg-rose-50\/80:hover,
+html.dark .hover\:bg-rose-100:hover,
+html.dark .hover\:bg-red-50:hover {
+  background-color: rgba(136, 19, 55, 0.22) !important;
+}
+html.dark .hover\:bg-amber-50:hover,
+html.dark .hover\:bg-amber-50\/50:hover {
+  background-color: rgba(120, 53, 15, 0.22) !important;
+}
+html.dark .hover\:bg-emerald-50:hover {
+  background-color: rgba(6, 78, 59, 0.22) !important;
+}
+html.dark .hover\:bg-indigo-50:hover,
+html.dark .hover\:bg-indigo-100:hover {
+  background-color: rgba(49, 46, 129, 0.28) !important;
+}
+html.dark .hover\:bg-violet-50:hover {
+  background-color: rgba(76, 29, 149, 0.28) !important;
+}
+html.dark .hover\:bg-sky-50:hover {
+  background-color: rgba(12, 74, 110, 0.28) !important;
+}
+html.dark .hover\:bg-orange-100:hover {
+  background-color: rgba(124, 45, 18, 0.25) !important;
+}
+
+/* 彩色悬停文字提亮（暗底上 900/800 级深字悬停不可读） */
+html.dark .hover\:text-rose-900:hover,
+html.dark .hover\:text-rose-800:hover {
+  color: #fda4af !important;
+}
+html.dark .hover\:text-red-900:hover {
+  color: #fca5a5 !important;
+}
+html.dark .hover\:text-amber-700:hover,
+html.dark .hover\:text-amber-800:hover {
+  color: #fcd34d !important;
+}
+html.dark .hover\:text-cyan-900:hover,
+html.dark .hover\:text-cyan-950:hover {
+  color: #67e8f9 !important;
+}
+html.dark .hover\:text-indigo-700:hover,
+html.dark .hover\:text-indigo-900:hover {
+  color: #c7d2fe !important;
+}
+html.dark .hover\:text-violet-700:hover {
+  color: #c4b5fd !important;
+}
+html.dark .hover\:text-\[\#111111\]:hover {
+  color: #ffffff !important;
+}
+
+/* 橙色面板（写作仪表盘：今日日更目标 / 日更热力） */
+html.dark .bg-orange-50,
+html.dark .bg-orange-50\/50,
+html.dark .bg-orange-50\/60,
+html.dark .bg-orange-100 {
+  background-color: rgba(124, 45, 18, 0.25) !important;
+  color: #fdba74 !important;
+  border-color: rgba(249, 115, 22, 0.3) !important;
+}
+html.dark .text-orange-950,
+html.dark .text-orange-900,
+html.dark .text-orange-900\/60,
+html.dark .text-orange-900\/70 {
+  color: #fdba74 !important;
+}
+html.dark .border-orange-100,
+html.dark .border-orange-200,
+html.dark .border-orange-300 {
+  border-color: rgba(249, 115, 22, 0.3) !important;
+}
+html.dark .border-orange-400 {
+  border-color: rgba(249, 115, 22, 0.5) !important;
+}
+
+/* 青色面板 */
+html.dark .bg-cyan-50,
+html.dark .bg-cyan-100 {
+  background-color: rgba(8, 51, 68, 0.35) !important;
+  color: #67e8f9 !important;
+  border-color: rgba(6, 182, 212, 0.3) !important;
+}
+html.dark .text-cyan-950,
+html.dark .text-cyan-900,
+html.dark .text-cyan-800 {
+  color: #67e8f9 !important;
+}
+html.dark .border-cyan-100,
+html.dark .border-cyan-200,
+html.dark .border-cyan-300 {
+  border-color: rgba(6, 182, 212, 0.3) !important;
+}
+
+/* 紫红面板（仪表盘：本章健康 / 逐章列表选中） */
+html.dark .bg-fuchsia-50,
+html.dark .bg-fuchsia-50\/40,
+html.dark .bg-fuchsia-50\/80,
+html.dark .bg-fuchsia-100 {
+  background-color: rgba(112, 26, 117, 0.3) !important;
+  color: #f0abfc !important;
+  border-color: rgba(217, 70, 239, 0.3) !important;
+}
+html.dark .text-fuchsia-900,
+html.dark .text-fuchsia-800 {
+  color: #f0abfc !important;
+}
+html.dark .border-fuchsia-100,
+html.dark .border-fuchsia-200,
+html.dark .border-fuchsia-300 {
+  border-color: rgba(217, 70, 239, 0.3) !important;
+}
+
+/* 天蓝面板 */
+html.dark .bg-sky-50,
+html.dark .bg-sky-100 {
+  background-color: rgba(12, 74, 110, 0.3) !important;
+  color: #7dd3fc !important;
+  border-color: rgba(14, 165, 233, 0.3) !important;
+}
+html.dark .text-sky-950,
+html.dark .text-sky-900,
+html.dark .text-sky-800 {
+  color: #7dd3fc !important;
+}
+html.dark .border-sky-100,
+html.dark .border-sky-200 {
+  border-color: rgba(14, 165, 233, 0.3) !important;
+}
+html.dark .border-sky-400 {
+  border-color: rgba(14, 165, 233, 0.5) !important;
+}
+
+/* 紫罗兰面板 */
+html.dark .bg-violet-50,
+html.dark .bg-violet-50\/50,
+html.dark .bg-violet-50\/60,
+html.dark .bg-violet-50\/70,
+html.dark .bg-violet-100,
+html.dark .bg-violet-200 {
+  background-color: rgba(76, 29, 149, 0.3) !important;
+  color: #c4b5fd !important;
+  border-color: rgba(139, 92, 246, 0.3) !important;
+}
+html.dark .text-violet-900\/70,
+html.dark .text-violet-900\/80 {
+  color: #c4b5fd !important;
+}
+html.dark .border-violet-100,
+html.dark .border-violet-200,
+html.dark .border-violet-200\/80,
+html.dark .border-violet-300 {
+  border-color: rgba(139, 92, 246, 0.3) !important;
+}
+html.dark .border-violet-400,
+html.dark .border-violet-600 {
+  border-color: rgba(139, 92, 246, 0.5) !important;
+}
+
+/* 紫色面板 */
+html.dark .bg-purple-50,
+html.dark .bg-purple-100 {
+  background-color: rgba(88, 28, 135, 0.3) !important;
+  color: #d8b4fe !important;
+  border-color: rgba(168, 85, 247, 0.3) !important;
+}
+html.dark .text-purple-900,
+html.dark .text-purple-800,
+html.dark .text-purple-700 {
+  color: #d8b4fe !important;
+}
+html.dark .border-purple-200,
+html.dark .border-purple-300 {
+  border-color: rgba(168, 85, 247, 0.3) !important;
+}
+
+/* 绿色 / 黄色深字提亮 */
+html.dark .text-green-950,
+html.dark .text-green-900,
+html.dark .text-green-800,
+html.dark .text-green-700 {
+  color: #6ee7b7 !important;
+}
+html.dark .text-yellow-950,
+html.dark .text-yellow-900,
+html.dark .text-yellow-800 {
+  color: #fde68a !important;
+}
+
+/* 橙色 / 青色 / 天蓝 / 紫红图标与次级文字提亮（700 级在暗底上过暗） */
+html.dark .text-orange-700,
+html.dark .text-cyan-700,
+html.dark .text-sky-700,
+html.dark .text-fuchsia-700 {
+  color: #e2e8f0 !important;
+}
+
+/* 既有彩色面板的透明度变体补齐 */
+html.dark .bg-emerald-50\/60,
+html.dark .bg-emerald-50\/70,
+html.dark .bg-emerald-200 {
+  background-color: rgba(6, 78, 59, 0.25) !important;
+  color: #6ee7b7 !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+html.dark .text-emerald-900\/90 {
+  color: #a7f3d0 !important;
+}
+html.dark .bg-amber-50\/60,
+html.dark .bg-amber-50\/70 {
+  background-color: rgba(120, 53, 15, 0.25) !important;
+  color: #fcd34d !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+html.dark .bg-rose-50\/40,
+html.dark .bg-rose-50\/70,
+html.dark .bg-rose-200\/80 {
+  background-color: rgba(136, 19, 55, 0.25) !important;
+  color: #fda4af !important;
+  border-color: rgba(244, 63, 94, 0.3) !important;
+}
+html.dark .text-rose-900\/50,
+html.dark .text-rose-900\/90 {
+  color: #fecdd3 !important;
+}
+html.dark .bg-indigo-50\/40,
+html.dark .bg-indigo-50\/60,
+html.dark .bg-indigo-200 {
+  background-color: rgba(49, 46, 129, 0.25) !important;
+  color: #a5b4fc !important;
+  border-color: rgba(99, 102, 241, 0.3) !important;
+}
+html.dark .text-indigo-900\/80 {
+  color: #c7d2fe !important;
+}
+html.dark .bg-teal-50\/40,
+html.dark .bg-teal-50\/50,
+html.dark .bg-teal-50\/90 {
+  background-color: rgba(19, 78, 74, 0.25) !important;
+  color: #5eead4 !important;
+  border-color: rgba(20, 184, 166, 0.3) !important;
+}
+html.dark .text-teal-900\/70,
+html.dark .text-teal-900\/80,
+html.dark .text-teal-900\/85 {
+  color: #99f6e4 !important;
+}
+
+/* 各彩色边框统一压暗（浅色调 0.3、强调调 0.5 透明度） */
+html.dark .border-emerald-100,
+html.dark .border-emerald-200,
+html.dark .border-emerald-300 {
+  border-color: rgba(16, 185, 129, 0.3) !important;
+}
+html.dark .border-emerald-400 {
+  border-color: rgba(16, 185, 129, 0.5) !important;
+}
+html.dark .border-amber-100,
+html.dark .border-amber-200,
+html.dark .border-amber-300 {
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+html.dark .border-amber-400,
+html.dark .border-amber-500,
+html.dark .border-amber-600 {
+  border-color: rgba(245, 158, 11, 0.5) !important;
+}
+html.dark .border-rose-100,
+html.dark .border-rose-200,
+html.dark .border-rose-300 {
+  border-color: rgba(244, 63, 94, 0.3) !important;
+}
+html.dark .border-rose-400,
+html.dark .border-rose-500 {
+  border-color: rgba(244, 63, 94, 0.5) !important;
+}
+html.dark .border-red-100,
+html.dark .border-red-200,
+html.dark .border-red-300 {
+  border-color: rgba(239, 68, 68, 0.3) !important;
+}
+html.dark .border-red-400 {
+  border-color: rgba(239, 68, 68, 0.5) !important;
+}
+html.dark .border-indigo-100,
+html.dark .border-indigo-200,
+html.dark .border-indigo-300 {
+  border-color: rgba(99, 102, 241, 0.3) !important;
+}
+html.dark .border-indigo-400,
+html.dark .border-indigo-500,
+html.dark .border-indigo-600,
+html.dark .border-indigo-700 {
+  border-color: rgba(99, 102, 241, 0.5) !important;
+}
+html.dark .border-teal-100,
+html.dark .border-teal-200,
+html.dark .border-teal-300 {
+  border-color: rgba(20, 184, 166, 0.3) !important;
+}
+html.dark .border-teal-400,
+html.dark .border-teal-600 {
+  border-color: rgba(20, 184, 166, 0.5) !important;
+}
+
+/* 任意 Hex 色值补齐（角色追踪表 / 设定管理器等） */
+html.dark .bg-\[\#f9f9f9\] {
+  background-color: var(--app-surface-subtle) !important;
+}
+html.dark .bg-\[\#fefdfa\] {
+  background-color: rgba(120, 53, 15, 0.25) !important;
+}
+html.dark .border-\[\#cccccc\],
+html.dark .border-\[\#d1d1d1\],
+html.dark .border-\[\#e0e0e0\],
+html.dark .border-\[\#eeeeee\] {
+  border-color: var(--app-border) !important;
+}
+html.dark .border-\[\#d4a017\] {
+  border-color: rgba(245, 158, 11, 0.4) !important;
+}
+html.dark .text-\[\#8c6b00\] {
+  color: #fcd34d !important;
+}
+html.dark .text-\[\#333333\],
+html.dark .text-\[\#666666\] {
+  color: #e4e4e7 !important;
+}
+html.dark .text-\[\#888888\] {
+  color: #a1a1aa !important;
+}
+html.dark .text-\[\#2e8b57\] {
+  color: #6ee7b7 !important;
+}
+
+/* 正文波浪线待修标记（镜像层）在深色模式下的对比度 */
+html.dark .revision-wavy-mark {
+  text-decoration-color: #f43f5e;
+  background: linear-gradient(
+    to bottom,
+    rgba(244, 63, 94, 0.15) 0%,
+    rgba(244, 63, 94, 0.35) 100%
+  );
+}
+
+

@@ -246,7 +246,8 @@ export const initialChapters: Chapter[] = [
   {
     id: 'chap-1',
     number: 1,
-    title: '第一章 幽冥废墟，断剑生星晷',
+    title: '幽冥废墟，断剑生星晷',
+    volumeNumber: 1,
     summary: '叶无痕与苏清雪带队奉命进入断云岭幽冥废墟搜寻失踪的宗门执事。在搜寻途中，叶无痕掌心的星晷印记发烫，提前预知到了废墟阵眼的崩坏与夜间暴雾，两人在千钧一发之际带小队撤入残破古神殿。',
     wordCount: 1650,
     status: '校验通过',
@@ -305,7 +306,8 @@ export const initialChapters: Chapter[] = [
   {
     id: 'chap-2',
     number: 2,
-    title: '第二章 尸骨与朱砂密函',
+    title: '尸骨与朱砂密函',
+    volumeNumber: 1,
     summary: '夜深雾暴肆虐，在神殿深处，叶无痕发现了此前失踪执事的尸骨。通过尸骨上的剑伤痕迹与一封密令，推断出此次任务根本不是搜救，而是暗线执事萧万山为了活捉苏清雪作为血祭药引的设局。',
     wordCount: 420,
     status: '草稿生成中',

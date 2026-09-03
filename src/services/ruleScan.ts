@@ -1,3 +1,4 @@
+import { proseWords } from './proseWords';
 import type { StyleConfig } from '../types/novel';
 import { scoreOpeningEcho } from './antiEcho';
 import {
@@ -309,7 +310,7 @@ export function ruleScanProse(
   if (targetWords > 0) {
     const ratio = options?.wordCountMinRatio ?? 0.9;
     const minWords = Math.round(targetWords * ratio);
-    const currentWords = text.replace(/\s+/g, '').length;
+    const currentWords = proseWords(text);
     if (currentWords < minWords) {
       const deficit = minWords - currentWords;
       const severe = currentWords < targetWords * 0.7;

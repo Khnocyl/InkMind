@@ -11,6 +11,7 @@ import { isChapterLocked, lockReason } from './chapterLock';
 import { memorySummaryCounts } from './storyMemory';
 import { retrieveMemoryForChapter } from './memoryRetrieval';
 import { hasIntentDraft, isIntentConfirmed } from './chapterIntent';
+import { resolveChapterWordTarget, contentWordsOrFallback } from './proseWords';
 
 export type PrewriteSeverity = 'ok' | 'warn' | 'error';
 
@@ -380,10 +381,7 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
   }
 
   // —— 6. 字数目标 ——
-  const targetWords =
-    projectConfig?.targetWordCountPerChapter ??
-    projectConfig?.wordsPerChapter ??
-    null;
+  const targetWords = resolveChapterWordTarget(projectConfig);
   if (targetWords && targetWords > 0) {
     push({
       id: 'word_target',
@@ -479,7 +477,7 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
 
   // —— 7. 定稿锁定 / 覆盖风险 ——
   const existingWords =
-    chapter.wordCount || (chapter.content || '').replace(/\s+/g, '').length || 0;
+    contentWordsOrFallback(chapter.content, chapter.wordCount) || 0;
   if (isChapterLocked(chapter)) {
     push({
       id: 'overwrite_risk',

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { BookProject, ProjectConfig, Character, WorldSetting, Volume, Chapter, WizardStep, StyleProfile, StyleConfig } from '../../types/novel';
 import { InspirationStep } from './InspirationStep';
 import { TitleReviewStep } from './TitleReviewStep';
@@ -13,13 +13,17 @@ import {
   // 保留导出引用，避免热更新残留旧代码调用时 ReferenceError
   buildOutlinePrompt,
 } from '../../services/prompts';
-import { generateFullOutline } from '../../services/outlineGenerate';
+import { generateFullOutline, fillPlaceholderChapters } from '../../services/outlineGenerate';
 import { saveProject } from '../../services/storage';
 import {
+  formatStyleStructureForPrompt,
+  getActiveStyleProfile,
   importStyleProfile,
   setActiveStyleProfile,
 } from '../../services/styleImitate';
-import { Sparkles, CheckCircle, ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Library, X } from 'lucide-react';
+import { WizardStepper } from './WizardStepper';
+import { WindowControls } from '../WindowControls';
 
 // 防止 tree-shake 掉 buildOutlinePrompt（兼容热更新残留）
 void buildOutlinePrompt;
@@ -29,14 +33,15 @@ interface ProjectWizardProps {
   onProjectChange: (updated: BookProject) => void;
   onComplete: (finalProject: BookProject) => void;
   onBackToMenu?: () => void;
+  onClose?: () => void;
 }
 
-const STEPS_LIST: { step: WizardStep; label: string; num: number }[] = [
-  { step: 'inspiration', label: '1. 灵感与参数', num: 1 },
-  { step: 'title-review', label: '2. 书名与核心简介', num: 2 },
-  { step: 'characters-review', label: '3. 核心出场人物', num: 3 },
-  { step: 'world-review', label: '4. 世界观与红线铁律', num: 4 },
-  { step: 'outline-review', label: '5. 分卷与拆章梗概', num: 5 },
+const STEPS_LIST: { step: WizardStep; label: string; short: string; num: number }[] = [
+  { step: 'inspiration', label: '1. 灵感与参数', short: '灵感', num: 1 },
+  { step: 'title-review', label: '2. 书名与核心简介', short: '书名', num: 2 },
+  { step: 'characters-review', label: '3. 核心出场人物', short: '角色', num: 3 },
+  { step: 'world-review', label: '4. 世界观与红线铁律', short: '世界观', num: 4 },
+  { step: 'outline-review', label: '5. 分卷与拆章梗概', short: '大纲', num: 5 },
 ];
 
 const VIEW_STEPS: WizardStep[] = [
@@ -64,6 +69,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
   onProjectChange,
   onComplete,
   onBackToMenu,
+  onClose,
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
@@ -119,7 +125,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     setErrorMsg('');
     setProgressMsg('正在全盘解构你的灵感逻辑，脑暴推导引人入胜的绝佳书名与底层梗概...');
     try {
-      const prompt = buildTitleAndSynopsisPrompt(config);
+      const styleBlock = formatStyleStructureForPrompt(
+        meta?.profile ?? getActiveStyleProfile(project.styleConfig),
+        config.genre
+      );
+      const prompt = buildTitleAndSynopsisPrompt(config, styleBlock);
       const res = await generateJSON<{
         title: string;
         subtitle: string;
@@ -188,7 +198,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
         synopsis: titleData.synopsis,
       });
 
-      const prompt = buildCharactersPrompt(project.config, titleData.title, titleData.synopsis);
+      const styleBlock = formatStyleStructureForPrompt(
+        getActiveStyleProfile(project.styleConfig),
+        titleData.genre || project.genre || project.config.genre
+      );
+      const prompt = buildCharactersPrompt(project.config, titleData.title, titleData.synopsis, styleBlock);
       const res = await generateJSON<{ characters: Character[] }>(prompt, 0.75);
 
       await updateAndSave({
@@ -211,7 +225,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     try {
       await updateAndSave({ characters: updatedChars });
 
-      const prompt = buildWorldbuildingPrompt(project.config, project.title, project.synopsis, updatedChars);
+      const styleBlock = formatStyleStructureForPrompt(
+        getActiveStyleProfile(project.styleConfig),
+        project.genre || project.config.genre
+      );
+      const prompt = buildWorldbuildingPrompt(project.config, project.title, project.synopsis, updatedChars, styleBlock);
       const res = await generateJSON<{ settings: WorldSetting[] }>(prompt, 0.7);
 
       await updateAndSave({
@@ -241,6 +259,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
         synopsis: project.synopsis,
         characters: project.characters,
         settings: updatedSettings,
+        styleConfig: project.styleConfig,
         onProgress: (msg) => setProgressMsg(msg),
       });
 
@@ -298,6 +317,39 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
   };
 
+  // 第五步内「只补占位章」：保留现有分卷结构与已拆章，仅重写占位章梗概
+  const handleFillPlaceholders = async () => {
+    setIsGenerating(true);
+    setErrorMsg('');
+    setProgressMsg('AI 正在为占位章补齐详案梗概（保留现有分卷与拆章结果，多轮 API，请稍候）…');
+    try {
+      const result = await fillPlaceholderChapters({
+        config: project.config,
+        title: project.title,
+        synopsis: project.synopsis,
+        characters: project.characters,
+        settings: project.settings,
+        styleConfig: project.styleConfig,
+        volumes: project.volumes,
+        chapters: project.chapters,
+        onProgress: (msg) => setProgressMsg(msg),
+      });
+      // 无损增量：只替换 chapters，不动 volumes / currentChapterId
+      await updateAndSave({ chapters: result.chapters });
+      if (result.remainingCount > 0) {
+        setErrorMsg(
+          `占位章补齐：本次成功 ${result.filledCount} 章，还剩 ${result.remainingCount} 章未补齐，可再点一次「AI 补齐占位章梗概」继续。`
+        );
+      } else {
+        setErrorMsg('');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'AI 补齐占位章梗概发生错误');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   // Final confirmation step
   const handleFinishWizard = async (finalVolumes: Volume[], finalChapters: Chapter[]) => {
     // 强制落盘 ready（updateAndSave 对 ready 写入放行）
@@ -316,74 +368,88 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
-
+    <div className="h-full flex-1 flex flex-col bg-slate-50 text-slate-900 overflow-hidden select-none">
       {/* 顶部导航与进度指示条 */}
-      <header className="bg-white/90 border-b border-slate-200 sticky top-0 z-40 backdrop-blur-md px-6 py-4 shadow-sm">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            {onBackToMenu && (
-              <button
-                onClick={onBackToMenu}
-                className="p-2 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all flex items-center space-x-1.5 text-xs font-medium border border-slate-200"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>返回书库</span>
-              </button>
+      <header className="h-[48px] bg-white border-b border-slate-200 px-5 flex items-center justify-between shrink-0 select-none app-region-drag z-40 shadow-xs">
+        {/* 左侧：返回按钮 + 标题 */}
+        <div className="flex items-center space-x-2.5 min-w-0 app-region-no-drag">
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-all flex items-center space-x-1 text-xs font-medium border border-slate-200 cursor-pointer shrink-0"
+              title="返回工作台（保持当前进度）"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">工作台</span>
+            </button>
+          )}
+          {onBackToMenu && (
+            <button
+              type="button"
+              onClick={onBackToMenu}
+              className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-all flex items-center space-x-1 text-xs font-medium border border-slate-200 cursor-pointer shrink-0"
+              title="打开书库切换作品"
+            >
+              <Library className="w-3.5 h-3.5 text-slate-500" />
+              <span className="hidden sm:inline">书库</span>
+            </button>
+          )}
+          <div className="flex items-center space-x-2 min-w-0">
+            <img
+              src="/icon.png"
+              alt="InkMind"
+              className="w-5 h-5 rounded-md object-cover shadow-xs shrink-0"
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = 'none';
+              }}
+            />
+            <h1 className="text-xs sm:text-sm font-bold text-slate-900 flex items-center space-x-1.5 truncate">
+              <span className="truncate max-w-[130px] sm:max-w-[200px] lg:max-w-[280px]">
+                {project.title || '新书孵化'}
+              </span>
+              <span className="text-slate-400 font-normal">设定向导</span>
+            </h1>
+            {persistedReady && (
+              <span className="hidden xl:inline text-[9.5px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-medium shrink-0">
+                已完成孵化
+              </span>
             )}
-            <div>
-              <h1 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                <Sparkles className="w-5 h-5 text-indigo-600" />
-                <span>AI 小说全自动设定向导：{project.title || '新书孵化中'}</span>
-              </h1>
-              {persistedReady && (
-                <p className="text-[11px] text-emerald-700 mt-0.5">
-                  本书已完成孵化 · 可浏览/微调各步，不会再次被标为「孵化中」
-                </p>
-              )}
-            </div>
           </div>
+        </div>
 
-          {/* 步骤条指示器 */}
-          <div className="hidden md:flex items-center space-x-2">
-            {STEPS_LIST.map((item, idx) => {
-              const isActive = item.step === currentStep;
-              const viewIdx = STEPS_LIST.findIndex((s) => s.step === currentStep);
-              const isDone = persistedReady || viewIdx > idx;
+        {/* 中间：横向步骤指示条 */}
+        <div className="flex items-center shrink-0 app-region-no-drag px-2">
+          <WizardStepper
+            steps={STEPS_LIST}
+            currentStep={currentStep}
+            allCompleted={persistedReady}
+            onStepSelect={goToStep}
+          />
+        </div>
 
-              return (
-                <React.Fragment key={item.step}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isDone || isActive) goToStep(item.step);
-                    }}
-                    disabled={!isDone && !isActive}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all ${
-                      isActive
-                        ? 'bg-black text-white shadow-md'
-                        : isDone
-                        ? 'bg-slate-100 text-emerald-700 hover:bg-slate-200 cursor-pointer border border-slate-200'
-                        : 'bg-slate-50 text-slate-400 cursor-not-allowed border border-slate-200'
-                    }`}
-                  >
-                    {isDone ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> : <span>{item.num}</span>}
-                    <span>{item.label}</span>
-                  </button>
-                  {idx < STEPS_LIST.length - 1 && <span className="text-slate-400 text-sm">→</span>}
-                </React.Fragment>
-              );
-            })}
-          </div>
+        {/* 右侧：关闭与桌面端窗口控件 */}
+        <div className="flex items-center space-x-2 app-region-no-drag shrink-0">
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="hidden sm:flex items-center space-x-1 text-xs text-slate-500 hover:text-slate-800 p-1.5 rounded-lg hover:bg-slate-100 transition-all cursor-pointer"
+              title="退出向导（返回工作台）"
+            >
+              <X size={15} />
+            </button>
+          )}
+          <WindowControls />
         </div>
       </header>
 
       {/* 错误警告条 */}
       {errorMsg && (
-        <div className="max-w-4xl mx-auto mt-4 w-full px-6">
+        <div className="max-w-4xl mx-auto mt-4 w-full px-6 shrink-0">
           <div className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-xl flex items-center justify-between text-sm shadow-md">
             <span>⚠️ {errorMsg}</span>
-            <button onClick={() => setErrorMsg('')} className="font-bold text-red-600 hover:text-red-900 px-2">
+            <button type="button" onClick={() => setErrorMsg('')} className="font-bold text-red-600 hover:text-red-900 px-2 cursor-pointer">
               ×
             </button>
           </div>
@@ -391,7 +457,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       )}
 
       {/* 步骤页面容器 */}
-      <main className="flex-1 px-4 pb-12">
+      <main className="flex-1 overflow-y-auto px-4 pb-12 select-auto">
         {currentStep === 'inspiration' && (
           <InspirationStep
             initialConfig={project.config}
@@ -462,6 +528,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onNext={handleFinishWizard}
             onPrev={() => goToStep('world-review')}
             onRegenerate={() => handleGenerateOutline(project.settings)}
+            onFillPlaceholders={handleFillPlaceholders}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
           />

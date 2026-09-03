@@ -15,7 +15,7 @@ import type { PreviousContextPack } from '../services/contextPack';
 import type { RuleScanResult } from '../services/ruleScan';
 import type { EngineViolation } from './discipline';
 
-/** 对齐 InkOS 的管线阶段 */
+/** 多 Agent 创作管线阶段 */
 export type EngineStage =
   | 'plan'
   | 'write'
@@ -51,6 +51,8 @@ export interface ChapterPipelineInput {
   maxReviseRounds?: number;
   /** 综合分绿通门槛，默认 75 */
   minGreenScore?: number;
+  /** 用户中止信号：触发后管线在阶段边界尽快停止（已流式产出的部分由调用方保留为草稿） */
+  signal?: AbortSignal;
 }
 
 export interface ChapterPipelineHooks {

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import type { ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'fs'
@@ -20,6 +21,20 @@ function readApiToken(): string {
   }
 }
 
+// dev 与 preview 共用的 /api 代理：转发时注入本机 API Token
+const apiProxy: Record<string, ProxyOptions> = {
+  '/api': {
+    target: 'http://localhost:3001',
+    changeOrigin: true,
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq) => {
+        const token = readApiToken()
+        if (token) proxyReq.setHeader('x-api-token', token)
+      })
+    },
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -33,17 +48,10 @@ export default defineConfig({
         '**/config.json',
       ],
     },
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            const token = readApiToken()
-            if (token) proxyReq.setHeader('x-api-token', token)
-          })
-        },
-      },
-    },
+    proxy: apiProxy,
+  },
+  // vite preview 也走同一代理，保证构建产物预览态可用
+  preview: {
+    proxy: apiProxy,
   },
 })

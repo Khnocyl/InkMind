@@ -1,5 +1,5 @@
 /**
- * 正文标点确定性收尾（对齐 story-deslop/scripts/normalize-punctuation.js）
+ * 正文标点确定性收尾
  * 对字符串就地规范化，不读文件。
  *
  * - …… / … → 句号或逗号语境下的中文断句（简化：多省略号→句号）
@@ -18,6 +18,104 @@ export interface NormalizePunctuationResult {
   text: string;
   findings: PunctuationFinding[];
   changed: boolean;
+}
+
+// ── 正文符号规范化（管线 Writer 出口强制执行）──────────────────────────
+
+export type SymbolFindingType =
+  | 'md-heading-chapter'
+  | 'md-heading'
+  | 'md-emphasis'
+  | 'quote-style';
+
+export interface SymbolFinding {
+  type: SymbolFindingType;
+  message: string;
+  count: number;
+}
+
+export interface NormalizeSymbolsResult {
+  text: string;
+  findings: SymbolFinding[];
+  changed: boolean;
+}
+
+/**
+ * 正文符号与 Markdown 残留清洗：
+ * 1. Markdown 标题行——`# 第一章 · xxx` 这类与章节元信息重复的整行删除，
+ *    其余标题仅去掉 # 记号保留文字；
+ * 2. Markdown 强调/代码标记——**粗体**、*斜体*、`代码` 只留内容；
+ * 3. 引号统一——对白直角引号「」/『』改为中文双引号 “”/‘’（大陆网文规范）。
+ * 不碰省略号/破折号（那是文风层的事，由 punctuationTolerance 决定）。
+ */
+export function normalizeProseSymbols(input: string): NormalizeSymbolsResult {
+  let text = input || '';
+  const findings: SymbolFinding[] = [];
+
+  // 1a. 与章节元信息重复的标题行（"# 第一章 · 雨夜订单"）——整行删除
+  const chapterHeadingRe = /^[ \t]*#{1,6}[ \t]*第[一二三四五六七八九十百千0-9]+章[^\n]*$/gm;
+  const chapterHeadings = countRe(chapterHeadingRe, text);
+  if (chapterHeadings > 0) {
+    text = text.replace(chapterHeadingRe, '');
+    findings.push({
+      type: 'md-heading-chapter',
+      message: '删除正文中的章节标题行',
+      count: chapterHeadings,
+    });
+  }
+
+  // 1b. 其余 markdown 标题——只去 # 记号
+  const headingRe = /^[ \t]*#{1,6}[ \t]+/gm;
+  const headings = countRe(headingRe, text);
+  if (headings > 0) {
+    text = text.replace(headingRe, '');
+    findings.push({
+      type: 'md-heading',
+      message: '去除标题记号 #',
+      count: headings,
+    });
+  }
+
+  // 2. 强调与代码标记：**粗体** → 粗体；*斜体* → 斜体；`代码` → 代码
+  let emphasisCount = countRe(/\*\*([^*\n]+)\*\*/g, text);
+  emphasisCount += countRe(/(?<![*\w])\*([^*\n]+?)\*(?![*\w])/g, text);
+  emphasisCount += countRe(/`([^`\n]+)`/g, text);
+  if (emphasisCount > 0) {
+    text = text
+      .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+      .replace(/(?<![*\w])\*([^*\n]+?)\*(?![*\w])/g, '$1')
+      .replace(/`([^`\n]+)`/g, '$1');
+    findings.push({
+      type: 'md-emphasis',
+      message: '去除 Markdown 加粗/斜体/代码记号',
+      count: emphasisCount,
+    });
+  }
+
+  // 3. 引号统一：直角 → 中文双引号（对白规范）；开闭按字符直接映射
+  const cornerOpen = countRe(/[「『]/g, text);
+  const cornerClose = countRe(/[」』]/g, text);
+  if (cornerOpen > 0 || cornerClose > 0) {
+    text = text
+      .replace(/「/g, '\u201C')
+      .replace(/『/g, '\u2018')
+      .replace(/」/g, '\u201D')
+      .replace(/』/g, '\u2019');
+    findings.push({
+      type: 'quote-style',
+      message: '直角引号「」统一为双引号“”',
+      count: cornerOpen + cornerClose,
+    });
+  }
+
+  // 收尾：清掉删除标题行留下的连续空行与正文首部空行
+  text = text.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+
+  return {
+    text,
+    findings,
+    changed: text !== (input || ''),
+  };
 }
 
 function countRe(re: RegExp, text: string): number {

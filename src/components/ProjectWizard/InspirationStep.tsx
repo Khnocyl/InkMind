@@ -1,7 +1,8 @@
-﻿import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type { ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel';
-import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2 } from 'lucide-react';
+import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2, RefreshCw } from 'lucide-react';
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
+import { generateInspirationSparks, type InspirationSpark } from '../../services/inspirationSparks';
 import { analyzeReferenceStyle, importStyleProfile } from '../../services/styleImitate';
 import {
   mergeWizardStyleProfiles,
@@ -84,6 +85,10 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     (initialConfig.customParameters?.genrePackId as string) ||
       resolveGenrePack(initialConfig.genre || PRESET_INSPIRATIONS[0].genre).id
   );
+  /** AI 刷新的灵感火花（与内置 PRESET_INSPIRATIONS 合并展示） */
+  const [aiSparks, setAiSparks] = useState<InspirationSpark[]>([]);
+  const [sparksBusy, setSparksBusy] = useState(false);
+  const [sparksMsg, setSparksMsg] = useState<string | null>(null);
 
   /** select value: preset 原文 或 profile:<id> */
   const mergedProfiles = useMemo(
@@ -177,6 +182,26 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
 
   const selectedPack = packs.find((p) => p.id === packId) || packs[0];
 
+  /** AI 刷新灵感火花：按当前题材脑暴一批新起点（覆盖替换上一批 AI 结果） */
+  const handleRefreshSparks = async () => {
+    if (sparksBusy) return;
+    setSparksBusy(true);
+    setSparksMsg('AI 正在按题材脑暴新的灵感火花…');
+    try {
+      const sparks = await generateInspirationSparks(genre, 6);
+      if (sparks.length === 0) {
+        setSparksMsg('生成结果为空，请重试。');
+      } else {
+        setAiSparks(sparks);
+        setSparksMsg('已生成 ' + sparks.length + ' 条新灵感（点击即可填充；再次刷新会替换本批）。');
+      }
+    } catch (err: any) {
+      setSparksMsg('刷新失败：' + (err?.message || String(err)));
+    } finally {
+      setSparksBusy(false);
+    }
+  };
+
   const resolveWritingStyle = (
     key: string
   ): {
@@ -227,29 +252,83 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
 
   return (
     <div className="max-w-5xl mx-auto py-6 animate-fadeIn">
-      <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-xl">
-        <div className="flex items-center space-x-3 mb-6 border-b border-slate-200 pb-5">
-          <div className="p-3 bg-indigo-600 rounded-xl shadow-md text-white">
-            <Wand2 className="w-6 h-6 animate-pulse" />
+      <div className="bg-white border border-slate-200 rounded-2xl p-6 md:p-8 shadow-xl">
+        {/* 顶部标题卡 */}
+        <div className="flex items-center space-x-3 mb-7 border-b border-slate-200 pb-6">
+          <div className="p-3 bg-black rounded-2xl shadow-md text-white shrink-0">
+            <Sparkles className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">
+            <h2 className="text-xl font-bold text-slate-900">
               第一步：注入最初灵感，全自动推导完整脉络
             </h2>
-            <p className="text-sm text-slate-600 mt-1">
+            <p className="text-xs text-slate-500 mt-1">
               只需输入你心中渴望创作的故事起点，或直接点击下方灵感模板。AI 将帮你构建宏伟丰满的小说宇宙。
             </p>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
-          {/* 灵感模板快捷选择 */}
+          {/* 灵感火花速选（点击立即填充） */}
           <div>
-            <label className="block text-xs font-semibold text-indigo-700 uppercase tracking-wider mb-3 flex items-center space-x-1.5">
-              <Compass className="w-4 h-4" />
-              <span>灵感火花速选预设（点击立即填充）</span>
-            </label>
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-900 tracking-wide">
+                <Compass className="w-4 h-4 text-slate-700" />
+                <span>灵感火花速选预设（点击立即填充）</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => void handleRefreshSparks()}
+                disabled={sparksBusy}
+                className="flex items-center space-x-1 text-[11px] font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 px-2.5 py-1 rounded-full disabled:opacity-50 transition-all shrink-0"
+                title="按当前题材用 AI 脑暴一批新的灵感火花（替换上一批 AI 结果）"
+              >
+                {sparksBusy ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3 h-3" />
+                )}
+                <span>{sparksBusy ? '脑暴中…' : 'AI 刷新灵感'}</span>
+              </button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {aiSparks.length > 0 && (
+                <div className="md:col-span-2 flex items-center space-x-2 text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                  <Sparkles className="w-3 h-3 shrink-0" />
+                  <span className="flex-1">
+                    {sparksMsg || `AI 新灵感 ${aiSparks.length} 条（点击填充；再点右上角刷新可换一批）`}
+                  </span>
+                </div>
+              )}
+              {aiSparks.map((spark, idx) => (
+                <button
+                  key={`ai-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setInspiration(spark.text);
+                    setGenre(spark.genre);
+                    const pack = resolveGenrePack(spark.genre);
+                    if (pack?.id) setPackId(pack.id);
+                  }}
+                  className={`text-left p-4 rounded-xl border transition-all duration-300 relative overflow-hidden group border-dashed ${
+                    inspiration === spark.text
+                      ? 'border-slate-900 ring-1 ring-slate-900 bg-amber-50/60 shadow-md'
+                      : 'border-slate-300 bg-white hover:border-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
+                    <span className="font-semibold text-sm text-slate-900 truncate">
+                      {spark.title}
+                    </span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white text-slate-600 border border-slate-200 font-medium shrink-0">
+                      {spark.genre}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                    {spark.text}
+                  </p>
+                </button>
+              ))}
               {PRESET_INSPIRATIONS.map((preset, idx) => (
                 <button
                   key={idx}
@@ -261,15 +340,15 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                   }}
                   className={`text-left p-4 rounded-xl border transition-all duration-300 relative overflow-hidden group ${
                     inspiration === preset.text
-                      ? 'border-indigo-600 bg-indigo-50 shadow-md'
-                      : 'border-slate-200 bg-slate-50 hover:border-slate-400 hover:bg-slate-100'
+                      ? 'border-slate-900 ring-1 ring-slate-900 bg-amber-50/60 shadow-md'
+                      : 'border-slate-200 bg-white hover:border-slate-500 hover:bg-slate-50'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="font-semibold text-sm text-slate-900 group-hover:text-indigo-600 transition-colors">
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
+                    <span className="font-semibold text-sm text-slate-900 truncate">
                       {preset.title}
                     </span>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white text-indigo-700 border border-slate-200 font-medium">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-medium shrink-0">
                       {preset.genre}
                     </span>
                   </div>
@@ -283,12 +362,12 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
 
           {/* 核心灵感输入框 */}
           <div className="relative">
-            <label className="block text-sm font-semibold text-slate-900 mb-2 flex items-center justify-between">
+            <label className="block text-sm font-semibold text-slate-900 mb-2 flex items-center justify-between gap-2">
               <span className="flex items-center space-x-2">
-                <Sparkles className="w-4 h-4 text-indigo-600" />
+                <Sparkles className="w-4 h-4 text-slate-700" />
                 <span>你的故事灵感核心描述</span>
               </span>
-              <span className="text-xs text-slate-500 font-normal">
+              <span className="text-xs text-slate-400 font-normal text-right">
                 建议包含：背景设想、主角金手指或处境、你想展现的核心矛盾
               </span>
             </label>
@@ -298,129 +377,133 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
               rows={6}
               disabled={isGenerating}
               placeholder="在这里写下你的灵感描述……"
-              className="w-full bg-slate-50 border border-slate-300 rounded-xl p-4 text-slate-900 placeholder-slate-400 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 focus:outline-none transition-all resize-y text-sm leading-relaxed shadow-inner focus:bg-white"
+              className="w-full bg-slate-50 border border-slate-300 rounded-xl p-4 text-slate-900 placeholder-slate-400 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 focus:outline-none transition-all resize-y text-sm leading-relaxed shadow-inner focus:bg-white min-h-[120px]"
             />
           </div>
 
-          {/* 参数和风格配置格 */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 bg-slate-50 p-6 rounded-xl border border-slate-200">
-            {/* 题材包 */}
-            <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
-                <Library className="w-3.5 h-3.5 text-violet-600" />
-                <span>题材规则包（写章约束）</span>
-              </label>
-              <select
-                value={packId}
-                disabled={isGenerating}
-                onChange={(e) => {
-                  const id = e.target.value;
-                  setPackId(id);
-                  const p = packs.find((x) => x.id === id);
-                  if (p) setGenre(p.name);
-                }}
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none"
-              >
-                {packs.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{selectedPack.description}</p>
-            </div>
+          {/* 配置卡（浅灰底内嵌） */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 md:p-6 space-y-6">
+            {/* 题材规则包 / 题材标签：两列 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
+                  <Library className="w-3.5 h-3.5 text-slate-700" />
+                  <span>题材规则包（写章约束）</span>
+                </label>
+                <select
+                  value={packId}
+                  disabled={isGenerating}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setPackId(id);
+                    const p = packs.find((x) => x.id === id);
+                    if (p) setGenre(p.name);
+                  }}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:outline-none"
+                >
+                  {packs.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{selectedPack.description}</p>
+              </div>
 
-            {/* 题材标签 */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
-                <BookOpen className="w-3.5 h-3.5 text-blue-600" />
-                <span>题材标签（展示用）</span>
-              </label>
-              <input
-                type="text"
-                value={genre}
-                onChange={(e) => setGenre(e.target.value)}
-                disabled={isGenerating}
-                placeholder="如 东方玄幻·暗黑诡秘"
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none"
-              />
-            </div>
-
-            {/* 章节数量 */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
-                <Layers className="w-3.5 h-3.5 text-emerald-600" />
-                <span>目标总章节数：<strong className="text-emerald-700 font-bold">{totalChapters} 章</strong></span>
-              </label>
-              <input
-                type="range"
-                min={20}
-                max={500}
-                step={10}
-                value={totalChapters}
-                onChange={(e) => setTotalChapters(Number(e.target.value))}
-                disabled={isGenerating}
-                className="w-full accent-emerald-600 mt-1 cursor-pointer"
-              />
-              <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
-                <span>20章(短篇)</span>
-                <span>100章(主流)</span>
-                <span>500章(宏篇)</span>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
+                  <BookOpen className="w-3.5 h-3.5 text-slate-700" />
+                  <span>题材标签（展示用）</span>
+                </label>
+                <input
+                  type="text"
+                  value={genre}
+                  onChange={(e) => setGenre(e.target.value)}
+                  disabled={isGenerating}
+                  placeholder="如 东方玄幻·暗黑诡秘"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:outline-none"
+                />
               </div>
             </div>
 
-            {/* 每章字数 */}
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
-                <Type className="w-3.5 h-3.5 text-purple-600" />
-                <span>单章目标字数：<strong className="text-purple-700 font-bold">{wordsPerChapter} 字</strong></span>
-              </label>
-              <input
-                type="range"
-                min={2000}
-                max={6000}
-                step={500}
-                value={wordsPerChapter}
-                onChange={(e) => setWordsPerChapter(Number(e.target.value))}
-                disabled={isGenerating}
-                className="w-full accent-purple-600 mt-1 cursor-pointer"
-              />
-              <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
-                <span>2000字(连载)</span>
-                <span>3500(主流)</span>
-                <span>6000(大章)</span>
-              </div>
-            </div>
-
-            {/* 全书目标预估（与顶栏/仪表盘同源字段） */}
-            <div className="md:col-span-2 lg:col-span-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-xs text-emerald-950">
-                <div className="font-bold">预估全书目标（同步进度条）</div>
-                <div className="text-[11px] text-emerald-900/80 mt-0.5 font-mono">
-                  {totalChapters} 章 × {wordsPerChapter.toLocaleString()} 字/章
+            {/* 两个滑杆：目标总章节数 / 单章目标字数 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
+                  <Layers className="w-3.5 h-3.5 text-slate-700" />
+                  <span>目标总章节数：<strong className="text-slate-900 font-bold">{totalChapters} 章</strong></span>
+                </label>
+                <input
+                  type="range"
+                  min={20}
+                  max={500}
+                  step={10}
+                  value={totalChapters}
+                  onChange={(e) => setTotalChapters(Number(e.target.value))}
+                  disabled={isGenerating}
+                  className="w-full accent-slate-900 mt-1 cursor-pointer"
+                />
+                <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
+                  <span>20章(短篇)</span>
+                  <span>100章(主推)</span>
+                  <span>500章(宏篇)</span>
                 </div>
               </div>
-              <div className="text-right">
-                <div className="text-lg font-mono font-bold text-emerald-800">
-                  {estimatedTotal.toLocaleString()} 字
-                </div>
-                <div className="text-[11px] text-emerald-700">
-                  ≈ {(estimatedTotal / 10000).toFixed(1)} 万字
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
+                  <Type className="w-3.5 h-3.5 text-slate-700" />
+                  <span>单章目标字数：<strong className="text-slate-900 font-bold">{wordsPerChapter} 字</strong></span>
+                </label>
+                <input
+                  type="range"
+                  min={2000}
+                  max={6000}
+                  step={500}
+                  value={wordsPerChapter}
+                  onChange={(e) => setWordsPerChapter(Number(e.target.value))}
+                  disabled={isGenerating}
+                  className="w-full accent-slate-900 mt-1 cursor-pointer"
+                />
+                <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
+                  <span>2000字(连载)</span>
+                  <span>3000(主推)</span>
+                  <span>6000(大章)</span>
                 </div>
               </div>
             </div>
+          </div>
 
-            {/* 写作风格：内置预设 + 本书已导入仿写 */}
-            <div className="md:col-span-2 lg:col-span-1">
+          {/* 预估全书目标（同步进度条） */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4">
+            <div className="text-xs text-slate-600">
+              <div className="font-bold text-slate-900">预估全书目标（同步进度条）</div>
+              <div className="text-[11px] text-slate-500 mt-0.5 font-mono">
+                {totalChapters} 章 × {wordsPerChapter.toLocaleString()} 字/章
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-bold text-slate-900 leading-tight">
+                ≈ {(estimatedTotal / 10000).toFixed(1)} 万字
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">
+                {estimatedTotal.toLocaleString()} 字
+              </div>
+            </div>
+          </div>
+
+          {/* 行文文风与短句约束 + 向导内导入参考文风 */}
+          <div className="space-y-4">
+            <div>
               <label className="block text-xs font-medium text-slate-700 mb-2 flex items-center space-x-1.5">
-                <Flame className="w-3.5 h-3.5 text-amber-600" />
+                <Flame className="w-3.5 h-3.5 text-slate-700" />
                 <span>行文文风与短句约束</span>
               </label>
               <select
                 value={styleKey}
                 onChange={(e) => setStyleKey(e.target.value)}
                 disabled={isGenerating}
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none truncate"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none truncate"
               >
                 {mergedProfiles.length > 0 && (
                   <optgroup label="文风仿写档案">
@@ -458,8 +541,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
 
             {/* R3 收尾：向导内直接导入参考文风（创建新书时选定文风） */}
             {onStyleConfigChange && (
-              <div className="md:col-span-2 lg:col-span-1 mt-3 rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 space-y-2">
-                <div className="flex items-center space-x-1.5 text-[11px] font-semibold text-indigo-800">
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 space-y-2">
+                <div className="flex items-center space-x-1.5 text-[11px] font-semibold text-slate-700">
                   <Fingerprint className="w-3.5 h-3.5" />
                   <span>导入参考文风（可选，本新书直接启用）</span>
                 </div>
@@ -469,14 +552,14 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                   placeholder="粘贴一段目标作者的样章/片段（500–5000 字效果最佳）…"
                   rows={3}
                   disabled={styleBusy || isGenerating}
-                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none resize-none"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:border-slate-900 focus:outline-none resize-none"
                 />
                 <div className="flex items-center space-x-2">
                   <button
                     type="button"
                     disabled={!styleSample.trim() || styleBusy || isGenerating}
                     onClick={() => void importStyleInWizard(styleSample, '向导粘贴样本')}
-                    className="flex items-center space-x-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold rounded-lg disabled:opacity-50 disabled:pointer-events-none transition-all"
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-black hover:bg-neutral-800 text-white text-[11px] font-semibold rounded-full disabled:opacity-50 disabled:pointer-events-none transition-all"
                   >
                     {styleBusy ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -489,7 +572,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                     type="button"
                     disabled={styleBusy || isGenerating}
                     onClick={() => styleFileRef.current?.click()}
-                    className="flex items-center space-x-1 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-[11px] font-semibold rounded-lg disabled:opacity-50 transition-all"
+                    className="flex items-center space-x-1 px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-[11px] font-semibold rounded-full disabled:opacity-50 transition-all"
                   >
                     <Upload className="w-3 h-3" />
                     <span>上传文件</span>
@@ -514,9 +597,9 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
           {/* 提交按钮及进度提示 */}
           <div className="flex flex-col items-center justify-center pt-4 border-t border-slate-200">
             {isGenerating ? (
-              <div className="w-full max-w-md bg-indigo-50 border border-indigo-200 rounded-xl p-5 text-center space-y-3 shadow-md animate-pulse">
-                <div className="flex items-center justify-center space-x-2 text-indigo-700 font-medium">
-                  <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              <div className="w-full max-w-md bg-amber-50 border border-amber-300 rounded-2xl p-5 text-center space-y-3 shadow-md">
+                <div className="flex items-center justify-center space-x-2 text-slate-900 font-medium">
+                  <div className="w-5 h-5 border-2 border-slate-900 border-t-transparent rounded-full animate-spin" />
                   <span>AI 脑暴引擎极速构思中...</span>
                 </div>
                 <p className="text-xs text-slate-700 font-mono">
@@ -527,7 +610,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
               <button
                 type="submit"
                 disabled={!inspiration.trim()}
-                className="px-8 py-4 bg-black hover:bg-neutral-800 text-white font-bold rounded-xl shadow-lg transition-all duration-300 transform hover:-translate-y-0.5 flex items-center space-x-3 text-base disabled:opacity-50 disabled:pointer-events-none"
+                className="px-8 py-4 bg-black hover:bg-neutral-800 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:-translate-y-0.5 flex items-center space-x-3 text-base disabled:opacity-50 disabled:pointer-events-none"
               >
                 <Sparkles className="w-5 h-5" />
                 <span>✨ 启动 AI 推导：生成书名与核心简介</span>

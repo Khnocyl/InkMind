@@ -119,6 +119,44 @@ export function clearDoneRevisionTodos(
   return { chapters: next, removed };
 }
 
+/**
+ * 自动派生待修的 id 前缀（硬伤/去AI/综合分/写后校验）。
+ * 注意：跨章抽检（audit-*）有独立生命周期，不在此列；手工条目为 todo-*。
+ */
+export const AUTO_DERIVED_TODO_PREFIXES = [
+  'hard-',
+  'aitaste-',
+  'score-',
+  'engine-',
+] as const;
+
+export function isAutoDerivedTodo(t: ChapterRevisionTodo): boolean {
+  return AUTO_DERIVED_TODO_PREFIXES.some((p) => t.id.startsWith(p));
+}
+
+/**
+ * 清理同章**旧审校运行**的自动派生待修（P1 防跨运行堆积）：
+ * - 新体系：带 autoRunId 且 ≠ 当前运行、仍为 open → 删除；
+ * - 旧体系（修复上线前生成、无运行戳）：includeLegacyAuto 开启时按 id 前缀识别清理——
+ *   否则修复前的幻觉硬伤（如万古烬天 ch1 的两条）会永远留在「全书待修」里。
+ * 手工条目（todo-*）、已完成条目（历史）、跨章抽检（audit-*）一律保留。
+ */
+export function pruneStaleAutoTodos(
+  todos: ChapterRevisionTodo[],
+  currentRunId: string,
+  options?: { includeLegacyAuto?: boolean }
+): { todos: ChapterRevisionTodo[]; pruned: number } {
+  const includeLegacy = options?.includeLegacyAuto === true;
+  const list = todos || [];
+  const keep = list.filter((t) => {
+    if (t.status !== 'open') return true;
+    if (t.autoRunId) return t.autoRunId === currentRunId;
+    if (includeLegacy && isAutoDerivedTodo(t)) return false;
+    return true;
+  });
+  return { todos: keep, pruned: list.length - keep.length };
+}
+
 /** 将某章全部 open 标为 done */
 export function markAllOpenTodosDoneOnChapter(chapter: Chapter): Chapter {
   const now = new Date().toISOString();

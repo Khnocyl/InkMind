@@ -1,0 +1,16 @@
+#!/bin/sh
+# 本地质量门禁 · push 前：全量测试 + 构建（较慢，故只在 push 时跑）
+# 急事跳过：git push --no-verify
+echo "[pre-push] npm test（全量单测）..."
+npm test --silent || {
+  echo ""
+  echo "❌ [pre-push] 测试未全绿 —— 推送被拦截。修掉失败用例，或 --no-verify 跳过（不建议）。"
+  exit 1
+}
+echo "[pre-push] npm run build（类型 + 构建）..."
+npm run build --silent || {
+  echo ""
+  echo "❌ [pre-push] 构建失败 —— 推送被拦截。"
+  exit 1
+}
+echo "✅ [pre-push] 全部通过"

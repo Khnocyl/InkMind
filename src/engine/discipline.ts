@@ -1,5 +1,5 @@
 /**
- * 平台文笔纪律（对齐 InkOS prose-discipline）
+ * 平台文笔纪律与克制原则
  * 注入写手/修订 prompt，并供确定性校验使用。
  */
 
@@ -56,8 +56,17 @@ export interface EngineViolation {
   suggestion: string;
 }
 
-/** 零 LLM 写后校验（对齐 InkOS post-write-validator 子集） */
-export function validatePostWrite(content: string): EngineViolation[] {
+/** 零 LLM 写后确定性校验 */
+export function validatePostWrite(
+  content: string,
+  options?: {
+    /**
+     * 文风豁免：激活档案声明 punctuationTolerance='ellipsis-emphatic' 时为 true，
+     * 该类文风以省略号/破折号为节奏器官，通用禁令误伤。
+     */
+    allowEmDash?: boolean;
+  }
+): EngineViolation[] {
   const violations: EngineViolation[] = [];
   const text = content || '';
 
@@ -69,7 +78,7 @@ export function validatePostWrite(content: string): EngineViolation[] {
       suggestion: '改用直述句',
     });
   }
-  if (text.includes('——')) {
+  if (!options?.allowEmDash && text.includes('——')) {
     violations.push({
       rule: '禁止破折号',
       severity: 'error',

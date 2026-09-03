@@ -1,8 +1,9 @@
 /**
- * 文风仿写（对齐 InkOS style analyze / import）
+ * 文风仿写：
  * 1) 本地统计指纹  2) LLM 风格指南  3) 写入 StyleConfig 并注入写作
  */
 
+import { proseWords } from './proseWords';
 import type {
   FewShotExample,
   StyleConfig,
@@ -25,17 +26,101 @@ export function getActiveStyleProfile(
   );
 }
 
-/** 注入正文 Prompt 的仿写块 */
+/**
+ * 破折号白名单（写后校验豁免判定，两路取或）：
+ * 1) 书级总开关 styleConfig.allowEmDash（引擎与风格页勾选）；
+ * 2) 激活文风档案声明 punctuationTolerance='ellipsis-emphatic'（档案级豁免）。
+ */
+export function resolveAllowEmDash(style?: StyleConfig | null): boolean {
+  if (style?.allowEmDash === true) return true;
+  return (
+    getActiveStyleProfile(style)?.punctuationTolerance === 'ellipsis-emphatic'
+  );
+}
+
+/**
+ * 题材适配判定：档案未标 genreTags（题材通用）或书题材未知时视为匹配；
+ * 标了标签且与书题材（含题材规则包别名口径）无一命中 → 不匹配，
+ * 触发降级（防「唐家三少团战六拍」带进言情/都市书）。
+ */
+export function isStyleGenreMismatch(
+  profile: StyleProfile | null | undefined,
+  bookGenre?: string | null
+): boolean {
+  const tags = (profile?.genreTags || [])
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  if (!tags.length) return false;
+  const g = (bookGenre || '').trim().toLowerCase();
+  if (!g) return false;
+  return !tags.some((t) => g.includes(t) || t.includes(g));
+}
+
+/**
+ * 注入结构层 Prompt 的「作家创作方法论」块（世界观/大纲/拆章/分镜）。
+ * 与正文腔调层（formatStyleProfileForPrompt）分离：结构层只管体系、节奏循环、
+ * 爽点/名场面分布、群像与伏笔规划，不含句法文风——让蒸馏的作家大脑参与结构建设。
+ * 题材不匹配时不注入：结构层全是该作家的题材公式（团战分布/升级循环等），
+ * 注进不匹配的书会把大纲/分镜整个带偏。
+ */
+export function formatStyleStructureForPrompt(
+  profile: StyleProfile | null | undefined,
+  bookGenre?: string | null
+): string {
+  if (!profile || !profile.structureGuide?.trim()) return '';
+  if (isStyleGenreMismatch(profile, bookGenre)) return '';
+  return [
+    `【作家创作方法论 · '${profile.name}'】（结构层：设计世界观/大纲/拆章/分镜时以该作家的大脑推演）`,
+    profile.structureGuide.trim(),
+  ].join(String.fromCharCode(10));
+}
+
+/**
+ * 题材不匹配时的降级铁律块：只学文笔层（节奏/对白/白描/比喻），
+ * 显式禁用档案的题材性机制，题材节奏以题材规则包为准。
+ */
+function formatGenreDemotionBlock(
+  profile: StyleProfile,
+  bookGenre: string
+): string {
+  const mech = (profile.genreMechanisms || []).filter(Boolean);
+  const mechLines = mech.length
+    ? `该档案的题材性机制一律禁止执行、禁止在正文出现对应元素：\n${mech
+        .map((m, i) => `${i + 1}. ${m}`)
+        .join('\n')}`
+    : '该档案的题材性机制（题材公式/专属场面类型）一律禁止执行，不得在正文出现对应元素。';
+  return [
+    `【题材不匹配降级铁律 · 优先级高于档案内一切条目】`,
+    `本书题材为「${bookGenre}」，与文风档案「${profile.name}」的题材气质不匹配。本档案只执行文笔层：句长节奏、短句/长句分布、对白密度与声口、白描、具体名词、生活化比喻、动作过程链。`,
+    mechLines,
+    `题材节奏、冲突与爽点完全以【题材规则包】为准；档案「要做/不要做」中题材性条目同样不执行。禁止把正文写成该作家的题材公式。`,
+  ].join('\n');
+}
+
+/** 注入正文 Prompt 的仿写块（bookGenre：本书题材，不匹配时降级为文笔层） */
 export function formatStyleProfileForPrompt(
-  profile: StyleProfile | null | undefined
+  profile: StyleProfile | null | undefined,
+  bookGenre?: string | null
 ): string {
   if (!profile) return '';
+  const demotion = isStyleGenreMismatch(profile, bookGenre)
+    ? formatGenreDemotionBlock(profile, (bookGenre || '').trim())
+    : '';
   const fp = profile.fingerprint;
   const doL = (profile.doList || []).map((x, i) => `${i + 1}. ${x}`).join('\n');
   const dontL = (profile.dontList || []).map((x, i) => `${i + 1}. ${x}`).join('\n');
-  const sample = (profile.sampleExcerpt || '').slice(0, 500);
+  // 多场景范文：分场景锚语感（恐怖并置/对白立人/悬疑收尾…），比单段更贴
+  const excerptBlocks = (profile.sampleExcerpts || []).slice(0, 3).map(
+    (e) => `「场景：${e.label}」\n${e.text.slice(0, 400)}`
+  );
+  const sample = excerptBlocks.length
+    ? excerptBlocks.join('\n\n')
+    : (profile.sampleExcerpt || '').slice(0, 500);
   return [
-    `【文风仿写档案 · ${profile.name}】（必须模仿，禁止写成通用 AI 网文腔）`,
+    demotion,
+    `【文风仿写档案 · ${profile.name}】（${
+      demotion ? '降级模式：只学文笔层，' : ''
+    }必须模仿，禁止写成通用 AI 网文腔）`,
     profile.authorStyle ? `行文要诀：${profile.authorStyle}` : '',
     '',
     '【统计指纹 · 尽量贴近】',
@@ -47,7 +132,9 @@ export function formatStyleProfileForPrompt(
     doL ? `\n【要做】\n${doL}` : '',
     dontL ? `\n【不要做】\n${dontL}` : '',
     sample
-      ? `\n【参考文气摘录（学节奏与用词，勿照抄情节）】\n「${sample}」`
+      ? `\n【参考文气摘录（学语感、节奏与用词，勿照抄情节${
+          demotion ? '；禁止把选段的题材场面（团战/升级/喊招式名等）带进本章' : ''
+        }）】\n${sample}`
       : '',
   ]
     .filter(Boolean)
@@ -67,6 +154,8 @@ export function formatStyleConstraintsForRewrite(
     fewShotMaxChars?: number;
     /** 黑名单条数，默认 25 */
     blacklistMax?: number;
+    /** 本书题材：与激活档案不匹配时降级为只学文笔层 */
+    bookGenre?: string | null;
   }
 ): string {
   if (!styleConfig) return '';
@@ -76,7 +165,7 @@ export function formatStyleConstraintsForRewrite(
   const parts: string[] = [];
 
   const profile = getActiveStyleProfile(styleConfig);
-  const imitate = formatStyleProfileForPrompt(profile);
+  const imitate = formatStyleProfileForPrompt(profile, options?.bookGenre);
   if (imitate) {
     parts.push(
       imitate.length > profileMax
@@ -150,7 +239,7 @@ export function buildStyleAnalyzePrompt(
     sampleText.length > 4500
       ? `${sampleText.slice(0, 2200)}\n\n……\n\n${sampleText.slice(-2200)}`
       : sampleText;
-  const system = `你是资深文风工程师（Style Engineer，对齐 InkOS 文风仿写）。
+  const system = `你是资深文风工程师（Style Engineer，负责文风仿写深度解构）。
 任务：根据参考文本与统计指纹，产出可执行的「风格指南」，供 AI 后续章节严格仿写。
 要求：
 1. styleGuide 200–400 字，具体可操作（句式、用词、节奏、对白、环境、收束方式），禁止空泛「优美流畅」；
@@ -202,7 +291,7 @@ export async function analyzeReferenceStyle(options: {
   onProgress?: (msg: string) => void;
 }): Promise<AnalyzeStyleResult> {
   const text = (options.text || '').trim();
-  if (text.replace(/\s+/g, '').length < 120) {
+  if (proseWords(text) < 120) {
     throw new Error('参考文本过短：请至少粘贴约 120 字以上（建议 800–3000 字真人作品片段）');
   }
 
@@ -213,7 +302,7 @@ export async function analyzeReferenceStyle(options: {
   const now = new Date().toISOString();
 
   try {
-    options.onProgress?.('正在调用模型生成风格指南（InkOS 式）…');
+    options.onProgress?.('正在调用模型生成风格指南…');
     const messages = buildStyleAnalyzePrompt(text, fingerprint, options.name);
     const res = await generateJSON<{
       profileName?: string;

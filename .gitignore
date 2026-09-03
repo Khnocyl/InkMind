@@ -16,6 +16,10 @@ dist-ssr
 .novel-data/
 server/data/
 
+# 环境变量文件（可能含密钥，勿提交）
+.env
+.env.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -26,3 +30,12 @@ server/data/
 *.njsproj
 *.sln
 *.sw?
+
+# 打包产物与中间件（保留桌面应用图标）
+build/*
+!build/icon.png
+!build/icon.ico
+release/
+release-electron/
+
+

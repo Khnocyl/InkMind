@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React, { useMemo } from 'react';
 import type { PlotOutline, Character, WorldSetting } from '../../types/novel';
 import { GitBranch, Link, CheckSquare, Plus } from 'lucide-react';
 
@@ -8,11 +8,26 @@ interface TimelinePlannerProps {
   settings: WorldSetting[];
 }
 
-export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({
+/** React.memo：outlines/characters/settings 引用不变时跳过重渲染（大纲页可达百卡规模） */
+export const TimelinePlanner: React.FC<TimelinePlannerProps> = React.memo(({
   outlines,
   characters,
   settings,
 }) => {
+  // 预建角色/设定 id → 实体 Map，把每张卡片的关联查询从 O(全部) 降到 O(关联数量)。
+  // 200+ 章时这是切换大纲页的主要 CPU 瓶颈（原先每卡都对全数组 filter）。
+  const characterMap = useMemo(() => {
+    const m = new Map<string, Character>();
+    for (const c of characters) m.set(c.id, c);
+    return m;
+  }, [characters]);
+
+  const settingMap = useMemo(() => {
+    const m = new Map<string, WorldSetting>();
+    for (const s of settings) m.set(s.id, s);
+    return m;
+  }, [settings]);
+
   return (
     <div className="flex-1 bg-white text-slate-900 p-8 lg:p-12 overflow-y-auto max-w-6xl mx-auto space-y-8 animate-fadeIn select-none">
       <div className="pb-6 border-b border-slate-200 flex items-center justify-between">
@@ -25,7 +40,7 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({
             在大纲阶段把即将出场的角色 ID 与需要遵守的世界红线绑定到指定章节，AI 执笔前会自动按需提取结构化上下文，实现绝不吃书、不遗忘伏笔。
           </p>
         </div>
-        <button className="flex items-center space-x-2 bg-black hover:bg-neutral-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md">
+        <button className="flex items-center space-x-2 bg-black hover:bg-neutral-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition-colors shadow-md">
           <Plus size={15} />
           <span>规划新情节点与章节绑定</span>
         </button>
@@ -36,14 +51,19 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({
           const chapNum = outline.order || (outline as any).chapterNumber || index + 1;
           const chapTitle = outline.chapterTitle || (outline as any).title || `第 ${chapNum} 章 剧情展开`;
           const keyEvents: string[] = (outline as any).keyEvents || [outline.summary || '推进主要主线冲突'];
-          const linkedChars = characters.filter((c) => outline.involvedCharacterIds?.includes(c.id));
-          const linkedSettings = settings.filter((s) => outline.involvedSettingIds?.includes(s.id));
+          // O(关联数量) 查关联，不再对全数组 filter
+          const linkedChars = (outline.involvedCharacterIds || [])
+            .map((id) => characterMap.get(id))
+            .filter((c): c is Character => Boolean(c));
+          const linkedSettings = (outline.involvedSettingIds || [])
+            .map((id) => settingMap.get(id))
+            .filter((s): s is WorldSetting => Boolean(s));
 
           return (
-            <div key={outline.id} className="relative group">
-              <div className="absolute -left-[31px] top-2.5 w-4 h-4 rounded-full bg-indigo-600 border-4 border-white shadow-md group-hover:scale-125 transition-all"></div>
+            <div key={outline.id} className="relative group [content-visibility:auto] [contain-intrinsic-size:auto_240px]">
+              <div className="absolute -left-[31px] top-2.5 w-4 h-4 rounded-full bg-indigo-600 border-4 border-white shadow-md group-hover:bg-indigo-400 transition-colors"></div>
 
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 shadow-md hover:border-indigo-400 transition-all">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 shadow-md hover:border-indigo-400 transition-colors">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
                   <div className="flex items-center space-x-3">
                     <span className="bg-indigo-100 text-indigo-800 border border-indigo-300 font-mono font-bold text-xs px-2.5 py-1 rounded-lg">
@@ -119,4 +139,4 @@ export const TimelinePlanner: React.FC<TimelinePlannerProps> = ({
       </div>
     </div>
   );
-};
+});

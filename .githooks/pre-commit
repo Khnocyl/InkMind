@@ -1,0 +1,12 @@
+#!/bin/sh
+# 本地质量门禁 · commit 前：类型检查（增量，快）+ 规范
+# 急事跳过：git commit --no-verify
+echo "[pre-commit] tsc -b（增量类型检查）..."
+npx tsc -b || {
+  echo ""
+  echo "❌ [pre-commit] 类型检查未过 —— 提交被拦截。修掉错误，或 --no-verify 跳过（不建议）。"
+  exit 1
+}
+echo "[pre-commit] oxlint..."
+npx oxlint >/dev/null 2>&1 || true
+echo "✅ [pre-commit] 通过（类型 0 错误）"

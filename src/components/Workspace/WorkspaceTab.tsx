@@ -12,6 +12,9 @@ import type {
 } from '../../types/novel';
 import type { PreviousContextPack } from '../../services/contextPack';
 import type { CrossAuditRemindStatus } from '../../services/crossAuditRemind';
+import type { GapReport } from '../../services/gapScanner';
+import type { GapFillProgress, GapFillSummary } from '../../hooks/useGapFiller';
+import type { AutoPilotWriteMode } from '../../services/autoPilot';
 import { ChapterSidebar } from './ChapterSidebar';
 import { WritingCanvas } from './WritingCanvas';
 import { AIWorkflowPanel } from './AIWorkflowPanel';
@@ -55,6 +58,8 @@ export interface WorkspaceTabProps {
   onStartThreeStepWorkflow: () => void;
   onStartAutoPilot: () => void;
   onStopAutoPilot: () => void;
+  /** 停止单章生成（AP 模式由 onStopAutoPilot 处理） */
+  onStopGeneration?: () => void;
   onUpdateStyleConfig: (
     updated: StyleConfig | ((prev: StyleConfig) => StyleConfig)
   ) => void;
@@ -79,10 +84,26 @@ export interface WorkspaceTabProps {
   onBatchDeslopBook: (maxPerChapter?: number) => void;
   onExportAiTasteCsv: () => void;
   onFixFirstRevision: () => void;
+  /** 一键修全部：串行 AI 局部改写全书所有 open 待修 */
+  onAiFixAllRevisionTodos: () => void;
+  /** 停止一键修全部（软停 + 中断当前 in-flight LLM 调用） */
+  onStopAiFixAll: () => void;
+  /** 一键修全部运行中（按钮切换为「停止」） */
+  aiFixAllRunning: boolean;
   onAiFixRevisionTodo: (chapterId: string, todoId: string) => void;
+  /** 重跑本审：对当前章正文重新执行审校（只读，不改正文） */
+  onRerunHardReview: (chapterId: string) => void;
   onClearDoneRevisionTodos: () => void;
   onMarkAllRevisionTodosDone: () => void;
   onToggleRevisionTodo: (chapterId: string, todoId: string) => void;
+  /** 全书缺口扫描 + 批量补跑 */
+  gapReport: GapReport | null;
+  gapFilling: boolean;
+  gapProgress: GapFillProgress;
+  gapSummary: GapFillSummary | null;
+  onScanGaps: () => void;
+  onStartGapFilling: (chapterIds: string[], writeMode: AutoPilotWriteMode) => void;
+  onStopGapFilling: () => void;
 }
 
 /**
@@ -129,6 +150,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   onStartThreeStepWorkflow,
   onStartAutoPilot,
   onStopAutoPilot,
+  onStopGeneration,
   onUpdateStyleConfig,
   onUpdateBeats,
   onManualSnapshot,
@@ -148,10 +170,21 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   onBatchDeslopBook,
   onExportAiTasteCsv,
   onFixFirstRevision,
+  onAiFixAllRevisionTodos,
+  onStopAiFixAll,
+  aiFixAllRunning,
   onAiFixRevisionTodo,
+  onRerunHardReview,
   onClearDoneRevisionTodos,
   onMarkAllRevisionTodosDone,
   onToggleRevisionTodo,
+  gapReport,
+  gapFilling,
+  gapProgress,
+  gapSummary,
+  onScanGaps,
+  onStartGapFilling,
+  onStopGapFilling,
 }) => (
   <>
     <ChapterSidebar
@@ -177,6 +210,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         settings={settings}
         styleConfig={styleConfig}
         storyMemory={storyMemory}
+        bookGenre={projectConfig?.genre}
         focusTodoId={focusTodoId}
         onFocusTodoConsumed={onFocusTodoConsumed}
         focusSnippet={focusSnippet}
@@ -206,6 +240,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         onStartThreeStepWorkflow={onStartThreeStepWorkflow}
         onStartAutoPilot={onStartAutoPilot}
         onStopAutoPilot={onStopAutoPilot}
+        onStopGeneration={onStopGeneration}
         onUpdateStyleConfig={onUpdateStyleConfig}
         onUpdateBeats={onUpdateBeats}
         projectId={projectId}
@@ -234,10 +269,21 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         aiTasteScanBusy={aiTasteScanBusy}
         aiTasteScanMessage={aiTasteScanMessage}
         onFixFirstRevision={onFixFirstRevision}
+        onAiFixAllRevisionTodos={onAiFixAllRevisionTodos}
+        onStopAiFixAll={onStopAiFixAll}
+        aiFixAllRunning={aiFixAllRunning}
         onAiFixRevisionTodo={onAiFixRevisionTodo}
+        onRerunHardReview={onRerunHardReview}
         onClearDoneRevisionTodos={onClearDoneRevisionTodos}
         onMarkAllRevisionTodosDone={onMarkAllRevisionTodosDone}
         onToggleRevisionTodo={onToggleRevisionTodo}
+        gapReport={gapReport}
+        gapFilling={gapFilling}
+        gapProgress={gapProgress}
+        gapSummary={gapSummary}
+        onScanGaps={onScanGaps}
+        onStartGapFilling={onStartGapFilling}
+        onStopGapFilling={onStopGapFilling}
         dailyWordLog={dailyWordLog}
       />
     )}

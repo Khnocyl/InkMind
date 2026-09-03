@@ -14,7 +14,12 @@ export interface RetryOptions {
 
 export const DEFAULT_MAX_RETRIES = 2;
 export const DEFAULT_RETRY_DELAY_MS = 600;
-export const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * 单次尝试响应头超时（默认 240s）：
+ * - 隐藏推理型模型（如 stealth 系）接受请求后可能长时间不吐首字节；
+ * - 流式空闲超时按此的 75% 联动放大（180s），避免长思考被误判为连接僵死。
+ */
+export const DEFAULT_TIMEOUT_MS = 240_000;
 
 /** 超时专用错误（可重试） */
 export class TimeoutError extends Error {
@@ -26,8 +31,46 @@ export class TimeoutError extends Error {
   }
 }
 
-/** 是否值得重试：网络错误 / 超时 / 429 限流 / 5xx 服务端错误。4xx（除 429）多为配置问题，重试无意义。 */
+/** 用户主动停止生成（不可重试、不计费、静默收尾） */
+export class GenerationAbortedError extends Error {
+  constructor() {
+    super('已停止生成');
+    this.name = 'GenerationAbortedError';
+  }
+}
+
+export function isGenerationAborted(err: unknown): boolean {
+  return (
+    err instanceof GenerationAbortedError ||
+    (err instanceof Error && err.name === 'GenerationAbortedError')
+  );
+}
+
+/**
+ * JSON 结构校验未通过（可重试）：generateJSON 的 validate 闸门抛出。
+ * 与 parse 失败不同——内容已是合法 JSON 但形状/覆盖不合格，带反馈重试有较高修复概率。
+ */
+export class SchemaMismatchError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super(`AI 返回的 JSON 未通过结构校验：${detail}`);
+    this.name = 'SchemaMismatchError';
+    this.detail = detail;
+  }
+}
+
+export function isSchemaMismatchError(err: unknown): err is SchemaMismatchError {
+  return (
+    err instanceof SchemaMismatchError ||
+    (err instanceof Error && err.name === 'SchemaMismatchError')
+  );
+}
+
+/** 是否值得重试：网络错误 / 超时 / 429 限流 / 5xx 服务端错误 / 结构校验失败。4xx（除 429）多为配置问题，重试无意义。 */
 export function isRetryableError(err: unknown): boolean {
+  // 用户主动中止：永不重试（必须先于其他 Abort 判定）
+  if (isGenerationAborted(err)) return false;
+  if (isSchemaMismatchError(err)) return true;
   if (err instanceof TimeoutError) return true;
   if (err instanceof DOMException && err.name === 'AbortError') return true;
   const anyErr = err as { status?: number; message?: string } | null;
@@ -52,28 +95,41 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 带超时的 fetch（响应头到达前超时）。
- * 超时通过 AbortController 中断，并抛 TimeoutError（可重试）。
+ * 带超时的 fetch（响应头到达前超时）+ 可选外部中止信号。
+ * - 超时通过内部 AbortController 中断，抛 TimeoutError（可重试）；
+ * - 外部 signal 中止（用户停止）抛 GenerationAbortedError（不可重试）；
+ * - 两者任一触发都会中断同一请求。
  */
 export async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<Response> {
-  if (!timeoutMs || timeoutMs <= 0) {
+  if ((!timeoutMs || timeoutMs <= 0) && !signal) {
     return fetch(input, init);
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer =
+    timeoutMs && timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : undefined;
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) onExternalAbort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (err) {
     if (controller.signal.aborted) {
+      if (signal?.aborted) throw new GenerationAbortedError();
       throw new TimeoutError(timeoutMs);
     }
     throw err;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
   }
 }
 

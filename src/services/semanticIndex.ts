@@ -7,6 +7,7 @@
  * 非真·深度学习 embedding，但是开源长篇常用的工程折中（可后续换 API embedding）。
  */
 
+import { proseWords } from './proseWords';
 import type { Chapter, PinnedFact, StoryMemory } from '../types/novel';
 import { listActiveFacts, listActiveThreads, normalizeStoryMemory } from './storyMemory';
 
@@ -149,7 +150,7 @@ export function buildSemanticCorpus(params: {
     ]
       .filter(Boolean)
       .join(' ');
-    if (body.replace(/\s+/g, '').length < 20) continue;
+    if (proseWords(body) < 20) continue;
     docs.push({
       id: `chapter:${c.id}`,
       kind: 'chapter',
@@ -250,6 +251,14 @@ export function formatRelatedChaptersForPrompt(
   return lines.join('\n');
 }
 
+/** 语义打分结果（TF-IDF 与真·embedding 两种后端共用同一形状） */
+export interface SemanticBoostMaps {
+  factBoost: Map<string, number>;
+  threadBoost: Map<string, number>;
+  digestBoost: Map<string, number>;
+  relatedChapters: { chapter: Chapter; score: number }[];
+}
+
 /** 将语义分合并进业务打分（0～1 语义 → 加成） */
 export function semanticBoostMap(
   query: string,
@@ -258,12 +267,7 @@ export function semanticBoostMap(
     chapters?: Chapter[];
     chapterNumber?: number;
   }
-): {
-  factBoost: Map<string, number>;
-  threadBoost: Map<string, number>;
-  digestBoost: Map<string, number>;
-  relatedChapters: { chapter: Chapter; score: number }[];
-} {
+): SemanticBoostMaps {
   const docs = buildSemanticCorpus(params);
   const hits = semanticSearch(query, docs, { topK: 40 });
   const factBoost = new Map<string, number>();

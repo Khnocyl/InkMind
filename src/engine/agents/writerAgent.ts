@@ -1,5 +1,5 @@
 /**
- * Writer Agent — 对齐 InkOS writer：按分镜流式写正文。
+ * Writer Agent — 执笔写手：按分镜流式生成正文。
  * R3-A：正文执笔 API 连续失败时降级为本地保守稿（buildConservativeProse），
  * 保证闭环仍能产出可用稿，并标记 conservative 供上层提示/不自动锁章。
  */
@@ -7,6 +7,8 @@ import type { PlotBeat } from '../../types/novel';
 import { step2_ExpandProse } from '../../services/aiEngine';
 import { buildConservativeProse } from '../../services/conservativeProse';
 import { isBudgetExceededError } from '../../services/llmClient';
+import { isGenerationAborted } from '../../services/llmResilience';
+import { proseWords } from '../../services/proseWords';
 import type { AgentContext } from '../types';
 
 export interface WriterOutput {
@@ -51,18 +53,23 @@ export async function runWriterAgent(
         storyMemoryBlock: input.storyMemoryBlock,
         chapterIntentBlock: input.chapterIntentBlock,
         genrePackBlock: genreWithDiscipline,
+        bookGenre: input.project.genre,
         targetWordCount: input.targetWordCount,
         previousProse: input.previousProse,
-        wordCountExpandRounds: 2,
+        // 补写轮 3：单轮续写也受模型输出上限约束（常 1500-2500 字/轮），
+        // 目标 3000 字首稿被截时 2 轮不够稳
+        wordCountExpandRounds: 3,
         wordCountMinRatio: 0.9,
       }
     );
 
     const prose = (rawProse || streamBuffer || '').trim();
     hooks.onStreamProse?.(prose);
-    report('write', `[Writer] 草稿完成 · ${prose.replace(/\s+/g, '').length} 字`);
+    report('write', `[Writer] 草稿完成 · ${proseWords(prose)} 字`);
     return { prose, beats };
   } catch (err: any) {
+    // 用户主动停止：不降级、不产稿——直接上抛由管线走中止语义
+    if (isGenerationAborted(err)) throw err;
     // R3-A 降级链：正文执笔彻底失败 → 本地保守稿
     const msg = err?.message || String(err);
     const conservative = buildConservativeProse({

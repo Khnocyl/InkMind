@@ -51,6 +51,46 @@ function currentVersionOf(p: BookProject): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
 }
 
+export interface MigrationPreview {
+  fromVersion: number;
+  toVersion: number;
+  /** 将会执行的迁移名（空 = 无需迁移） */
+  applied: string[];
+  /** 版本超前（未来数据）：不迁移，调用方应警示「旧代码读写新数据」 */
+  isFuture: boolean;
+}
+
+/**
+ * 只预检不执行：返回该项目将会经过的迁移链。
+ * 供 storage.loadProject 在真正迁移前打快照（快照必须覆盖
+ * 「迁移函数本身可能 throw」的失败路径，因此要先于执行发生）。
+ */
+export function peekMigration(project: BookProject): MigrationPreview {
+  const fromVersion = currentVersionOf(project);
+  const applied: string[] = [];
+
+  if (fromVersion >= CURRENT_SCHEMA_VERSION) {
+    return {
+      fromVersion,
+      toVersion: fromVersion,
+      applied,
+      isFuture: fromVersion > CURRENT_SCHEMA_VERSION,
+    };
+  }
+
+  for (let v = fromVersion; v < CURRENT_SCHEMA_VERSION; v += 1) {
+    const entry = MIGRATIONS[v];
+    if (!entry) {
+      throw new Error(
+        `缺少 schema v${v} → v${v + 1} 的迁移函数（CURRENT_SCHEMA_VERSION=${CURRENT_SCHEMA_VERSION}）`
+      );
+    }
+    applied.push(entry.name);
+  }
+
+  return { fromVersion, toVersion: CURRENT_SCHEMA_VERSION, applied, isFuture: false };
+}
+
 /**
  * 把项目逐级迁移到最新版本。
  * - 已是最新 / 版本超前（未来数据）→ 原样返回，applied 为空。

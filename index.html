@@ -2,16 +2,42 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#ffffff" />
-    <title>novel</title>
+    <title>InkMind</title>
+    <script>
+      (function() {
+        try {
+          var theme = localStorage.getItem('inkmind-theme-mode') || 'system';
+          var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.colorScheme = 'dark';
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+          }
+        } catch (e) {}
+      })();
+    </script>
     <style>
-      html, body { background: #fff; color: #111; }
+      html, body { background: #ffffff; color: #111111; }
+      html.dark, html.dark body { background: #121212; color: #f4f4f5; }
+      html.is-electron, html.is-electron body, html.is-electron #root {
+        background: transparent !important;
+        background-color: transparent !important;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
     </style>
   </head>
-  <body class="bg-white text-black">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

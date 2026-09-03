@@ -46,7 +46,7 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
   onJumpIssue,
   onFixFirst,
 }) => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [useLlm, setUseLlm] = useState(true);
   const due = !!remind?.due;
 
@@ -98,7 +98,7 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
                   type="button"
                   disabled={busy}
                   onClick={() => onRun(true)}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-black text-white text-[10px] font-bold hover:bg-neutral-800 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-black text-white text-[11px] font-bold hover:bg-neutral-800 disabled:opacity-50"
                 >
                   {busy ? <Loader2 size={11} className="animate-spin" /> : <Radar size={11} />}
                   立即抽检
@@ -108,7 +108,7 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
                     type="button"
                     disabled={busy}
                     onClick={onDismissRemind}
-                    className="px-2 py-1 rounded-md border border-black bg-black text-white text-[10px] font-semibold hover:bg-neutral-800 disabled:opacity-50"
+                    className="px-2 py-1 rounded-md border border-black bg-black text-white text-[11px] font-bold hover:bg-neutral-800 disabled:opacity-50"
                   >
                     再写 {remind.interval} 章后提醒
                   </button>
@@ -180,7 +180,7 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
                       type="button"
                       disabled={busy}
                       onClick={onFixFirst}
-                      className="w-full inline-flex items-center justify-center gap-1.5 text-[10px] font-bold py-1.5 rounded-lg border border-black bg-black text-white hover:bg-neutral-800 disabled:opacity-50"
+                      className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-bold py-1.5 rounded-lg border border-black bg-black text-white hover:bg-neutral-800 disabled:opacity-50"
                     >
                       <Wrench size={12} />
                       AI修第一处

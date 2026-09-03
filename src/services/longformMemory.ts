@@ -5,6 +5,7 @@
  * - 章末伏笔回收建议（确认后才 resolved）
  */
 
+import { proseWords } from './proseWords';
 import type {
   Chapter,
   ChapterRecap,
@@ -533,7 +534,7 @@ export function suggestHookResolvesFromRecap(
     recap.endingState || '',
     ...(recap.keyFacts || []),
   ].join('\n');
-  if (corpus.replace(/\s+/g, '').length < 20) return [];
+  if (proseWords(corpus) < 20) return [];
 
   const suggestions: HookResolveSuggestion[] = [];
   const active = listActiveThreads(memory);

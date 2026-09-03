@@ -88,14 +88,19 @@ export const ProjectSelectorModal: React.FC<ProjectSelectorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-fadeIn">
-      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+    <div
+      data-modal-backdrop="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-fadeIn app-region-no-drag select-auto modal-backdrop-layer"
+    >
+      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] app-region-no-drag">
         {/* Modal 标题头部 */}
         <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-slate-50">
           <div className="flex items-center space-x-3">
-            <div className="p-2.5 bg-indigo-600 rounded-xl shadow-md text-white">
-              <BookOpen className="w-5 h-5" />
-            </div>
+            <img
+              src="/icon.png"
+              alt="InkMind"
+              className="w-10 h-10 rounded-xl object-contain shadow-md shrink-0 bg-black"
+            />
             <div>
               <h2 className="text-lg font-bold text-slate-900">我的小说书库与连载项目</h2>
               <p className="text-xs text-slate-600">

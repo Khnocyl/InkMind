@@ -1,8 +1,9 @@
 /**
- * 文风仿写面板（对齐 InkOS：analyze → import → 写作注入）
+ * 文风仿写面板：样本分析 → 风格提炼 → 写作注入
  */
 import React, { useEffect, useRef, useState } from 'react';
 import type { StyleConfig, StyleProfile } from '../../types/novel';
+import { proseWords } from '../../services/proseWords';
 import {
   analyzeReferenceStyle,
   importStyleProfile,
@@ -11,6 +12,7 @@ import {
   updateStyleProfile,
 } from '../../services/styleImitate';
 import { formatFingerprintSummary } from '../../services/styleFingerprint';
+import { BUILTIN_STYLE_PRESETS } from '../../services/stylePresets';
 import {
   removeGlobalStyleProfile,
   upsertGlobalStyleProfiles,
@@ -142,6 +144,24 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
     setMsg('风格指南已保存');
   };
 
+  const handleImportPreset = async (preset: StyleProfile) => {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await onUpdateStyleConfig((prev) =>
+        importStyleProfile(prev, preset, { activate: true, syncFewShot: true })
+      );
+      upsertGlobalStyleProfiles([preset]);
+      setMsg(`✅ 已导入内置档案「${preset.name}」并激活（统计指纹 + 写作指南）`);
+    } catch (e: unknown) {
+      const m = e instanceof Error ? e.message : String(e);
+      setMsg(`❌ ${m}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 space-y-5 shadow-sm">
       <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
@@ -152,15 +172,10 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
           <div className="min-w-0">
             <h2 className="font-bold text-base text-slate-900 flex items-center gap-2">
               文风仿写
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
-                InkOS 式
-              </span>
             </h2>
             <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
               粘贴/导入真人作品片段 → 提取<strong>统计指纹</strong> +{' '}
-              <strong>LLM 风格指南</strong> → 激活后写入本章正文与扩写 Prompt（类{' '}
-              <code className="text-[10px] bg-slate-200 px-1 rounded">style analyze / import</code>
-              ）
+              <strong>LLM 风格指南</strong> → 激活后写入本章正文与扩写 Prompt
             </p>
           </div>
         </div>
@@ -170,6 +185,32 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
             仿写已激活
           </span>
         )}
+      </div>
+
+      {/* 内置预设：免分析一键导入 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-slate-700">内置档案：</span>
+        {BUILTIN_STYLE_PRESETS.map((preset) => {
+          const imported = profiles.some((p) => p.id === preset.id);
+          return (
+            <button
+              key={preset.id}
+              type="button"
+              disabled={busy || imported}
+              onClick={() => void handleImportPreset(preset)}
+              title={
+                imported
+                  ? '已导入，可在下方档案列表激活'
+                  : `${preset.sourceLabel || ''} · 点击导入并激活`
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 text-xs font-bold hover:bg-indigo-100 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <Sparkles size={12} />
+              {preset.name}
+              {imported && <CheckCircle2 size={12} className="text-emerald-700" />}
+            </button>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -199,7 +240,7 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={busy || sampleText.replace(/\s+/g, '').length < 80}
+              disabled={busy || proseWords(sampleText) < 80}
               onClick={handleAnalyzePaste}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-black text-white text-xs font-bold hover:bg-neutral-800 disabled:opacity-50"
             >

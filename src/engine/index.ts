@@ -1,5 +1,5 @@
 /**
- * Novel Studio 写作引擎（InkOS 风格多 agent 管线）
+ * InkMind 写作引擎（多 Agent 协作管线）
  *
  * 阶段：Planner → Writer → Validator → Auditor → Reviser → Settler
  * UI / 存储仍在 App；脑子在这里。

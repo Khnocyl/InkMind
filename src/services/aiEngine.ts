@@ -16,11 +16,21 @@ import type {
 } from '../types/novel';
 import { generateJSON, generateStream } from './llmClient';
 import {
+  countProseWords,
+  deriveWordBand,
+  ensureProseWordCount,
+  trimProseAddition,
+  type WordBand,
+  type WordCountGate,
+} from './wordCount';
+import {
   buildDetailedBeatsPrompt,
   buildChapterProsePrompt,
-  buildChapterExpandPrompt,
   buildHardReviewPrompt,
+  buildHardDefensePrompt,
   buildStyleReviewPrompt,
+  buildProgressionReviewPrompt,
+  buildBeatRewritePrompt,
   buildChapterRecapPrompt,
   buildConflictFixPrompt,
   buildCharacterStatusPatchPrompt,
@@ -28,13 +38,24 @@ import {
 } from './prompts';
 import type { PreviousContextPack } from './contextPack';
 import { ruleScanProse, ruleScanHitPhrases, type RuleScanResult } from './ruleScan';
-import type { RuleScanAudit, StoryMemory, ChapterIntent } from '../types/novel';
+import type {
+  RuleScanAudit,
+  StoryMemory,
+  ChapterIntent,
+  ProgressionReviewResult,
+} from '../types/novel';
 import { applyLocalPatches, diffProseBlocks } from './textDiff';
-import { countContentWords } from './dailyWordLog';
+import { proseWords } from './proseWords';
 import {
   mergeHardWithLocalGuard,
   runLocalFactGuard,
 } from './factGuard';
+import { listActiveThreads, normalizeStoryMemory } from './storyMemory';
+import { splitProseForReview } from './proseSegments';
+import {
+  verifyHardIssues,
+  finalizeHardReviewScoring,
+} from './hardReviewVerify';
 
 export { evaluateRecapQuality, runLocalFactGuard } from './factGuard';
 
@@ -162,7 +183,8 @@ export async function step1_GenerateBeats(
   previousContext?: string,
   storyMemoryBlock?: string,
   chapterIntentBlock?: string,
-  genrePackBlock?: string
+  genrePackBlock?: string,
+  styleStructureBlock?: string
 ): Promise<PlotBeat[]> {
   if (onProgress) {
     onProgress(
@@ -180,7 +202,8 @@ export async function step1_GenerateBeats(
       previousContext,
       storyMemoryBlock,
       chapterIntentBlock,
-      genrePackBlock
+      genrePackBlock,
+      styleStructureBlock
     );
 
     const res = await generateJSON<{
@@ -216,6 +239,8 @@ export interface Step2ExpandProseOptions {
   genrePackBlock?: string;
   /** 目标字数 */
   targetWordCount?: number | null;
+  /** 本书题材：文风档案题材不匹配时降级为只学文笔层 */
+  bookGenre?: string | null;
   /** 上章正文（开篇同质机检） */
   previousProse?: string | null;
   /**
@@ -225,129 +250,6 @@ export interface Step2ExpandProseOptions {
   wordCountExpandRounds?: number;
   /** 最低达标比例，默认 0.9（目标的 90%） */
   wordCountMinRatio?: number;
-}
-
-export interface WordCountGate {
-  target: number;
-  min: number;
-  current: number;
-  met: boolean;
-  expandRounds: number;
-}
-
-/** 去空白字数（与日更账本一致） */
-export function countProseWords(prose: string): number {
-  return countContentWords(prose);
-}
-
-/**
- * 字数不足则续写加厚，最多 maxRounds 轮。
- * 返回拼接后的全文与达标信息。
- */
-export async function ensureProseWordCount(options: {
-  prose: string;
-  targetWordCount: number;
-  chapter: Pick<Chapter, 'number' | 'title' | 'summary'>;
-  beats?: PlotBeat[];
-  characters?: Character[];
-  styleConfig?: StyleConfig;
-  chapterIntentBlock?: string;
-  minRatio?: number;
-  maxRounds?: number;
-  onStream?: (chunk: string) => void;
-  onProgress?: (msg: string) => void;
-}): Promise<{ prose: string; gate: WordCountGate }> {
-  const target = Math.max(0, Math.round(options.targetWordCount || 0));
-  const minRatio = options.minRatio ?? 0.9;
-  const maxRounds = options.maxRounds ?? 2;
-  const min = target > 0 ? Math.round(target * minRatio) : 0;
-
-  let prose = (options.prose || '').trim();
-  let current = countProseWords(prose);
-  let expandRounds = 0;
-
-  if (target <= 0 || min <= 0) {
-    return {
-      prose,
-      gate: { target, min, current, met: true, expandRounds: 0 },
-    };
-  }
-
-  const blacklist = [
-    ...(options.styleConfig?.clicheBlacklist || []),
-    ...(options.styleConfig?.customBlacklist || []),
-  ];
-
-  while (current < min && expandRounds < maxRounds) {
-    const needMore = Math.max(400, min - current + 80);
-    expandRounds += 1;
-    options.onProgress?.(
-      ` [字数补写 ${expandRounds}/${maxRounds}] 当前 ${current} · 最低 ${min}（目标 ${target}）· 续写约 ${needMore} 字…`
-    );
-
-    const messages = buildChapterExpandPrompt({
-      chapter: options.chapter,
-      existingProse: prose,
-      currentWords: current,
-      targetWordCount: target,
-      minWordCount: min,
-      needMore,
-      beats: options.beats,
-      characters: options.characters,
-      styleConfig: options.styleConfig,
-      chapterIntentBlock: options.chapterIntentBlock,
-      blacklist,
-    });
-
-    try {
-      // 续写块单独缓冲，再拼到全文，避免 onStream 把「仅续写」当成覆盖全文
-      let expandBuf = '';
-      const expansion = await generateStream(
-        messages,
-        0.75,
-        (chunk) => {
-          expandBuf += chunk;
-          if (options.onStream) {
-            options.onStream(prose + (prose.endsWith('\n') ? '' : '\n') + expandBuf);
-          }
-        },
-        (msg) => options.onProgress?.(` [字数补写] ${msg}`)
-      );
-      const add = (expansion || expandBuf || '').trim();
-      if (!add || add.length < 40) {
-        options.onProgress?.(
-          ` [字数补写] 第 ${expandRounds} 轮几乎无输出，停止补写`
-        );
-        break;
-      }
-      // 若模型误回了全文，取比原文更长的部分或直接用新稿
-      if (add.length > prose.length * 0.85 && add.includes(prose.slice(0, 80))) {
-        prose = add;
-      } else {
-        prose = `${prose.trim()}\n\n${add}`.trim();
-      }
-      current = countProseWords(prose);
-      options.onProgress?.(
-        ` [字数补写] 第 ${expandRounds} 轮后 ${current}/${target} 字（最低 ${min}）`
-      );
-    } catch (err: any) {
-      options.onProgress?.(
-        ` [字数补写] 第 ${expandRounds} 轮失败：${err?.message || err}`
-      );
-      break;
-    }
-  }
-
-  return {
-    prose,
-    gate: {
-      target,
-      min,
-      current,
-      met: current >= min,
-      expandRounds,
-    },
-  };
 }
 
 // 步骤 2：细粒度正文流式执笔 (Show Don't Tell Writer) — 调用真实 LLM API SSE 流式输出
@@ -417,7 +319,8 @@ export async function step2_ExpandProse(
     options?.storyMemoryBlock,
     options?.chapterIntentBlock,
     options?.genrePackBlock,
-    targetWordCount || options?.targetWordCount
+    targetWordCount || options?.targetWordCount,
+    options?.bookGenre
   );
 
   try {
@@ -565,6 +468,20 @@ function normalizeHardType(raw: unknown): HardIssueType {
 }
 
 /** 阶段 A：硬伤审 */
+/** 长章分段送审：单段上限与相邻段重叠（字符） */
+const HARD_REVIEW_SEGMENT_LIMIT = 7000;
+const HARD_REVIEW_SEGMENT_OVERLAP = 400;
+
+/** 硬伤审分段（通用分段器 proseSegments 的硬伤审参数封装） */
+export function splitHardReviewSegments(
+  prose: string
+): { text: string; index: number; total: number }[] {
+  return splitProseForReview(prose, {
+    limit: HARD_REVIEW_SEGMENT_LIMIT,
+    overlap: HARD_REVIEW_SEGMENT_OVERLAP,
+  });
+}
+
 export async function runHardReview(
   prose: string,
   characters: Character[],
@@ -581,6 +498,10 @@ export async function runHardReview(
     chapterNumber?: number;
     /** 默认 true：合并本地事实断言 */
     runLocalGuard?: boolean;
+    /** 修复环已修清单：复核时核验这些点是否修好，只报仍存在/新出现的矛盾 */
+    previouslyFixed?: string[];
+    /** 修复后复核标志：只判是否还有阻断级硬伤，不对整章重新挑刺 */
+    isRecheck?: boolean;
   }
 ): Promise<HardReviewResult> {
   onProgress?.(' [Step 3A] 硬伤审：吃书 / 战力 / 时间线 / 道具 / 人称...');
@@ -619,52 +540,212 @@ export async function runHardReview(
   };
 
   try {
-    const messages = buildHardReviewPrompt(prose, characters, settings, extras);
-    const res = await generateJSON<{
-      hardScore?: number;
-      hardPassed?: boolean;
-      summary?: string;
-      issues?: {
-        type?: string;
-        severity?: string;
-        description?: string;
-        suggestion?: string;
-      }[];
-    }>(messages, 0.35);
+    // ── 长章分段送审：>7000 字拆段（带重叠）逐段审再合并，消灭「截头去尾」中段盲区 ──
+    const segments = splitHardReviewSegments(prose);
+    const multi = segments.length > 1;
 
-    const issues: HardReviewIssue[] = (res.issues || [])
-      .map((i) => ({
-        type: normalizeHardType(i.type),
-        severity: i.severity === 'warn' ? ('warn' as const) : ('error' as const),
-        description: String(i.description || '').trim(),
-        suggestion: String(i.suggestion || '').trim() || '请改写至自洽',
-      }))
-      .filter((i) => i.description.length > 0)
-      .slice(0, 12);
+    const reviewed: {
+      passed: boolean;
+      score: number;
+      summary: string;
+      issues: HardReviewIssue[];
+    }[] = [];
 
-    const errorCount = issues.filter((i) => i.severity === 'error').length;
-    const passed =
-      typeof res.hardPassed === 'boolean' ? res.hardPassed && errorCount === 0 : errorCount === 0;
-    let score =
-      typeof res.hardScore === 'number' && Number.isFinite(res.hardScore)
-        ? Math.max(0, Math.min(100, res.hardScore))
-        : passed
-          ? 92
-          : Math.max(20, 75 - errorCount * 15);
+    for (const seg of segments) {
+      if (multi) {
+        onProgress?.(
+          ` [Step 3A] 硬伤审（分段 ${seg.index}/${segments.length}，段长 ${seg.text.length} 字）...`
+        );
+      }
+      const messages = buildHardReviewPrompt(seg.text, characters, settings, {
+        previousContext: extras?.previousContext,
+        storyMemoryBlock: extras?.storyMemoryBlock,
+        chapterIntentBlock: extras?.chapterIntentBlock,
+        segmentNote: multi
+          ? `第 ${seg.index}/${segments.length} 段（${
+              seg.index === 1 ? '章节开头' : seg.index === segments.length ? '章节结尾' : '章节中段'
+            }）`
+          : undefined,
+        previouslyFixed: extras?.previouslyFixed,
+        isRecheck: extras?.isRecheck,
+      });
+      const res = await generateJSON<{
+        hardScore?: number;
+        hardPassed?: boolean;
+        summary?: string;
+        issues?: {
+          type?: string;
+          severity?: string;
+          description?: string;
+          suggestion?: string;
+          evidenceA?: { source?: 'memory' | 'intent' | 'previous' | 'chapter'; quote?: string; ref?: string };
+          evidenceB?: { source?: 'memory' | 'intent' | 'previous' | 'chapter'; quote?: string; ref?: string };
+        }[];
+      }>(messages, 0.35);
 
-    if (!passed) score = Math.min(score, 70);
+      const issues: HardReviewIssue[] = (res.issues || [])
+        .map((i) => ({
+          type: normalizeHardType(i.type),
+          severity: i.severity === 'warn' ? ('warn' as const) : ('error' as const),
+          description: String(i.description || '').trim(),
+          suggestion: String(i.suggestion || '').trim() || '请改写至自洽',
+          evidenceA: i.evidenceA,
+          evidenceB: i.evidenceB,
+        }))
+        .filter((i) => i.description.length > 0)
+        .slice(0, 12);
 
-    const summary =
-      (res.summary || '').trim() ||
-      (passed ? '硬伤审通过，未发现阻断级矛盾' : `发现 ${errorCount} 处硬伤 error`);
+      const errorCount = issues.filter((i) => i.severity === 'error').length;
+      const passed =
+        typeof res.hardPassed === 'boolean' ? res.hardPassed && errorCount === 0 : errorCount === 0;
+      let score =
+        typeof res.hardScore === 'number' && Number.isFinite(res.hardScore)
+          ? Math.max(0, Math.min(100, res.hardScore))
+          : passed
+            ? 92
+            : Math.max(20, 75 - errorCount * 15);
+      if (!passed) score = Math.min(score, 70);
+      const summary =
+        (res.summary || '').trim() ||
+        (passed ? '硬伤审通过，未发现阻断级矛盾' : `发现 ${errorCount} 处硬伤 error`);
 
-    onProgress?.(
-      passed
-        ? ` [Step 3A] 硬伤通过（${score}分）`
-        : ` [Step 3A] 硬伤未过：${summary}（${errorCount} error）`
+      if (multi) {
+        onProgress?.(
+          ` [Step 3A] 段${seg.index}/${segments.length} ${
+            passed ? `通过（${score}分）` : `未过：${summary.slice(0, 60)}`
+          }`
+        );
+      } else {
+        onProgress?.(
+          passed
+            ? ` [Step 3A] 硬伤通过（${score}分）`
+            : ` [Step 3A] 硬伤未过：${summary}（${errorCount} error）`
+        );
+      }
+      reviewed.push({ passed, score, summary, issues });
+    }
+
+    // ── 合并：全过才过；分取最差；issue 标注段位；总分取均值（未过时取最低） ──
+    const mergedIssues: HardReviewIssue[] = reviewed
+      .flatMap((r, idx) =>
+        multi
+          ? r.issues.map((i) => ({ ...i, description: `[段${idx + 1}] ${i.description}` }))
+          : r.issues
+      )
+      .slice(0, 16);
+    const passed = reviewed.every((r) => r.passed);
+    const score = mergeHardReviewSegmentScores(
+      reviewed.map((r) => ({ passed: r.passed, score: r.score }))
     );
+    const summary = multi
+      ? `${passed ? '分段审全部通过' : '分段审未过'}：${reviewed
+          .map((r, i) => `段${i + 1} ${r.passed ? '过' : r.summary.slice(0, 30)}`)
+          .join('；')}`
+      : reviewed[0].summary;
 
-    return applyLocal({ passed, score, summary, issues, source: 'llm' });
+    // ── 引用核验（防幻觉硬伤）：LLM 指控必须逐字命中引文才可作为 error 计分。
+    // 插在本地断言层(applyLocal)之前——本地断言是确定性规则，无需核验。 ──
+    const vr = verifyHardIssues(
+      { passed, score, summary, issues: mergedIssues },
+      {
+        chapterContent: prose,
+        memoryBlock: extras?.storyMemoryBlock,
+        intentBlock: extras?.chapterIntentBlock,
+        previousContext: extras?.previousContext,
+      }
+    );
+    let hardened = vr.result;
+
+    // ── 辩护人二次意见（P1）：对过了引用核验的指控，换「为作者辩护」立场再确认
+    //    「两条证据是否必然不能同时成立」。refuted → 降级存疑；upheld/unclear → 保守维持。──
+    const toDefend = hardened.issues.filter(
+      (i) => i.severity === 'error' && i.verify?.status === 'verified'
+    );
+    if (toDefend.length > 0) {
+      onProgress?.(
+        ` [Step 3A] 辩护人复核 ${Math.min(toDefend.length, 6)} 项已核实指控…`
+      );
+      let defenseRefuted = 0;
+      for (const issue of toDefend.slice(0, 6)) {
+        try {
+          const d = await generateJSON<{ verdict?: string; reason?: string }>(
+            buildHardDefensePrompt({
+              prose,
+              description: issue.description,
+              evidenceA: issue.evidenceA,
+              evidenceB: issue.evidenceB,
+            }),
+            0.2
+          );
+          const verdict =
+            d.verdict === 'refuted' || d.verdict === 'upheld' ? d.verdict : 'unclear';
+          const reason = String(d.reason || '').trim().slice(0, 120);
+          if (verdict === 'refuted') {
+            defenseRefuted += 1;
+            hardened = {
+              ...hardened,
+              issues: hardened.issues.map((i) =>
+                i === issue
+                  ? {
+                      ...i,
+                      severity: 'warn' as const,
+                      originalSeverity: 'error' as const,
+                      verify: {
+                        status: 'defense-refuted' as const,
+                        reasons: ['辩护人复核：存在合理解释，非必然冲突', reason].filter(Boolean),
+                      },
+                    }
+                  : i
+              ),
+            };
+          } else {
+            hardened = {
+              ...hardened,
+              issues: hardened.issues.map((i) =>
+                i === issue
+                  ? {
+                      ...i,
+                      verify: {
+                        status: 'verified' as const,
+                        reasons: [
+                          ...(i.verify?.reasons || []),
+                          verdict === 'upheld'
+                            ? `辩护人复核：维持（${reason || '必然冲突'}）`
+                            : '辩护人复核：不确定，保守维持',
+                        ],
+                      },
+                    }
+                  : i
+              ),
+            };
+          }
+        } catch {
+          // 辩护调用失败：保守维持原判（不因辩护层故障放过指控）
+        }
+      }
+      if (defenseRefuted > 0) {
+        onProgress?.(
+          ` [Step 3A] 辩护人复核：${defenseRefuted} 项指控存在合理解释，已降级存疑`
+        );
+      }
+    }
+
+    // ── 计分收口：按「剩余已核实 error 数」走确定性锚点，消除 LLM 打分方差。
+    // 只要发生过任何降级（引用未命中 / 辩护 refute），0-error 时即触发 pass 救援。 ──
+    const defenseRefutedCount = hardened.issues.filter(
+      (i) => i.verify?.status === 'defense-refuted'
+    ).length;
+    const finalized = finalizeHardReviewScoring(hardened, {
+      passRescue: vr.downgraded + defenseRefutedCount > 0,
+    });
+    const totalDowngraded = vr.downgraded + defenseRefutedCount;
+    if (totalDowngraded > 0) {
+      onProgress?.(
+        ` [Step 3A] 防误报核验：${totalDowngraded} 项指控被降级存疑，不计硬伤`
+      );
+    }
+
+    return applyLocal({ ...finalized, source: 'llm' });
   } catch (err: any) {
     const msg = err?.message || String(err);
     // 防幻觉：API 失败默认阻断，不再放行绿通
@@ -770,6 +851,206 @@ function hardIssuesToConflicts(
  * A 硬伤审（阻断定稿）→ B 文笔审（润色+建议）→ 规则机检（黑名单等硬门）
  * 绿通条件：hardPassed && ruleScan.passed && 综合分 ≥ MIN_GREEN_VERIFICATION_SCORE
  */
+/** 润色改动摘要：字数/句子增删 + 是否重大改动（审计与润色分离的证据） */
+export function summarizePolishDiff(
+  before: string,
+  after: string
+): NonNullable<MemoryAuditLog['polishDiff']> {
+  const words = (t: string) => proseWords(t);
+  const sentences = (t: string) => {
+    const m = t.match(/[。！？!?…]+/g);
+    return m ? m.length : t.trim() ? 1 : 0;
+  };
+  const beforeWords = words(before);
+  const afterWords = words(after);
+  const sBefore = sentences(before);
+  const sAfter = sentences(after);
+  const removedSentences = Math.max(0, sBefore - sAfter);
+  const addedSentences = Math.max(0, sAfter - sBefore);
+  const wordDelta = Math.abs(afterWords - beforeWords) / Math.max(beforeWords, 1);
+  const materiallyChanged =
+    before !== after && (wordDelta > 0.08 || removedSentences > 5);
+  return {
+    beforeWords,
+    afterWords,
+    removedSentences,
+    addedSentences,
+    materiallyChanged,
+    note: before === after ? '润色未改动' : undefined,
+  };
+}
+
+/**
+ * 推进度审：分镜完成度 / 主线推进 / 注水度 / 伏笔触达。
+ * 弱推进（<60 或注水 ≥8）→ progressionBlocked，压分至 70 交人工（与 recap 弱同处置）。
+ * API 失败不阻断：推进度是质量闸不是安全闸，降级为 neutral 通过并留痕。
+ */
+export async function runProgressionReview(options: {
+  chapterNumber: number;
+  beats: PlotBeat[];
+  prose: string;
+  storyMemory?: StoryMemory | null;
+  chapterIntent?: ChapterIntent | null;
+  onProgress?: (msg: string) => void;
+}): Promise<ProgressionReviewResult> {
+  const { onProgress } = options;
+  onProgress?.(' [Step 3D] 推进度审：分镜完成度 / 主线推进 / 注水 / 伏笔触达...');
+
+  const memory = normalizeStoryMemory(options.storyMemory || undefined);
+  const openThreads = listActiveThreads(memory)
+    .slice(0, 10)
+    .map(
+      (t) =>
+        `${t.text.slice(0, 60)}${t.text.length > 60 ? '…' : ''}（${
+          t.lastTouchedChapterNumber ?? t.introducedChapterNumber ?? '?'
+        } 章起未动）`
+    );
+  const mainLineHint = [
+    options.chapterIntent?.endingHook,
+    ...(options.chapterIntent?.mustDo || []),
+  ]
+    .filter(Boolean)
+    .join('；');
+
+  const fallback: ProgressionReviewResult = {
+    score: 70,
+    passed: true,
+    summary: '推进度审 API 失败，未阻断（质量闸降级）',
+    unfinishedBeats: [],
+    mainLineAdvanced: true,
+    wateriness: 0,
+    touchedThreads: [],
+    suggestions: [],
+    source: 'fallback',
+  };
+
+  try {
+    const messages = buildProgressionReviewPrompt({
+      chapterNumber: options.chapterNumber,
+      beats: options.beats.map((b) => ({ order: b.order, description: b.description })),
+      prose: options.prose,
+      openThreads,
+      mainLineHint: mainLineHint || undefined,
+    });
+    const res = await generateJSON<{
+      progressionScore?: number;
+      mainLineAdvanced?: boolean;
+      wateriness?: number;
+      unfinishedBeats?: { order?: number; reason?: string }[];
+      touchedThreads?: string[];
+      suggestions?: string[];
+      summary?: string;
+    }>(messages, 0.3);
+
+    const score =
+      typeof res.progressionScore === 'number' && Number.isFinite(res.progressionScore)
+        ? Math.max(0, Math.min(100, Math.round(res.progressionScore)))
+        : 70;
+    const wateriness =
+      typeof res.wateriness === 'number' && Number.isFinite(res.wateriness)
+        ? Math.max(0, Math.min(10, Math.round(res.wateriness)))
+        : 0;
+    // 通过线不信任模型自报的 passed，用确定性规则推导
+    const passed = score >= 60 && wateriness <= 7;
+    const unfinishedBeats = (res.unfinishedBeats || [])
+      .map((b) => ({
+        order: Number(b.order) || 0,
+        reason: String(b.reason || '').trim(),
+      }))
+      .filter((b) => b.order > 0 && b.reason)
+      .slice(0, 8);
+    const touchedThreads = (res.touchedThreads || [])
+      .map(String)
+      .filter(Boolean)
+      .slice(0, 8);
+    const suggestions = (res.suggestions || []).map(String).filter(Boolean).slice(0, 5);
+    const summary =
+      (res.summary || '').trim() ||
+      `推进分 ${score}·注水 ${wateriness}${passed ? '' : '（弱推进）'}`;
+
+    onProgress?.(
+      passed
+        ? ` [Step 3D] 推进度通过（${score} 分 · 注水 ${wateriness}）`
+        : ` [Step 3D] 推进度弱：${summary} → 压分待人工`
+    );
+    return {
+      score,
+      passed,
+      summary,
+      unfinishedBeats,
+      mainLineAdvanced: res.mainLineAdvanced !== false,
+      wateriness,
+      touchedThreads,
+      suggestions,
+      source: 'llm',
+    };
+  } catch (err: any) {
+    onProgress?.(` [Step 3D] 推进度审失败（不阻断）：${err?.message || err}`);
+    return fallback;
+  }
+}
+
+/**
+ * 修复环升级档：补丁多轮修不动 → 授予整段重写权限的 beat 级重写。
+ * 只重写与未解冲突相关的场景、其余原样保留（见 buildBeatRewritePrompt）。
+ * 失败返回 null（调用方保留原稿，不放大损失）。
+ */
+export async function runBeatLevelRewrite(options: {
+  chapterNumber: number;
+  prose: string;
+  beats: PlotBeat[];
+  conflicts: { type?: string; description: string; suggestion?: string }[];
+  characters: Character[];
+  styleConfig: StyleConfig;
+  extraRules?: string;
+  /** 字数带（越上限时句界软裁） */
+  wordBand?: WordBand;
+  onStream?: (chunk: string) => void;
+  onProgress?: (msg: string) => void;
+}): Promise<string | null> {
+  const { onProgress } = options;
+  onProgress?.(' [Step 4R] beat 级重写：按未解冲突整段重写相关场景...');
+  try {
+    const messages = buildBeatRewritePrompt({
+      chapterNumber: options.chapterNumber,
+      prose: options.prose,
+      beats: options.beats.map((b) => ({ order: b.order, description: b.description })),
+      conflicts: options.conflicts,
+      characters: options.characters,
+      extraRules: options.extraRules,
+    });
+    const out = await generateStream(messages, 0.7, options.onStream, onProgress);
+    let text = (out || '').trim();
+    // 防御：重写稿过短视为失败（模型只回了片段/说明）
+    const minLen = Math.round(proseWords(options.prose) * 0.6);
+    if (!text || proseWords(text) < minLen) {
+      onProgress?.(' [Step4R] 重写稿异常（过短），放弃升级稿保留原文');
+      return null;
+    }
+    // 字数带兜底：软裁病理性超长
+    if (options.wordBand) {
+      const wordsNow = countProseWords(text);
+      const ceil = Math.round(options.wordBand.high * 1.12);
+      if (wordsNow > ceil) {
+        const keptAll = trimProseAddition('', text, ceil);
+        if (keptAll.trimmed) {
+          onProgress?.(
+            ` [Step4R] 重写稿超长（${wordsNow} 字 > ${ceil}），已按句界裁剪`
+          );
+          text = keptAll.text;
+        }
+      }
+    }
+    onProgress?.(
+      ` [Step4R] 重写完成：${proseWords(text)} 字（原 ${proseWords(options.prose)} 字）`
+    );
+    return text;
+  } catch (err: any) {
+    onProgress?.(` [Step 4R] beat 级重写失败（保留原文）：${err?.message || err}`);
+    return null;
+  }
+}
+
 export async function step3_CriticVerify(
   prose: string,
   characters: Character[],
@@ -789,6 +1070,8 @@ export async function step3_CriticVerify(
     previousProse?: string | null;
     /** 本章字数目标（机检 length） */
     targetWordCount?: number | null;
+    /** 本章分镜（推进度审用；缺省时按梗概整体判断） */
+    beats?: PlotBeat[];
   }
 ): Promise<{ polishedProse: string; auditLog: MemoryAuditLog; ruleScan: RuleScanResult }> {
   const pack = contextMeta?.previousContextPack;
@@ -800,7 +1083,7 @@ export async function step3_CriticVerify(
 
   onProgress?.(' [Step 3] 双阶段审校：硬伤+本地断言 → 文笔 → 规则机检...');
 
-  const hard = await runHardReview(prose, characters, settings, onProgress, {
+  let hard = await runHardReview(prose, characters, settings, onProgress, {
     previousContext: contextMeta?.previousContext || pack?.text,
     storyMemoryBlock: contextMeta?.storyMemoryBlock,
     chapterIntentBlock: contextMeta?.chapterIntentBlock,
@@ -817,7 +1100,62 @@ export async function step3_CriticVerify(
     onProgress
   );
 
+  // ── 审计与润色分离：润色不再是无声的二次执笔 ──
+  // 1) 记录 diff 摘要（字数/句子增删）进 auditLog；
+  // 2) 重大改动（字数 ±8% 以上或删句 >5）→ 对润色稿复硬审，绿通以最终交付稿为准。
+  const polishDiff = summarizePolishDiff(prose, polishedProse);
+  if (style.polishedApplied) {
+    onProgress?.(
+      ` [Step 3B] 润色改动：字数 ${polishDiff.beforeWords}→${polishDiff.afterWords}（${
+        polishDiff.afterWords >= polishDiff.beforeWords ? '+' : ''
+      }${polishDiff.afterWords - polishDiff.beforeWords}），句 -${polishDiff.removedSentences}/+${polishDiff.addedSentences}${
+        polishDiff.materiallyChanged ? ' · 改动显著，复硬审' : ''
+      }`
+    );
+  }
+  if (style.polishedApplied && polishDiff.materiallyChanged) {
+    onProgress?.(' [Step 3B+] 对润色稿复硬审（润色可能引入事实/状态漂移）...');
+    hard = await runHardReview(polishedProse, characters, settings, onProgress, {
+      previousContext: contextMeta?.previousContext || pack?.text,
+      storyMemoryBlock: contextMeta?.storyMemoryBlock,
+      chapterIntentBlock: contextMeta?.chapterIntentBlock,
+      storyMemory: contextMeta?.storyMemory,
+      chapterIntent: contextMeta?.chapterIntent,
+      involvedCharacterIds: contextMeta?.involvedCharacterIds,
+      chapterNumber: contextMeta?.chapterNumber,
+    });
+  }
+
   const hardConflicts = hardIssuesToConflicts(hard.issues);
+
+  // ── 推进度审（对最终交付稿）：弱推进压分阻断自动锁章 ──
+  // styleConfig.progressionReviewEnabled === false 时跳过（成本开关；关闭后不阻断）
+  let progression: ProgressionReviewResult | undefined;
+  let progressionBlocked = false;
+  if (styleConfig.progressionReviewEnabled === false) {
+    onProgress?.(' [Step 3D] 推进度审已关闭（风格配置）');
+  } else {
+    progression = await runProgressionReview({
+      chapterNumber: contextMeta?.chapterNumber ?? 1,
+      beats: contextMeta?.beats || [],
+      prose: polishedProse,
+      storyMemory: contextMeta?.storyMemory,
+      chapterIntent: contextMeta?.chapterIntent,
+      onProgress,
+    });
+    progressionBlocked = !progression.passed;
+    if (progressionBlocked) {
+      onProgress?.(
+        ` [Step 3D] 推进度弱（${progression.score} 分 · 注水 ${progression.wateriness}）：${
+          progression.summary
+        }${
+          progression.unfinishedBeats.length
+            ? `；分镜未写透：#${progression.unfinishedBeats.map((b) => b.order).join(' #')}`
+            : ''
+        } → 压分待人工`
+      );
+    }
+  }
   const styleSoftConflicts: MemoryAuditLog['logicConflicts'] = (style.suggestions || [])
     .slice(0, 4)
     .map((s) => ({
@@ -840,6 +1178,11 @@ export async function step3_CriticVerify(
     hardReview: hard,
     styleReview: style,
     hardBlocked: !hard.passed,
+    polishDiff,
+    progressionReview: progression,
+    progressionBlocked: progressionBlocked || undefined,
+    progressionSummary:
+      progressionBlocked && progression ? progression.summary : undefined,
   };
 
   onProgress?.(
@@ -860,6 +1203,11 @@ export async function step3_CriticVerify(
   // 硬伤未过时压分并禁止虚高
   if (!hard.passed) {
     auditLog.verificationScore = Math.min(auditLog.verificationScore, hard.score, 68);
+  }
+
+  // 推进度弱：压分至 70（低于绿通线 75），与 recap 弱同处置——不自动锁，交人工
+  if (progressionBlocked) {
+    auditLog.verificationScore = Math.min(auditLog.verificationScore, 70);
   }
 
   const scoreOk =
@@ -898,6 +1246,7 @@ export function isDualReviewGreen(
 ): boolean {
   if (!ruleScan.passed) return false;
   if (auditLog.recapQualityBlocked) return false;
+  if (auditLog.progressionBlocked) return false;
   if (auditLog.hardBlocked === true) return false;
   const hard = auditLog.hardReview;
   // 未跑硬伤审 → 不绿通（防漏检）
@@ -1086,6 +1435,22 @@ export interface Step4FixResult {
   mode: 'local' | 'full' | 'none' | 'failed';
 }
 
+/**
+ * 分段硬伤审合并计分：全过取均值；未过取「均值 −10」（下限 40）。
+ * 替代旧的「未过取最差段分」——长章某一段 1 处 error 不应把整章打到 55 分档，
+ * 综合分需如实反映「局部问题、整体尚可」与「整章崩坏」的差别（是否过段仍由 passed 决定）。
+ */
+export function mergeHardReviewSegmentScores(
+  parts: { passed: boolean; score: number }[]
+): number {
+  if (parts.length === 0) return 0;
+  const avg = Math.round(
+    parts.reduce((s, p) => s + p.score, 0) / parts.length
+  );
+  const allPassed = parts.every((p) => p.passed);
+  return allPassed ? avg : Math.max(40, avg - 10);
+}
+
 // 步骤 4：单轮冲突修复 —— 优先 localPatches，否则全文 fixedProse
 export async function step4_AutoRefineAndFix(
   prose: string,
@@ -1093,7 +1458,9 @@ export async function step4_AutoRefineAndFix(
   styleConfig?: StyleConfig,
   characters: Character[] = [],
   settings: WorldSetting[] = [],
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  /** 字数带：传入后对全文修复稿做区间约束与超长软裁 */
+  wordBand?: WordBand
 ): Promise<Step4FixResult> {
   const list = (conflicts || []) as FixConflictItem[];
   const emptyDiff = diffProseBlocks(prose, prose);
@@ -1122,13 +1489,45 @@ export async function step4_AutoRefineAndFix(
   };
 
   try {
-    const messages = buildConflictFixPrompt(prose, list, style, characters, settings);
-    const res = await generateJSON<{
+    let messages = buildConflictFixPrompt(prose, list, style, characters, settings, wordBand);
+    type FixResponse = {
       fixedProse?: string;
       polishedProse?: string;
       changesSummary?: string[];
       localPatches?: { before?: string; after?: string }[];
-    }>(messages, 0.45);
+    };
+    const probeWords = (r: FixResponse) =>
+      countProseWords((r.fixedProse || r.polishedProse || '').trim());
+    let res = await generateJSON<FixResponse>(messages, 0.45);
+
+    // 字数带第二道闸：全文修复稿越带时，带反馈重试一次（提示词已要求等量替换）
+    if (wordBand && probeWords(res) > wordBand.high) {
+      const overWords = probeWords(res);
+      onProgress?.(
+        ` [Step4] 修复稿 ${overWords} 字超出 ${wordBand.low}–${wordBand.high}，带反馈重试…`
+      );
+      const retryMessages: typeof messages = [
+        ...messages,
+        {
+          role: 'assistant',
+          content: JSON.stringify({
+            fixedProse: (res.fixedProse || res.polishedProse || '').slice(0, 1200),
+          }),
+        },
+        {
+          role: 'user',
+          content:
+            `你返回的 fixedProse 合计约 ${overWords} 字，超出允许区间 ${wordBand.low}–${wordBand.high}。` +
+            '请改为等量替换式修复：优先输出 localPatches；若必须给完整 fixedProse，总字数落在区间内且保持原收尾钩子不变。只输出 JSON。',
+        },
+      ];
+      messages = retryMessages;
+      try {
+        res = await generateJSON<FixResponse>(retryMessages, 0.45);
+      } catch {
+        // 反馈重试失败：沿用首轮结果，交由下方句界软裁兜底
+      }
+    }
 
     const changesSummary = Array.isArray(res.changesSummary)
       ? res.changesSummary.map(String).filter(Boolean)
@@ -1141,9 +1540,20 @@ export async function step4_AutoRefineAndFix(
     const full = (res.fixedProse || res.polishedProse || '').trim();
     const patches = Array.isArray(res.localPatches) ? res.localPatches : [];
 
+    // 长章双保险：>8000 字的章送审时中段被省略（buildConflictFixPrompt 截断），
+    // 模型没见过中段——即使违规返回了完整 fixedProse 也必然是凭想象重写的，
+    // 直接忽略，只认局部补丁；补丁不中则走 failed（交由 beat 级重写兜底）。
+    const longChapter = prose.trim().length > 8000;
+    const usableFull = longChapter ? '' : full;
+    if (longChapter && full) {
+      onProgress?.(
+        ' [Step 4] 长章修复：已丢弃模型返回的完整稿（中段未送审、无法核实），仅接受局部补丁'
+      );
+    }
+
     // 优先：有完整稿且长度合理 → 全文
-    if (full && full.length >= Math.min(80, prose.trim().length * 0.3)) {
-      fixedProse = full;
+    if (usableFull && usableFull.length >= Math.min(80, prose.trim().length * 0.3)) {
+      fixedProse = usableFull;
       mode = 'full';
       // 仍尝试统计 patches 信息供展示
       if (patches.length) {
@@ -1177,6 +1587,21 @@ export async function step4_AutoRefineAndFix(
 
     if (!fixedProse) {
       throw new Error('修复结果无效：无可用全文且局部补丁未命中');
+    }
+
+    // 字数带兜底：软裁病理性超长（> high × 1.12），防止修复环节整体膨胀章节
+    if (fixedProse && wordBand) {
+      const wordsNow = countProseWords(fixedProse);
+      const hardCeil = Math.round(wordBand.high * 1.12);
+      if (wordsNow > hardCeil) {
+        const keptAll = trimProseAddition('', fixedProse, hardCeil);
+        if (keptAll.trimmed) {
+          onProgress?.(
+            ` [Step4] 修复稿仍超长（${wordsNow} 字 > ${hardCeil}），已按句界裁剪`
+          );
+          fixedProse = keptAll.text;
+        }
+      }
     }
 
     const diff = diffProseBlocks(prose, fixedProse);
@@ -1237,6 +1662,11 @@ export async function runConflictFixLoop(
     previousProse?: string | null;
     /** 字数目标，修复后复扫 length */
     targetWordCount?: number | null;
+    /** 升级档：补丁轮修不动时 beat 级重写（默认开；传 false 关闭） */
+    enableBeatRewrite?: boolean;
+    /** beat 重写定位用：本章分镜 */
+    beats?: PlotBeat[];
+    chapterNumber?: number;
   }
 ): Promise<ConflictFixLoopResult> {
   const maxRounds = options?.maxRounds ?? DEFAULT_FIX_MAX_ROUNDS;
@@ -1246,6 +1676,9 @@ export async function runConflictFixLoop(
   let currentProse = prose;
   let currentAudit = { ...auditLog, logicConflicts: [...(auditLog.logicConflicts || [])] };
   let currentScan = ruleScan;
+
+  // 字数带：待修清单/beat 重写全程锁进 target±10%（无目标时相对原稿 ±10%）
+  const wordBand = deriveWordBand(options?.targetWordCount ?? null, currentProse);
 
   if (!needsConflictFix(currentScan, currentAudit.logicConflicts, currentAudit.hardReview)) {
     if (onProgress) onProgress(' [Step 4] 无需修复：机检通过且无硬伤。');
@@ -1280,7 +1713,8 @@ export async function runConflictFixLoop(
       styleConfig,
       characters,
       settings,
-      onProgress
+      onProgress,
+      wordBand
     );
 
     currentProse = fixRound.fixedProse;
@@ -1344,12 +1778,68 @@ export async function runConflictFixLoop(
     if (currentScan.passed) break;
   }
 
+  // ── 升级档：补丁轮修不动 → beat 级重写（只重写相关场景，其余原样保留） ──
+  let beatRewriteApplied = false;
+  if (
+    !currentScan.passed &&
+    options?.enableBeatRewrite !== false &&
+    options?.beats?.length &&
+    !isHardReviewApiBlock(currentAudit.hardReview)
+  ) {
+    const outstanding = [
+      ...collectFixConflicts(currentScan, currentAudit.logicConflicts, 2),
+      ...(currentAudit.hardReview?.issues || [])
+        .filter((i) => i.severity === 'error')
+        .map((i) => ({
+          type: i.type as string,
+          description: i.description,
+          suggestion: i.suggestion,
+        })),
+    ].slice(0, 10);
+    if (outstanding.length) {
+      const rewritten = await runBeatLevelRewrite({
+        chapterNumber: options.chapterNumber ?? 1,
+        prose: currentProse,
+        beats: options.beats,
+        conflicts: outstanding,
+        characters,
+        styleConfig,
+        wordBand,
+        onStream: (t) => options?.onProseUpdate?.(t),
+        onProgress,
+      });
+      if (rewritten) {
+        currentProse = rewritten;
+        options?.onProseUpdate?.(currentProse);
+        beatRewriteApplied = true;
+        const merged = mergeRuleScanIntoAudit(
+          currentAudit,
+          styleConfig,
+          currentProse,
+          options?.previousProse,
+          options?.targetWordCount
+        );
+        currentAudit = merged.auditLog;
+        currentScan = merged.ruleScan;
+        history.push({
+          round: history.length + 1,
+          conflictCount: outstanding.length,
+          ruleScanPassedAfter: currentScan.passed,
+          summary: '[重写] 补丁修复失败，升级 beat 级重写',
+          changesSummary: outstanding.map((c) => c.description.slice(0, 60)),
+          localPatchesApplied: 0,
+        });
+      }
+    }
+  }
+
   const greenOk = currentScan.passed;
 
   currentAudit = {
     ...currentAudit,
     fixRounds: history.length,
     fixResolved: greenOk,
+    beatRewriteApplied: beatRewriteApplied || undefined,
     fixHistory: history,
     ruleScanBlocked: !currentScan.passed,
     verificationScore: greenOk

@@ -364,7 +364,18 @@ export function useProjectActions({
       alert('请至少保留一部书籍。');
       return;
     }
+    const target = projectsList.find((p) => p.id === id);
+    const ok = window.confirm(
+      `确定要删除《${target?.title || '这本书'}》吗？\n\n将删除全部正文、人物、设定与大纲，并同步清理磁盘备份，删除后不可恢复。\n建议先「导出 JSON 备份」再删除。`
+    );
+    if (!ok) return;
     await deleteProject(id);
+    // 数据生命周期：同步清理服务端磁盘备份（best-effort，失败不阻断删除）
+    try {
+      await fetch(`/api/backup?projectId=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {
+      /* 备份清理失败不阻断项目删除 */
+    }
     const updatedList = await listProjects();
     setProjectsList(updatedList);
     if (currentProject?.id === id) {

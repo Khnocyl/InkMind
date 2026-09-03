@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   backoffDelayMs,
   fetchWithTimeout,
+  GenerationAbortedError,
+  isGenerationAborted,
   isRetryableError,
   TimeoutError,
   withRetry,
@@ -144,6 +146,52 @@ describe('llmResilience · fetchWithTimeout', () => {
     vi.stubGlobal('fetch', mock);
     const res = await fetchWithTimeout('/api/llm/generate', undefined, 1000);
     expect(res.ok).toBe(true);
+  });
+
+  it('外部 signal 已中止 → 抛 GenerationAbortedError（不可重试）', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      fetchWithTimeout('/api/llm/generate', { method: 'POST' }, 1000, controller.signal)
+    ).rejects.toBeInstanceOf(GenerationAbortedError);
+  });
+
+  it('外部 signal 运行中触发中止 → 抛 GenerationAbortedError，且不误判为超时', async () => {
+    // 模拟真实 fetch：abort 时 reject AbortError
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('Aborted', 'AbortError'))
+          );
+        })
+      )
+    );
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 20);
+    await expect(
+      fetchWithTimeout('/api/llm/generate', { method: 'POST' }, 30_000, controller.signal)
+    ).rejects.toBeInstanceOf(GenerationAbortedError);
+  });
+});
+
+describe('llmResilience · 用户中止语义', () => {
+  it('GenerationAbortedError 不可重试（withRetry 立即抛出）', async () => {
+    const fn = vi.fn<() => Promise<string>>().mockRejectedValue(new GenerationAbortedError());
+    await expect(withRetry(fn, { maxRetries: 3, retryDelayMs: 1 })).rejects.toBeInstanceOf(
+      GenerationAbortedError
+    );
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('isGenerationAborted 识别类型与同名错误对象', () => {
+    expect(isGenerationAborted(new GenerationAbortedError())).toBe(true);
+    const named = new Error('x');
+    named.name = 'GenerationAbortedError';
+    expect(isGenerationAborted(named)).toBe(true);
+    expect(isGenerationAborted(new Error('已停止生成'))).toBe(false);
+    expect(isGenerationAborted(null)).toBe(false);
   });
 });
 

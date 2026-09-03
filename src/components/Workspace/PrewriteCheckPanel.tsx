@@ -57,7 +57,7 @@ export const PrewriteCheckPanel: React.FC<PrewriteCheckPanelProps> = ({
   projectConfig,
   storyMemory,
 }) => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [showInject, setShowInject] = useState(false);
 
   const report = useMemo(
@@ -83,7 +83,7 @@ export const PrewriteCheckPanel: React.FC<PrewriteCheckPanelProps> = ({
       >
         <span className="text-xs font-bold text-slate-900 flex items-center space-x-1.5">
           <ClipboardCheck size={14} className="text-teal-600" />
-          <span>写前上下文体检</span>
+          <span>写前检查</span>
         </span>
         <span className="flex items-center gap-1.5">
           <span

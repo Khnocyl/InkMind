@@ -1,8 +1,9 @@
 /**
- * AI 味扩展机检（对齐 story-deslop Gate B/D/G + 密度分级）。
+ * AI 味扩展机检与密度分级。
  * 可复现、不调 LLM；与 ruleScan 黑名单/升华互补。
  */
 
+import { proseWords } from './proseWords';
 import type { StyleConfig } from '../types/novel';
 import type { RuleHit, RuleHitSeverity } from './ruleScan';
 
@@ -32,6 +33,12 @@ export interface AiTasteMetrics {
   expositionHits: number;
   /** 句式套路命中 */
   formulaHits: number;
+  /** 句长均值（去标点，字） */
+  sentenceLenMean: number;
+  /** 句长变异系数（标准差/均值）；<0.7 且句偏长 = 节奏单调 */
+  sentenceLenCv: number;
+  /** 短句（≤8 字）占比 0–1 */
+  shortSentenceRatio: number;
 }
 
 export interface AiTasteReport {
@@ -106,6 +113,22 @@ const EXPOSITION_PATTERNS: { re: RegExp; phrase: string; suggestion: string }[] 
     re: /原来[，,]?[^。]{2,20}只是/g,
     phrase: '原来…只是',
     suggestion: '删揭底旁白，改角色发现过程。',
+  },
+  // ── 换皮解释腔（无锚词的解说句，来自真实稿件病例）──
+  {
+    re: /(那|这)是[^。！？]{2,26}的(位置|地方|选择|信号|意思|习惯|本能|道理|规矩|代价|用意)/g,
+    phrase: '那是……的位置（判断句解说）',
+    suggestion: '删叙述者解释：让位置/规矩通过别人的反应或后果显出来。',
+  },
+  {
+    re: /(仿佛|好像|像是)只(是)?在?(陈述|说明|解释|提醒|宣告|告知|强调|下达)/g,
+    phrase: '仿佛只是在陈述……（叙述者定性）',
+    suggestion: '删语气定性：语气的效果由听者的反应承担。',
+  },
+  {
+    re: /没有(做出|多做|多做出)(任何)?(多余)?(的)?(解释|说明|反应|犹豫|停顿|废话)/g,
+    phrase: '没有做出任何解释（否定解说）',
+    suggestion: '删解说性否定：直接写他做了什么/什么都没说就动。',
   },
 ];
 
@@ -194,6 +217,10 @@ function countSentences(para: string): number {
   return Math.max(1, parts.length);
 }
 
+function mean(nums: number[]): number {
+  return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+}
+
 function variance(nums: number[]): number {
   if (nums.length < 2) return 0;
   const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
@@ -237,9 +264,9 @@ export function scanAiTastePatterns(
   const strict = styleConfig?.aiTasteStrict === true;
   const blockHeavy = styleConfig?.aiTasteBlockHeavy === true;
 
-  const chars = text.replace(/\s+/g, '').length;
+  const chars = proseWords(text);
   const paragraphs = splitParagraphs(text);
-  const paraLens = paragraphs.map((p) => p.replace(/\s+/g, '').length);
+  const paraLens = paragraphs.map((p) => proseWords(p));
   const sentenceCounts = paragraphs.map(countSentences);
   const sentences = sentenceCounts.reduce((a, b) => a + b, 0);
   const avgSentencesPerPara =
@@ -256,6 +283,23 @@ export function scanAiTastePatterns(
     dialogueLines > 0 ? dialogueTags / Math.max(dialogueLines, 1) : 0;
 
   const parallelRuns = countParallelRuns(paragraphs);
+
+  // 句子级节奏（正面指标）：句长均值/变异系数/短句占比。
+  // 段落级方差抓不住"段长有变化但句句同构"的单调（长定语链均匀长句）。
+  const sentLens: number[] = [];
+  for (const p of paragraphs) {
+    for (const s of p.split(/[。！？!?…]+/)) {
+      const t = s.replace(/[\s「」“”"'‘’，,、—…·:：;；()（）]/g, '');
+      if (t.length > 0) sentLens.push(t.length);
+    }
+  }
+  const sentenceLenMean = sentLens.length ? mean(sentLens) : 0;
+  const sentenceLenCv =
+    sentLens.length >= 5
+      ? Math.sqrt(variance(sentLens)) / Math.max(sentenceLenMean, 1)
+      : 0;
+  const shortSentenceRatio =
+    sentLens.length > 0 ? sentLens.filter((n) => n <= 8).length / sentLens.length : 0;
 
   let hits: RuleHit[] = [];
 
@@ -331,6 +375,21 @@ export function scanAiTastePatterns(
     });
   }
 
+  // Gate D+ 句子级节奏：句长均匀偏长（段落维度抓不到的"句句同构"单调）
+  // 极端单调（句均>20 字且变异系数<0.6，如"句句 32 字同构"的真实病例）升 error——
+  // 词级补丁修不动节奏，error 才能进修复环并触发 beat 级重写升级档
+  if (sentLens.length >= 20 && sentenceLenCv > 0 && sentenceLenCv < 0.7 && sentenceLenMean > 18) {
+    const extreme = sentenceLenCv < 0.6 && sentenceLenMean > 20;
+    hits.push({
+      kind: 'pattern',
+      severity: extreme ? 'error' : 'warn',
+      phrase: '[D]句式节奏单调',
+      count: 1,
+      sample: `句均${sentenceLenMean.toFixed(1)}字 · 变异系数${sentenceLenCv.toFixed(2)} · 短句${Math.round(shortSentenceRatio * 100)}%`,
+      suggestion: '拆长句、插入单句短段做重音，长短交错（健康文风变异系数≥0.9、短句占比≥40%）。',
+    });
+  }
+
   // Gate E 对话标签
   if (dialogueLines >= 4 && dialogueTagRatio > 0.55) {
     hits.push({
@@ -340,6 +399,43 @@ export function scanAiTastePatterns(
       count: dialogueTags,
       sample: `标签/对话≈${(dialogueTagRatio * 100).toFixed(0)}%`,
       suggestion: '用动作/换行替代部分「说道/问道」。',
+    });
+  }
+
+  // Gate F 碎句连发：连续 ≥3 句 ≤6 字（对白/拟声除外）→ 节奏破碎。
+  // 与生成提示词的「句子长度下限」同口径，命中即提示合并/补足。
+  const SHORT_SENT_MAX = 6;
+  const SHORT_RUN_MIN = 3;
+  let fragmentRuns = 0;
+  const fragmentSamples: string[] = [];
+  for (const p of paragraphs) {
+    const rawSents = p
+      .split(/[。！？!?…]+/)
+      .map((s) => s.trim())
+      .filter((t) => t.length > 0);
+    let run = 0;
+    for (const raw of rawSents) {
+      const isDialogue = /^[「“"'‘]/.test(raw);
+      const t = raw.replace(/[\s「」“”"'‘’，,、—…·:：;；()（）]/g, '');
+      if (t.length > 0 && t.length <= SHORT_SENT_MAX && !isDialogue) {
+        run += 1;
+        if (run === SHORT_RUN_MIN) {
+          fragmentRuns += 1;
+          if (fragmentSamples.length < 3) fragmentSamples.push(raw.slice(0, 14));
+        }
+      } else {
+        run = 0;
+      }
+    }
+  }
+  if (fragmentRuns > 0) {
+    hits.push({
+      kind: 'pattern',
+      severity: 'warn',
+      phrase: '[F]碎句连发',
+      count: fragmentRuns,
+      sample: fragmentSamples.join(' / '),
+      suggestion: `连续 ${SHORT_RUN_MIN} 句及以上 ≤${SHORT_SENT_MAX} 字的碎句连发会破坏节奏；合并或补足成分（对白/拟声除外）。`,
     });
   }
 
@@ -364,6 +460,9 @@ export function scanAiTastePatterns(
     parallelRuns,
     expositionHits,
     formulaHits,
+    sentenceLenMean: +sentenceLenMean.toFixed(1),
+    sentenceLenCv: +sentenceLenCv.toFixed(2),
+    shortSentenceRatio: +shortSentenceRatio.toFixed(2),
   };
 
   // 分级（参考 deslop：取最高档）
@@ -478,6 +577,8 @@ export function applyAiTasteHitsAsRevisionTodos(
     /** 默认 true：仅 error；false 时 medium+ 也写 warn */
     errorsOnly?: boolean;
     max?: number;
+    /** 自动派生运行标识：供后续审校运行清理旧运行条目 */
+    autoRunId?: string;
   }
 ): { chapter: import('../types/novel').Chapter; added: number } {
   const tier = options?.tier || 'clean';
@@ -543,6 +644,7 @@ export function applyAiTasteHitsAsRevisionTodos(
       text,
       status: 'open',
       createdAt: now,
+      ...(options?.autoRunId ? { autoRunId: options.autoRunId } : {}),
     });
     keys.add(key);
     added += 1;

@@ -1,6 +1,6 @@
-import type { Chapter, ChapterIntent, Character, StoryMemory, WorldSetting } from '../types/novel';
+import type { Chapter, ChapterIntent, Character, StoryMemory, StyleConfig, WorldSetting } from '../types/novel';
 import type { PreviousContextPack } from './contextPack';
-import { generateJSON } from './llmClient';
+import { generateJSON, resolveRoleRouteAsync } from './llmClient';
 import { formatStoryMemoryForPrompt } from './storyMemory';
 import { listMemoryDebts, retrieveMemoryForChapter } from './memoryRetrieval';
 
@@ -276,17 +276,28 @@ export async function generateChapterIntent(input: {
   previousContext?: string;
   storyMemory?: StoryMemory | null;
   previousContextPack?: PreviousContextPack | null;
+  /** 按角色路由模型：传入书的 styleConfig 时，「写前意图」角色可路由到指定配置档 */
+  styleConfig?: StyleConfig | null;
   onProgress?: (msg: string) => void;
 }): Promise<ChapterIntent> {
   input.onProgress?.(' [规划] 正在生成写前大纲（目标/禁止/钩子）...');
   try {
     const messages = buildChapterIntentPrompt(input);
+    // 角色路由（默认关闭 → undefined = 跟随激活档，行为与从前一致）
+    const route = await resolveRoleRouteAsync(
+      input.styleConfig?.llmRoleRouting,
+      'intent'
+    );
     const res = await generateJSON<{
       mustDo?: string[];
       mustAvoid?: string[];
       endingHook?: string;
       emotionalBeats?: string[];
-    }>(messages, 0.55);
+    }>(
+      messages,
+      0.55,
+      route ? { profileId: route.profileId, model: route.modelName } : undefined
+    );
 
     const intent = normalizeChapterIntent({
       mustDo: res.mustDo,

@@ -39,7 +39,7 @@ export const WritingDashboard: React.FC<WritingDashboardProps> = ({
   onRunCrossAudit,
   dailyWordLog,
 }) => {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const summary = useMemo(
     () => computeBookMetrics(chapters, { projectConfig, styleConfig }),
     [chapters, projectConfig, styleConfig]

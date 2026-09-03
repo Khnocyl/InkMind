@@ -1,3 +1,4 @@
+import { contentWordsOrFallback } from './proseWords';
 import type {
   BookProject,
   Chapter,
@@ -81,7 +82,7 @@ export function buildExportBundle(project: BookProject): ProjectExportBundle {
     version: EXPORT_VERSION,
     exportedAt: new Date().toISOString(),
     title: clean.title,
-    appHint: 'Novel Studio 全书备份。可在「书库」中导入恢复。不含 API Key。',
+    appHint: 'InkMind 全书备份。可在「书库」中导入恢复。不含 API Key。',
     project: clean,
   };
 }
@@ -125,7 +126,7 @@ export function exportProjectAsMarkdown(project: BookProject): { filename: strin
   lines.push(`- 导出时间：${new Date().toISOString()}`);
   lines.push(`- 章节数：${(p.chapters || []).length}`);
   const words = (p.chapters || []).reduce(
-    (sum, c) => sum + (c.wordCount || (c.content || '').replace(/\s+/g, '').length || 0),
+    (sum, c) => sum + (contentWordsOrFallback(c.content, c.wordCount) || 0),
     0
   );
   lines.push(`- 约总字数：${words}`);

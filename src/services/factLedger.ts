@@ -5,6 +5,7 @@
  * - 写后正文 vs 账本对账（可复现，不调 LLM）
  */
 
+import { proseWords } from './proseWords';
 import type {
   Character,
   Chapter,
@@ -19,6 +20,7 @@ import type {
   StoryTimeAnchor,
   WorldEntityState,
 } from '../types/novel';
+import { splitProseForReview } from './proseSegments';
 
 const MAX_ACTIVE = 120;
 const MAX_SNAPSHOTS = 30;
@@ -507,17 +509,8 @@ export function mergeSnapshotIntoLedger(
           old.subject === incoming.subject &&
           old.id !== incoming.id
         ) {
-          // 值相同则保留旧（更新章号可选）；不同则 supersede
-          if (old.value && incoming.value && old.value === incoming.value) {
-            return {
-              ...old,
-              sourceChapterNumber: Math.max(
-                old.sourceChapterNumber,
-                incoming.sourceChapterNumber
-              ),
-              claim: incoming.claim || old.claim,
-            };
-          }
+          // 无论新旧值是否相同都 supersede：新条目随后作为唯一 active 入列。
+          // （旧实现「值相同保留旧条目」与后续无条件 push 新条目并存 → 重复 active）
           return {
             ...old,
             status: 'superseded' as const,
@@ -565,7 +558,11 @@ export function mergeSnapshotIntoLedger(
     .slice(-MAX_SNAPSHOTS);
 
   // 时间线：从本章 time_anchor 推故事日
+  // 重复合并防御：重跑/补抽会把同章快照再并一次，先扣除旧条目的 delta 再累加新值
   let storyDayCursor = base.storyDayCursor ?? 1;
+  const oldTimelineEntry = (base.timeline || []).find(
+    (t) => t.chapterNumber === snapshot.chapterNumber
+  );
   let timeline = [...(base.timeline || [])].filter(
     (t) => t.chapterNumber !== snapshot.chapterNumber
   );
@@ -587,11 +584,12 @@ export function mergeSnapshotIntoLedger(
     );
     if (end) label = end.value || end.claim.slice(0, 24);
   }
-  // 首章从 1 起；有推进则累加
+  // 首章从 1 起；有推进则累加（重复合并时先扣除本章旧条目已计入的 delta）
   if (timeline.length === 0 && snapshot.chapterNumber <= 1) {
     storyDayCursor = 1 + dayDelta;
   } else {
-    storyDayCursor = Math.max(1, storyDayCursor + dayDelta);
+    const prevDelta = oldTimelineEntry ? (oldTimelineEntry.dayDelta ?? 0) : 0;
+    storyDayCursor = Math.max(1, storyDayCursor - prevDelta + dayDelta);
   }
   timeline.push({
     chapterNumber: snapshot.chapterNumber,
@@ -657,7 +655,7 @@ export function reconcileProseAgainstLedger(input: {
 }): LedgerReconcileResult {
   const prose = input.prose || '';
   const issues: LedgerReconcileHit[] = [];
-  if (prose.replace(/\s+/g, '').length < 40) {
+  if (proseWords(prose) < 40) {
     return {
       passed: true,
       score: 100,
@@ -678,12 +676,13 @@ export function reconcileProseAgainstLedger(input: {
 
   const chN = input.chapterNumber ?? 9999;
 
-  // 1) 死亡断言 vs 行动
+  // 1) 死亡断言 vs 行动（death / value=dead / character_status=已阵亡/退出 均算死亡）
   for (const a of active) {
-    if (a.kind !== 'death' && !(a.kind === 'character_status' && a.value === '已阵亡/退出')) {
-      // death only for hard action check
-    }
-    if (a.kind !== 'death' && a.value !== 'dead') continue;
+    const isDead =
+      a.kind === 'death' ||
+      a.value === 'dead' ||
+      (a.kind === 'character_status' && a.value === '已阵亡/退出');
+    if (!isDead) continue;
     // 本章刚钉死的死亡：允许死亡场景本身
     if (a.sourceChapterNumber >= chN) continue;
 
@@ -1221,6 +1220,11 @@ export function pinDeathAssertion(
  * LLM 补抽：在启发式快照基础上补漏（死亡/归属/地点）。
  * 失败则原样返回启发式结果。
  */
+/** 账本补抽分段参数：与旧版 4500 截断阈值一致；超长章最多 6 段防失控 */
+const ENRICH_SEGMENT_LIMIT = 4500;
+const ENRICH_SEGMENT_OVERLAP = 300;
+const ENRICH_SEGMENT_MAX = 6;
+
 export async function enrichSnapshotWithLlm(
   snapshot: ChapterFactSnapshot,
   input: {
@@ -1233,10 +1237,18 @@ export async function enrichSnapshotWithLlm(
   const { generateJSON } = await import('./llmClient');
   input.onProgress?.(' [账本] LLM 补抽关键事实…');
   const prose = (input.prose || '').trim();
-  const body =
-    prose.length > 4500
-      ? `${prose.slice(0, 2000)}\n…\n${prose.slice(-2000)}`
-      : prose;
+  // 分段送审（替代旧版「头 2000 + 尾 2000」截断——中段事实不再盲区）
+  const allSegments = splitProseForReview(prose, {
+    limit: ENRICH_SEGMENT_LIMIT,
+    overlap: ENRICH_SEGMENT_OVERLAP,
+  });
+  const segments = allSegments.slice(0, ENRICH_SEGMENT_MAX);
+  const multi = segments.length > 1;
+  if (allSegments.length > ENRICH_SEGMENT_MAX) {
+    input.onProgress?.(
+      ` [账本] 正文超长，仅补抽前 ${ENRICH_SEGMENT_MAX} 段（约 ${(ENRICH_SEGMENT_LIMIT * ENRICH_SEGMENT_MAX / 1000).toFixed(0)}k 字）`
+    );
+  }
   const recapBits = [
     input.recap?.text || '',
     input.recap?.endingState || '',
@@ -1246,66 +1258,86 @@ export async function enrichSnapshotWithLlm(
     .join('\n')
     .slice(0, 1200);
 
-  try {
-    const res = await generateJSON<{
-      assertions?: {
-        kind?: string;
-        subject?: string;
-        claim?: string;
-        value?: string;
-      }[];
-    }>(
-      [
-        {
-          role: 'system',
-          content:
-            '你是小说事实抽取器。只从给定正文/recap 抽取已成立的硬事实，禁止编造。' +
-            '输出 JSON：{ "assertions": [ { "kind", "subject", "claim", "value?" } ] }。' +
-            'kind 只能是：death|character_status|character_location|item_owner|item_state|event|time_anchor。' +
-            '最多 12 条；优先死亡、道具归属/损毁、角色所在。claim 中文短句。',
-        },
-        {
-          role: 'user',
-          content: [
-            `第${input.chapter.number}章《${input.chapter.title}》`,
-            '--- recap ---',
-            recapBits || '（无）',
-            '--- 正文(截断) ---',
-            body || '（无）',
-            '--- 已有启发式断言（勿重复） ---',
-            snapshot.assertions.map((a) => `[${a.kind}] ${a.claim}`).join('\n') || '（无）',
-          ].join('\n'),
-        },
-      ],
-      0.25
-    );
+  const chN = input.chapter.number;
+  const extra: FactAssertion[] = [];
+  // 跨段去重键：kind+subject+(value 或 claim 前缀)
+  const seenKeys = new Set<string>();
+  const keyOf = (kind: string, subject: string, value?: string, claim?: string) =>
+    `${kind}|${subject}|${value || (claim || '').slice(0, 20)}`;
 
-    const chN = input.chapter.number;
-    const extra: FactAssertion[] = [];
-    for (const raw of res.assertions || []) {
-      const kind = normalizeKind(raw.kind);
-      const subject = String(raw.subject || '').trim();
-      const claim = String(raw.claim || '').trim();
-      if (subject.length < 1 || claim.length < 2) continue;
-      // 与启发式去重
-      const dup = snapshot.assertions.some(
-        (a) =>
-          a.kind === kind &&
-          a.subject === subject &&
-          (a.value === raw.value || a.claim.slice(0, 20) === claim.slice(0, 20))
+  try {
+    for (const seg of segments) {
+      if (multi) {
+        input.onProgress?.(
+          ` [账本] LLM 补抽（段 ${seg.index}/${segments.length}，段长 ${seg.text.length} 字）…`
+        );
+      }
+      const res = await generateJSON<{
+        assertions?: {
+          kind?: string;
+          subject?: string;
+          claim?: string;
+          value?: string;
+        }[];
+      }>(
+        [
+          {
+            role: 'system',
+            content:
+              '你是小说事实抽取器。只从给定正文/recap 抽取已成立的硬事实，禁止编造。' +
+              '输出 JSON：{ "assertions": [ { "kind", "subject", "claim", "value?" } ] }。' +
+              'kind 只能是：death|character_status|character_location|item_owner|item_state|event|time_anchor。' +
+              '最多 12 条；优先死亡、道具归属/损毁、角色所在。claim 中文短句。',
+          },
+          {
+            role: 'user',
+            content: [
+              `第${input.chapter.number}章《${input.chapter.title}》`,
+              '--- recap ---',
+              recapBits || '（无）',
+              multi
+                ? `--- 正文(分段 ${seg.index}/${segments.length}；段首承接上文、段尾可能未完，均非异常) ---`
+                : '--- 正文 ---',
+              seg.text || '（无）',
+              '--- 已有断言（勿重复） ---',
+              [
+                ...snapshot.assertions.map((a) => `[${a.kind}] ${a.claim}`),
+                ...extra.map((a) => `[${a.kind}] ${a.claim}`),
+              ].join('\n') || '（无）',
+            ].join('\n'),
+          },
+        ],
+        0.25
       );
-      if (dup) continue;
-      extra.push({
-        id: assertId(kind, subject, chN, extra.length + 50),
-        kind,
-        subject: subject.slice(0, 24),
-        claim: claim.slice(0, 160),
-        value: raw.value ? String(raw.value).slice(0, 48) : undefined,
-        sourceChapterNumber: chN,
-        createdAt: nowIso(),
-        status: 'active',
-        note: 'llm',
-      });
+
+      for (const raw of res.assertions || []) {
+        const kind = normalizeKind(raw.kind);
+        const subject = String(raw.subject || '').trim();
+        const claim = String(raw.claim || '').trim();
+        if (subject.length < 1 || claim.length < 2) continue;
+        const key = keyOf(kind, subject, raw.value ? String(raw.value) : undefined, claim);
+        if (seenKeys.has(key)) continue;
+        // 与启发式去重
+        const dup = snapshot.assertions.some(
+          (a) =>
+            a.kind === kind &&
+            a.subject === subject &&
+            (a.value === raw.value || a.claim.slice(0, 20) === claim.slice(0, 20))
+        );
+        if (dup) continue;
+        seenKeys.add(key);
+        extra.push({
+          id: assertId(kind, subject, chN, extra.length + 50),
+          kind,
+          subject: subject.slice(0, 24),
+          claim: claim.slice(0, 160),
+          value: raw.value ? String(raw.value).slice(0, 48) : undefined,
+          sourceChapterNumber: chN,
+          createdAt: nowIso(),
+          status: 'active',
+          note: 'llm',
+        });
+      }
     }
 
     if (!extra.length) {
@@ -1313,7 +1345,9 @@ export async function enrichSnapshotWithLlm(
       return snapshot;
     }
 
-    input.onProgress?.(` [账本] LLM 补抽 +${extra.length} 条`);
+    input.onProgress?.(
+      ` [账本] LLM 补抽 +${extra.length} 条${multi ? `（${segments.length} 段合并去重后）` : ''}`
+    );
     return {
       ...snapshot,
       source: 'mixed',
@@ -1326,6 +1360,22 @@ export async function enrichSnapshotWithLlm(
     };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (extra.length) {
+      // 部分段成功：保留已抽到的（补抽是增益，不因尾部失败全丢）
+      input.onProgress?.(
+        ` [账本] LLM 补抽部分失败，保留已抽 ${extra.length} 条：${msg.slice(0, 60)}`
+      );
+      return {
+        ...snapshot,
+        source: 'mixed',
+        assertions: [...snapshot.assertions, ...extra].slice(0, 40),
+        summary: [snapshot.summary, ...extra.map((e2) => e2.claim)]
+          .filter(Boolean)
+          .join('； ')
+          .slice(0, 200),
+        extractedAt: nowIso(),
+      };
+    }
     input.onProgress?.(` [账本] LLM 补抽失败，沿用启发式：${msg.slice(0, 80)}`);
     return snapshot;
   }
@@ -1418,7 +1468,7 @@ export function syncDeathsBidirectional(
 export function applyHardIssuesAsRevisionTodos(
   chapter: Chapter,
   issues: HardReviewIssue[],
-  options?: { errorsOnly?: boolean; max?: number }
+  options?: { errorsOnly?: boolean; max?: number; autoRunId?: string }
 ): { chapter: Chapter; added: number } {
   const errorsOnly = options?.errorsOnly !== false;
   const max = options?.max ?? 12;
@@ -1455,11 +1505,76 @@ export function applyHardIssuesAsRevisionTodos(
       text,
       status: 'open',
       createdAt: now,
+      ...(options?.autoRunId ? { autoRunId: options.autoRunId } : {}),
     });
     keys.add(key);
     added += 1;
   }
 
+  if (added === 0) return { chapter, added: 0 };
+  return {
+    chapter: {
+      ...chapter,
+      revisionTodos: next.slice(0, 40),
+      lastModified: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    },
+    added,
+  };
+}
+
+/**
+ * 确定性写后校验违规 → 章待修（「重跑本审」路径用；与管线内联版同语义）。
+ * 仅 error 级；按 open 条目文本前 40 字去重；打 autoRunId 供后续运行清理。
+ */
+export function applyPostWriteViolationsAsRevisionTodos(
+  chapter: Chapter,
+  violations: {
+    rule: string;
+    severity: string;
+    description: string;
+    suggestion: string;
+  }[],
+  options?: { max?: number; autoRunId?: string }
+): { chapter: Chapter; added: number } {
+  const max = options?.max ?? 5;
+  const list = violations
+    .filter((v) => v.severity === 'error')
+    .slice(0, max);
+  if (!list.length) return { chapter, added: 0 };
+  const now = nowIso();
+  const existing = [...(chapter.revisionTodos || [])];
+  const next = [...existing];
+  let added = 0;
+  for (const v of list) {
+    const text = `[引擎·${v.rule}] ${v.description} → ${v.suggestion}`.slice(
+      0,
+      280
+    );
+    const key = text.replace(/\s+/g, '').slice(0, 40);
+    if (
+      existing.some(
+        (e) =>
+          e.status === 'open' &&
+          e.text.replace(/\s+/g, '').slice(0, 40) === key
+      )
+    ) {
+      continue;
+    }
+    next.unshift({
+      id: `engine-${chapter.number}-${added}-${Date.now().toString(36)}`.slice(
+        0,
+        80
+      ),
+      text,
+      status: 'open',
+      createdAt: now,
+      ...(options?.autoRunId ? { autoRunId: options.autoRunId } : {}),
+    });
+    added += 1;
+  }
   if (added === 0) return { chapter, added: 0 };
   return {
     chapter: {

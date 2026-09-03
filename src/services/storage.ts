@@ -1,5 +1,10 @@
 import type { BookProject, BookProjectSummary, StyleConfig } from '../types/novel';
-import { migrateProjectToLatest } from './migrations';
+import { proseWords } from './proseWords';
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateProjectToLatest,
+  peekMigration,
+} from './migrations';
 
 const DB_NAME = 'novel_studio_db';
 /** v2: 增加全书快照 store，用于写前/写后回滚 */
@@ -29,6 +34,8 @@ export function getDefaultStyleConfig(): StyleConfig {
     ],
     enforceShowDontTell: true,
     forbidEndingSublimation: true,
+    // 按角色路由模型：默认关闭（总开关 false），全部跟随激活档
+    llmRoleRouting: { enabled: false, routes: {} },
     selectedExampleId: 'example-literary-dark',
     fewShotExamples: [
       {
@@ -88,7 +95,15 @@ export async function saveProject(project: BookProject): Promise<void> {
     project.lastModified = new Date().toISOString();
     const request = store.put(project);
 
-    request.onsuccess = () => resolve();
+    // 以事务提交为准（而非 request.onsuccess）：commit 阶段失败（典型
+    // QuotaExceededError）时必须让调用方知道「没落盘」——useProjectPersistence
+    // 的不变量是 resolve 即已落盘。
+    tx.oncomplete = () => {
+      invalidateProjectListCache();
+      resolve();
+    };
+    tx.onabort = () => reject(tx.error || new Error('saveProject 事务中止'));
+    tx.onerror = () => reject(tx.error || new Error('saveProject 事务失败'));
     request.onerror = () => reject(request.error);
   });
 }
@@ -105,21 +120,30 @@ export async function loadProject(id: string): Promise<BookProject | null> {
   });
   if (!raw) return null;
 
-  // R4：schema 版本迁移（纯函数，见 migrations.ts）
-  const { project: migrated, fromVersion, toVersion, applied } =
-    migrateProjectToLatest(raw);
-  if (applied.length === 0) return migrated;
-
-  // 迁移前自动快照（可回滚）。动态 import 避开 storage↔snapshots 静态循环依赖。
+  // 迁移前自动快照（可回滚）——必须在迁移函数执行之前：
+  // migrateProjectToLatest 可能 throw（缺迁移函数/非法数据），快照保护
+  // 恰恰要覆盖这条最需要它的失败路径。动态 import 避开 storage↔snapshots 循环依赖。
   try {
-    const { createSnapshot } = await import('./snapshots');
-    await createSnapshot(raw, {
-      reason: 'migration',
-      label: `迁移前备份 · schema v${fromVersion} → v${toVersion}`,
-    });
+    const preview = peekMigration(raw);
+    if (preview.isFuture) {
+      console.warn(
+        `[migrations] ${id}: 数据 schema v${preview.fromVersion} 高于当前代码支持的 v${CURRENT_SCHEMA_VERSION}` +
+          '（可能从新版降级）。原样加载——旧代码读写新数据，请尽快升级版本。'
+      );
+    } else if (preview.applied.length > 0) {
+      const { createSnapshot } = await import('./snapshots');
+      await createSnapshot(raw, {
+        reason: 'migration',
+        label: `迁移前备份 · schema v${preview.fromVersion} → v${preview.toVersion}`,
+      });
+    }
   } catch (e) {
     console.warn('[migrations] 迁移前快照失败（继续迁移）', e);
   }
+
+  // R4：schema 版本迁移（纯函数，见 migrations.ts）
+  const { project: migrated, fromVersion, toVersion, applied } =
+    migrateProjectToLatest(raw);  if (applied.length === 0) return migrated;
 
   // 迁移结果落盘（下次加载不再迁移）
   await saveProject(migrated);
@@ -131,7 +155,23 @@ export async function loadProject(id: string): Promise<BookProject | null> {
   return migrated;
 }
 
+/**
+ * 书列表缓存（性能）：此前每次落盘都伴随 listProjects() —— IndexedDB
+ * 全库 getAll 反序列化所有书再逐书统计，书多时每次击键级别落盘都在全库扫描。
+ * TTL 3s + 写路径失效：saveProject/deleteProject 即刻失效，书库选择等
+ * 场景最多看 3 秒旧的 lastModified（仅侧栏摘要展示，可接受）。
+ */
+const PROJECT_LIST_TTL_MS = 3000;
+let projectListCache: { at: number; data: BookProjectSummary[] } | null = null;
+
+export function invalidateProjectListCache(): void {
+  projectListCache = null;
+}
+
 export async function getAllProjects(): Promise<BookProjectSummary[]> {
+  if (projectListCache && Date.now() - projectListCache.at < PROJECT_LIST_TTL_MS) {
+    return projectListCache.data;
+  }
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PROJECTS, 'readonly');
@@ -149,7 +189,7 @@ export async function getAllProjects(): Promise<BookProjectSummary[]> {
             (typeof c?.content === 'string' && c.content.trim().length > 100)
         ).length;
         const totalWords = chapters.reduce(
-          (acc, c) => acc + (c?.wordCount || (typeof c?.content === 'string' ? c.content.length : 0) || 0),
+          (acc, c) => acc + (c?.wordCount || (typeof c?.content === 'string' ? proseWords(c.content) : 0) || 0),
           0
         );
         const targetTotal =
@@ -174,6 +214,7 @@ export async function getAllProjects(): Promise<BookProjectSummary[]> {
       });
       // Sort by lastModified descending
       summaries.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+      projectListCache = { at: Date.now(), data: summaries };
       resolve(summaries);
     };
     request.onerror = () => reject(request.error);
@@ -214,7 +255,10 @@ export async function deleteProject(id: string): Promise<void> {
       };
     }
 
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      invalidateProjectListCache();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 }

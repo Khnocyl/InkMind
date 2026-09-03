@@ -1,6 +1,8 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { Volume, Chapter, ProjectConfig } from '../../types/novel';
-import { Layers, ChevronDown, ChevronRight, Plus, RefreshCw, CheckCircle, BookOpen, FileText, ArrowLeft, Target } from 'lucide-react';
+import { Layers, ChevronDown, ChevronRight, Plus, RefreshCw, CheckCircle, BookOpen, FileText, ArrowLeft, Target, Sparkles } from 'lucide-react';
+import { isPlaceholderChapter } from '../../services/outlineGenerate';
+import { resolveChapterWordTarget } from '../../services/proseWords';
 
 interface OutlineReviewStepProps {
   volumes: Volume[];
@@ -9,9 +11,21 @@ interface OutlineReviewStepProps {
   onNext: (volumes: Volume[], chapters: Chapter[]) => void;
   onPrev?: () => void;
   onRegenerate: () => void;
+  onFillPlaceholders: () => void;
   isGenerating: boolean;
   progressMsg?: string;
 }
+
+/** 章节行状态 tag 配色（纯展示）：定稿=绿 / 占位=红 / 其余=灰 */
+const statusTagClass = (chap: Chapter): string => {
+  if (chap.status === '校验通过' || chap.status === '校验精修定稿') {
+    return 'bg-emerald-50 text-emerald-700 border border-emerald-300';
+  }
+  if (isPlaceholderChapter(chap)) {
+    return 'bg-red-50 text-red-700 border border-red-300';
+  }
+  return 'bg-slate-100 text-slate-600 border border-slate-200';
+};
 
 export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
   volumes: initialVolumes,
@@ -20,6 +34,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
   onNext,
   onPrev,
   onRegenerate,
+  onFillPlaceholders,
   isGenerating,
   progressMsg,
 }) => {
@@ -38,6 +53,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
 
   const activeVol = volumes.find((v) => v.id === expandedVolId) || volumes[0];
   const activeChap = chapters.find((c) => c.id === selectedChapId) || chapters[0];
+  const placeholderCount = chapters.filter((c) => isPlaceholderChapter(c)).length;
 
   const handleAddChapterToVol = (vol: Volume) => {
     const nextNumber = chapters.length + 1;
@@ -74,59 +90,65 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
   return (
     <div className="max-w-6xl mx-auto py-6 animate-fadeIn">
       <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-xl space-y-6">
-        <div className="flex items-center justify-between border-b border-slate-200 pb-5">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-6">
           <div className="flex items-center space-x-3">
-            <div className="p-3 bg-amber-500 rounded-xl shadow-md text-white">
+            <div className="p-3 bg-black rounded-2xl shadow-md text-white shrink-0">
               <Layers className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-slate-900">
+              <h2 className="text-xl font-bold text-slate-900">
                 第五步：全书分卷与章节梗概大纲审核
               </h2>
-              <p className="text-sm text-slate-600 mt-1">
+              <p className="text-xs text-slate-500 mt-1">
                 分卷规划决定节奏起伏，拆章梗概奠定每章的核心钩子。你可以自由调整卷名、章节剧情，准备进入创作。
               </p>
             </div>
           </div>
 
-          <button
-            onClick={onRegenerate}
-            disabled={isGenerating}
-            className="flex items-center space-x-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-amber-600 rounded-xl border border-slate-300 transition-all text-sm font-medium disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-            <span>AI 重新规划大纲分卷</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            {placeholderCount > 0 && (
+              <button
+                onClick={onFillPlaceholders}
+                disabled={isGenerating}
+                className="flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-full transition-all text-sm font-medium disabled:opacity-50"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>AI 补齐占位章梗概 ({placeholderCount})</span>
+              </button>
+            )}
+            <button
+              onClick={onRegenerate}
+              disabled={isGenerating}
+                className="flex items-center space-x-2 px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 rounded-full border border-slate-300 transition-all text-sm font-medium disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
+              <span>AI 重新规划大纲分卷</span>
+            </button>
+          </div>
         </div>
 
         {projectConfig && !isGenerating && (
-          <div className="flex flex-wrap items-center gap-3 text-xs rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-sky-950">
-            <Target size={14} className="text-sky-700 shrink-0" />
-            <span>
-              目标{' '}
-              <strong>
-                {projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? '—'}
-              </strong>{' '}
-              章 · 每章{' '}
-              <strong>
-                {(
-                  projectConfig.targetWordCountPerChapter ??
-                  projectConfig.wordsPerChapter ??
-                  0
-                ).toLocaleString()}
-              </strong>{' '}
-              字 · 当前大纲 <strong>{chapters.length}</strong> 章 · 分卷{' '}
-              <strong>{volumes.length}</strong>
+          <div className="flex flex-wrap items-center gap-3 text-xs rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-amber-900">
+            <span className="flex items-center gap-2 min-w-0">
+              <Target size={14} className="text-amber-600 shrink-0" />
+              <span>
+                目标{' '}
+                <strong>
+                  {projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? '—'}
+                </strong>{' '}
+                章 · 每章{' '}
+                <strong>
+                  {(resolveChapterWordTarget(projectConfig) ?? 0).toLocaleString()}
+                </strong>{' '}
+                字 · 当前大纲 <strong>{chapters.length}</strong> 章 · 分卷{' '}
+                <strong>{volumes.length}</strong>
+              </span>
+            </span>
+            <span className="ml-auto shrink-0 pl-3 text-right">
               {(() => {
                 const target =
                   projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? 0;
-                const placeholder = chapters.filter(
-                  (c) =>
-                    /待补全/.test(c.title || '') ||
-                    /【待补全】/.test(c.summary || '') ||
-                    (c.summary || '').trim().length < 40
-                ).length;
-                const detailed = chapters.length - placeholder;
+                const detailed = chapters.length - placeholderCount;
                 return (
                   <>
                     {target > 0 && chapters.length !== target && (
@@ -135,13 +157,13 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
                         · 与目标差 {chapters.length - target} 章
                       </span>
                     )}
-                    {placeholder > 0 && (
+                    {placeholderCount > 0 && (
                       <span className="text-amber-800 font-semibold">
                         {' '}
-                        · 详案 {detailed} / 占位 {placeholder}（可点「AI 重新规划」整本重拆，或左侧手动改占位章）
+                        · 详案 {detailed} / 占位 {placeholderCount}（可点「AI 重新规划」整本重拆或左侧手动改占位章；也可点「AI 补齐占位章梗概」只重写占位章，保留现有拆章结果）
                       </span>
                     )}
-                    {target > 0 && chapters.length >= target && placeholder === 0 && (
+                    {target > 0 && chapters.length >= target && placeholderCount === 0 && (
                       <span className="text-emerald-800 font-semibold"> · 已对齐目标且无占位</span>
                     )}
                   </>
@@ -153,8 +175,8 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
 
         {isGenerating ? (
           <div className="py-16 text-center space-y-4">
-            <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="text-sm font-medium text-amber-600">{progressMsg || 'AI 正在分析几百万字网文排版规律，为你拆解宏伟分卷与具体章节剧情钩子...'}</p>
+            <div className="w-12 h-12 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-sm font-medium text-slate-700">{progressMsg || 'AI 正在分析几百万字网文排版规律，为你拆解宏伟分卷与具体章节剧情钩子...'}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -197,7 +219,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
                             }`}
                           >
                             <span className="truncate pr-2">{chap.title}</span>
-                            <span className="text-[10px] text-slate-500 flex-shrink-0">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${statusTagClass(chap)}`}>
                               {chap.status}
                             </span>
                           </div>
@@ -246,11 +268,11 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
               {activeChap ? (
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 space-y-5 shadow-inner">
                   <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-                    <div className="flex items-center space-x-2 text-sm font-bold text-indigo-700">
+                    <div className="flex items-center space-x-2 text-sm font-bold text-slate-900">
                       <FileText className="w-4 h-4" />
                       <span>正在审核章节梗概：{activeChap.title}</span>
                     </div>
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900 font-semibold shrink-0">
                       第 {activeChap.number} 章
                     </span>
                   </div>
@@ -262,8 +284,8 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
                     <input
                       type="text"
                       value={activeChap.title}
-                      onChange={(e) => handleUpdateActiveChap({ title: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-base font-bold text-slate-900 focus:border-indigo-600 focus:outline-none"
+                        onChange={(e) => handleUpdateActiveChap({ title: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-base font-bold text-slate-900 focus:border-slate-900 focus:outline-none"
                     />
                   </div>
 
@@ -273,9 +295,9 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
                     </label>
                     <textarea
                       value={activeChap.summary}
-                      onChange={(e) => handleUpdateActiveChap({ summary: e.target.value })}
-                      rows={5}
-                      className="w-full bg-white border border-slate-300 rounded-lg p-3.5 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none leading-relaxed shadow-inner"
+                        onChange={(e) => handleUpdateActiveChap({ summary: e.target.value })}
+                        rows={5}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-3.5 text-sm text-slate-900 focus:border-slate-900 focus:outline-none leading-relaxed shadow-inner"
                     />
                   </div>
                 </div>
@@ -294,7 +316,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
             <button
               type="button"
               onClick={onPrev}
-              className="px-6 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl border border-slate-300 flex items-center space-x-2 transition-all text-sm"
+              className="px-6 py-3.5 bg-white hover:bg-slate-100 text-slate-700 font-medium rounded-full border border-slate-300 flex items-center space-x-2 transition-all text-sm"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>上一步 (调整世界观铁律)</span>
@@ -304,7 +326,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
             type="button"
             onClick={() => onNext(volumes, chapters)}
             disabled={isGenerating}
-            className="px-8 py-4 bg-black hover:bg-neutral-800 text-white font-bold rounded-xl shadow-lg flex items-center space-x-3 transition-all transform hover:-translate-y-0.5 text-base"
+            className="px-8 py-3.5 bg-black hover:bg-neutral-800 text-white font-bold rounded-full shadow-lg flex items-center space-x-2 transition-all transform hover:-translate-y-0.5 text-sm"
           >
             <CheckCircle className="w-5 h-5" />
             <span>🎯 骨架全部就绪！立即进入一章一章写作工作台</span>

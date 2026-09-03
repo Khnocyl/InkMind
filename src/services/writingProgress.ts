@@ -1,5 +1,6 @@
 import type { BookProject, Chapter, ProjectConfig } from '../types/novel';
 import { isChapterLocked } from './chapterLock';
+import { proseWords, resolveChapterWordTarget } from './proseWords';
 
 export interface BookProgress {
   currentWords: number;
@@ -21,7 +22,7 @@ export interface BookProgress {
 
 function chapterWordCount(c: Chapter): number {
   if (c.wordCount && c.wordCount > 0) return c.wordCount;
-  return (c.content || '').replace(/\s+/g, '').length;
+  return proseWords(c.content);
 }
 
 function hasContent(c: Chapter): boolean {
@@ -36,10 +37,8 @@ export function resolveTargetChapters(config?: ProjectConfig | null): number | n
 }
 
 export function resolveWordsPerChapter(config?: ProjectConfig | null): number | null {
-  if (!config) return null;
-  const n = config.targetWordCountPerChapter ?? config.wordsPerChapter;
-  if (typeof n === 'number' && n > 0) return Math.floor(n);
-  return null;
+  // 委托唯一出口（架构排查 A5）；floor 语义由此函数历史确立
+  return resolveChapterWordTarget(config);
 }
 
 export function resolveTargetTotalWords(config?: ProjectConfig | null): number | null {

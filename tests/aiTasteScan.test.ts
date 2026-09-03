@@ -149,6 +149,37 @@ describe('scanAiTastePatterns Gate E 对话标签', () => {
   });
 });
 
+describe('scanAiTastePatterns Gate F 碎句连发', () => {
+  it('连续 3 句 ≤6 字（非对白）→ [F] 命中 warn', () => {
+    const prose = '他走了。门关了。灯灭了。风起了。';
+    const r = scanAiTastePatterns(prose);
+    const f = r.hits.find((h) => h.phrase.startsWith('[F]'));
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe('warn');
+    expect(f!.phrase).toContain('碎句连发');
+    expect(f!.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('短句中间有长句打断 → 不构成连发', () => {
+    const prose = '他走了。夜色如墨，冷风从巷口灌进来。门关了。';
+    const r = scanAiTastePatterns(prose);
+    expect(r.hits.some((h) => h.phrase.startsWith('[F]'))).toBe(false);
+  });
+
+  it('对白短句不计入连发（豁免）', () => {
+    const prose = '“走。”“嗯。”“好。”';
+    const r = scanAiTastePatterns(prose);
+    expect(r.hits.some((h) => h.phrase.startsWith('[F]'))).toBe(false);
+  });
+
+  it('正常叙述不误报', () => {
+    const prose =
+      '他推开院门，冷风扑面而来。灯笼在檐下晃了两下，光影斑驳地落在青石板上。';
+    const r = scanAiTastePatterns(prose);
+    expect(r.hits.some((h) => h.phrase.startsWith('[F]'))).toBe(false);
+  });
+});
+
 describe('mergeExtendedBlacklist', () => {
   it('默认包含内置扩展套话表并去重', () => {
     const out = mergeExtendedBlacklist(
@@ -296,4 +327,62 @@ describe('findProseSnippetRange', () => {
     expect(findProseSnippetRange('', 'abc')).toBeNull();
     expect(findProseSnippetRange('abc', '   ')).toBeNull();
   });
+});
+
+describe('scanAiTastePatterns · 句子级节奏（正面指标）', () => {
+  it('句长均匀偏长的单调文本 → [D]句式节奏单调（极端单调升 error）', () => {
+    // 25 句、每句约 28 字、句长几乎不变（段落有变化以隔离段落级检查）
+    const sentence =
+      '他沿着城墙根慢慢向前走着，尽量让自己的脚步声混进更夫的梆子声里，以免引起守夜人的注意。';
+    const paras = Array.from({ length: 25 }, (_, i) =>
+      i % 3 === 0 ? sentence : `${sentence}${sentence.slice(0, 14)}`
+    ).join('\n');
+    const report = scanAiTastePatterns(paras);
+    const hit = report.hits.find((h) => h.phrase === '[D]句式节奏单调');
+    expect(hit).toBeTruthy();
+    expect(hit?.severity).toBe('error');
+    expect(report.metrics.sentenceLenCv).toBeLessThan(0.7);
+    expect(report.metrics.shortSentenceRatio).toBeLessThan(0.1);
+  });
+
+  it('长短句交错（变异系数高、短句多）→ 不报单调', () => {
+    const text = [
+      '雨停了。',
+      '他没动。',
+      '巷口的灯笼灭了一盏，剩下那盏在风里晃，把他的影子拉得很长很长，长到贴上对面的墙根，像一条趴着的黑狗。',
+      '谁？',
+      '没人应。',
+      '他又等了三息，才把后背从墙上撑开，一步一步挪到灯笼底下，借着那点昏黄的光，看清了地上那滩还没干透的水渍里，印着半枚鞋印。',
+      '不是他的。',
+      '他蹲下去，伸手比了比。',
+      '鞋印比他的脚小一号。',
+    ].join('\n');
+    const report = scanAiTastePatterns(text);
+    expect(report.hits.find((h) => h.phrase === '[D]句式节奏单调')).toBeFalsy();
+    expect(report.metrics.sentenceLenCv).toBeGreaterThan(0.7);
+    expect(report.metrics.shortSentenceRatio).toBeGreaterThan(0.3);
+  });
+});
+
+describe('scanAiTastePatterns · 换皮解释腔（真实稿件病例）', () => {
+  it('判断句解说「那是……的位置」→ 命中', () => {
+    const r = scanAiTastePatterns('叶无痕走在队伍正中间的三尺后处。那是整个阵型中承接首尾最容易变阵的位置。');
+    expect(r.hits.some((h) => h.phrase.includes('判断句解说'))).toBe(true);
+  });
+
+  it('叙述者定性「仿佛只是在陈述……」→ 命中', () => {
+    const r = scanAiTastePatterns('他语声平静，仿佛只是在陈述一条最基础的求生细则。');
+    expect(r.hits.some((h) => h.phrase.includes('叙述者定性'))).toBe(true);
+  });
+
+  it('否定解说「没有做出任何多余解释」→ 命中', () => {
+    const r = scanAiTastePatterns('叶无痕没有做出任何多余解释，左脚重重一踏地面发黑的腐木。');
+    expect(r.hits.some((h) => h.phrase.includes('否定解说'))).toBe(true);
+  });
+
+  it('正常叙述不误伤', () => {
+    const r = scanAiTastePatterns('他推门进去，把剑放在桌上。桌上摆着一只旧铅笔盒。');
+    expect(r.hits.filter((h) => h.phrase.includes('解说') || h.phrase.includes('定性'))).toHaveLength(0);
+  });
+
 });

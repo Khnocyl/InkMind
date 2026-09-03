@@ -1,3 +1,4 @@
+import { proseWords } from './proseWords';
 import type { BookProject, CrossChapterAuditReport, StyleConfig } from '../types/novel';
 
 /** 默认每写满 N 章有正文后提醒跨章抽检 */
@@ -21,7 +22,7 @@ export interface CrossAuditRemindStatus {
 
 function contentChapters(project: Pick<BookProject, 'chapters'>) {
   return (project.chapters || []).filter(
-    (c) => (c.wordCount && c.wordCount > 0) || (c.content && c.content.replace(/\s+/g, '').length > 200)
+    (c) => (c.wordCount && c.wordCount > 0) || (c.content && proseWords(c.content) > 200)
   );
 }
 

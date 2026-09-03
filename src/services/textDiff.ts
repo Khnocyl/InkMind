@@ -48,8 +48,8 @@ function preview(s: string, max = 48): string {
 export function diffProseBlocks(before: string, after: string, maxHunks = 24): ProseDiffResult {
   const a = splitBlocks(before);
   const b = splitBlocks(after);
-  const beforeChars = before.replace(/\s+/g, '').length;
-  const afterChars = after.replace(/\s+/g, '').length;
+  const beforeChars = proseWords(before);
+  const afterChars = proseWords(after);
   const charDelta = afterChars - beforeChars;
 
   if (before.trim() === after.trim()) {
@@ -180,4 +180,5 @@ export function applyLocalPatches(
     applied++;
   }
   return { text, applied, failed, failedDetails };
-}
+}import { proseWords } from './proseWords';
+

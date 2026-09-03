@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import type { WorldSetting, SettingCategory } from '../../types/novel';
 import { Plus, ShieldAlert, Tag, Layers, CheckCircle } from 'lucide-react';
 
@@ -54,8 +54,8 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
   };
 
   return (
-    <div className="flex-1 bg-white flex h-[calc(100vh-57px)] overflow-hidden">
-      <aside className="w-80 border-r border-[#e5e5e5] flex flex-col bg-[#fafafa]">
+    <div className="flex-1 bg-white flex h-full overflow-hidden">
+      <aside className="w-80 border-r border-[#e5e5e5] flex flex-col bg-[#fafafa] rounded-bl-[28px]">
         <div className="p-4 border-b border-[#e5e5e5] flex items-center justify-between">
           <span className="font-bold text-sm text-black">设定与世界观词条 ({settings.length})</span>
           <button
@@ -130,7 +130,7 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
 
       <main className="flex-1 overflow-y-auto p-8 bg-white">
         {isCreating ? (
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-3xl mx-auto">
             <h3 className="font-bold text-lg text-black mb-4 pb-2 border-b border-[#e5e5e5]">
               录入世界观与硬性红线规则（供 AI 自检引擎排查吃书冲突）
             </h3>
@@ -207,7 +207,7 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
             </form>
           </div>
         ) : selectedSet ? (
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div className="max-w-5xl mx-auto space-y-6">
             <div className="pb-4 border-b border-[#e5e5e5] flex items-start justify-between">
               <div>
                 <span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded inline-block mb-2">
