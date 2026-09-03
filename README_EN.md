@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <img src="public/icon.png" alt="InkMind Logo" width="96" height="96" />
 
@@ -22,7 +22,6 @@ Pre-built binaries are available on the [Releases page](https://github.com/Khnoc
 
 - **Windows**: Download `InkMind-x.x.x-win-x64-Setup.exe`. If Windows Defender or SmartScreen prompts "Unknown Publisher", click **"More info" → "Run anyway"** (as an open-source project, expensive commercial EV certificates are not currently purchased; the code is 100% transparent and safe).
 - **In-App Updates**: Built-in update checker available in the sidebar under "Settings → General & Appearance → About & Check Updates". Click "Check for Updates" to query the latest official GitHub Releases.
-- **macOS / Linux**: v1.0.0 primarily targets Windows. Native packages for macOS and Linux are in progress; users on these platforms can run from source via `npm start`.
 
 ---
 
