@@ -907,9 +907,6 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 </p>
               </div>
             </div>
-            <div className="flex items-center space-x-2 text-xs font-semibold px-3 py-1 rounded-full bg-slate-200 text-slate-800 border border-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700">
-              <span>当前版本：v{CURRENT_APP_VERSION}</span>
-            </div>
           </div>
 
           {/* 软件主信息展示卡 */}
