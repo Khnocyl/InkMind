@@ -112,6 +112,14 @@ function createWindow() {
   // 固定标题（页面 title 是通用的 "novel"）
   win.on('page-title-updated', (e) => e.preventDefault());
 
+  // 外部链接一律调用系统默认浏览器打开
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
   // 窗口最大化/还原状态同步到渲染进程
   win.on('maximize', () => {
     win?.webContents.send('window-maximize-change', true);
