@@ -792,6 +792,7 @@ html.dark .bg-white\/60 {
  * 并连带修正其内部显式 text-white 子元素（否则白底白字隐形）
  * ══════════════════════════════════════════════════════════ */
 html.dark .bg-black.text-white,
+html.dark .bg-neutral-900.text-white,
 html.dark .bg-slate-900.text-white,
 html.dark .bg-\[\#111111\].text-white {
   background-color: var(--app-button-primary-bg) !important;
@@ -800,6 +801,7 @@ html.dark .bg-\[\#111111\].text-white {
 }
 /* 翻转后的黑底容器内部：显式白字子元素与白色半透明徽标同步反色 */
 html.dark .bg-black .text-white,
+html.dark .bg-neutral-900 .text-white,
 html.dark .bg-\[\#111111\] > .text-white,
 html.dark button.bg-black .text-white\/70 {
   color: var(--app-button-primary-fg) !important;
