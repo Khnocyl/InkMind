@@ -8,7 +8,7 @@
 
 React 19 + Vite 前端 · Express 后端代理 LLM · 作品数据完全保存在本地 IndexedDB
 
-[English](README_EN.md) · [下载安装](#下载安装) · [核心能力](#核心能力) · [快速开始](#快速开始) · [开源协议](#开源协议)
+[English](README_EN.md) · [下载安装](#下载安装) · [核心特性](#核心特性) · [快速开始](#快速开始) · [赞助支持](#赞助与支持) · [开源协议](#开源协议)
 
 </div>
 
@@ -129,3 +129,14 @@ npm run build:exe
 本项目基于 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 协议开源。
 - 欢迎个人作者与开发者自由使用、学习与二次创作；
 - 任何基于本项目的衍生版本、修改版或网络服务提供者，**均必须同样遵循 AGPL-3.0 协议全量开源其源代码**，坚决维护开源社区成果，严禁未经开源的商业套壳与闭源转售。
+
+## 赞助与支持
+
+InkMind 是由个人独立设计与研发的开源创作工作台。如果您觉得 InkMind 对您的长篇小说构思、情节把控与执笔写作有所帮助，欢迎赞助请作者喝杯咖啡，支持项目的持续维护与更新！
+
+| 微信赞赏（扫码支持） | 爱发电（微信 / 支付宝） |
+| :---: | :---: |
+| <img src="docs/sponsor/wechat-pay.jpg" width="220" alt="微信赞赏码" /> | <br/><br/>[![Afdian](https://img.shields.io/badge/Afdian-爱发电赞助-946ce6?style=for-the-badge&logo=appveyor)](https://afdian.com/a/InkMind)<br/><br/>[👉 前往 InkMind 爱发电主页](https://afdian.com/a/InkMind)<br/><br/>*支持通过微信、支付宝进行单次打赏或月度赞助*<br/><br/> |
+
+衷心感谢每一位创作者与小说读者的鼓励与支持！
+

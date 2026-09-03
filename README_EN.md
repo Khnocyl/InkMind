@@ -8,7 +8,7 @@
 
 React 19 + Vite Frontend · Express Backend LLM Proxy · Project Data 100% Persisted Locally in IndexedDB
 
-[中文文档](README.md) · [Download & Install](#download--installation) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [License](#license)
+[中文文档](README.md) · [Download & Install](#download--installation) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Sponsor](#sponsorship--support) · [License](#license)
 
 </div>
 
@@ -127,3 +127,16 @@ npm run electron:dist
 This project is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
 - Personal writers and open-source developers are welcome to use, study, and create with InkMind freely.
 - Any derivative works, modifications, or hosted cloud network services **must release their complete source code under AGPL-3.0**. Closed-source commercial repackaging and resale are strictly prohibited.
+
+---
+
+## Sponsorship & Support
+
+InkMind is an independent open-source novel studio. If InkMind helps your novel plotting and writing journey, consider buying the author a coffee to support continuous development!
+
+| WeChat Pay (微信赞赏) | Afdian (爱发电 / Alipay & WeChat) |
+| :---: | :---: |
+| <img src="docs/sponsor/wechat-pay.jpg" width="220" alt="WeChat Sponsor" /> | <br/><br/>[![Afdian](https://img.shields.io/badge/Afdian-Sponsor%20on%20Afdian-946ce6?style=for-the-badge&logo=appveyor)](https://afdian.com/a/InkMind)<br/><br/>[👉 Visit InkMind on Afdian](https://afdian.com/a/InkMind)<br/><br/>*Supports one-time tips or monthly sponsorship via WeChat & Alipay*<br/><br/> |
+
+Thank you sincerely for supporting independent open-source creation!
+
