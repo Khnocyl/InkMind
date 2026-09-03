@@ -8,7 +8,7 @@
 
 React 19 + Vite Frontend · Express Backend LLM Proxy · Project Data 100% Persisted Locally in IndexedDB
 
-[中文文档](README.md) · [Download & Install](#download--installation) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Sponsor](#sponsorship--support) · [License](#license)
+[中文文档](README.md) · [Download & Install](#download--installation) · [Screenshots](#screenshots) · [Core Capabilities](#core-capabilities) · [Quick Start](#quick-start) · [Sponsor](#sponsorship--support) · [License](#license)
 
 </div>
 
@@ -22,6 +22,31 @@ Pre-built binaries are available on the [Releases page](https://github.com/Khnoc
 
 - **Windows**: Download `InkMind-x.x.x-win-x64-Setup.exe`. If Windows Defender or SmartScreen prompts "Unknown Publisher", click **"More info" → "Run anyway"** (as an open-source project, expensive commercial EV certificates are not currently purchased; the code is 100% transparent and safe).
 - **In-App Updates**: Built-in update checker available in the sidebar under "Settings → General & Appearance → About & Check Updates". Click "Check for Updates" to query the latest official GitHub Releases.
+
+---
+
+## Screenshots
+
+### 1. Main Writing Workbench
+Multi-volume chapter tree, automated inspection & manual lock, chapter summary card, inline segment revision, and multi-stage writing pipeline (scene planner, Auto-Pilot, character state writeback).
+
+<p align="center">
+  <img src="docs/screenshots/workbench.png" alt="Main Writing Workbench" width="100%" />
+</p>
+
+### 2. Writing Style Mimicry & Discipline
+Analyze text samples to extract stylistic fingerprints (average sentence length, dialogue ratio, punctuation cadence), paired with curated style profiles and explicit "Do's & Don'ts" rules to eliminate AI clichés.
+
+<p align="center">
+  <img src="docs/screenshots/style-mimicry.png" alt="Writing Style Mimicry" width="100%" />
+</p>
+
+### 3. Creation & Setting Wizard (5-Step Guided Flow)
+Input a core narrative spark or choose from rich genre templates. The AI progressively derives the title, core character dossiers, world-building lore, and comprehensive novel outlines.
+
+<p align="center">
+  <img src="docs/screenshots/creation-wizard.png" alt="Creation & Setting Wizard" width="100%" />
+</p>
 
 ---
 
