@@ -787,6 +787,28 @@ html.dark .bg-white\/60 {
   background-color: var(--app-surface-subtle) !important;
 }
 
+/* 2026-09 深度审查补丁：第二批漏覆盖实例
+   （进度条轨道/徽标/向导连线、半透明浅底、带透明度悬停、blue-600 文字、slate-300 边框） */
+html.dark .bg-slate-200,
+html.dark .bg-slate-50\/60,
+html.dark .bg-slate-50\/70,
+html.dark .bg-slate-50\/80 {
+  background-color: var(--app-surface-subtle) !important;
+}
+html.dark .hover\:bg-slate-200\/70:hover {
+  background-color: var(--app-surface-hover) !important;
+}
+html.dark .text-blue-600 {
+  color: #c7d2fe !important;
+}
+html.dark .border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+/* 向导步骤连线：暗色下「已完成」近黑线隐形、语义反转——1px 连接线单独翻亮 */
+html.dark .bg-slate-900.h-px {
+  background-color: #e2e8f0 !important;
+}
+
 /* ══════════════════════════════════════════════════════════
  * 主色块翻转一致性：黑底白字元素（含非按钮）统一翻为白底黑字，
  * 并连带修正其内部显式 text-white 子元素（否则白底白字隐形）

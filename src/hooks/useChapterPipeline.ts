@@ -166,13 +166,21 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
         };
       }
 
-      // 若强制重写锁定章：先解锁状态，避免半途又被 UI 挡
+      // 若强制重写锁定章：先解锁状态（仅内存），避免半途又被 UI 挡。
+      // 不落盘：若第一步即失败/中止，锁与定稿状态可无损还原；
+      // 真正产出新稿后，解锁状态随章节更新自然落盘。
+      let preUnlockState: {
+        locked: boolean | undefined;
+        lockedAt: string | undefined;
+        status: Chapter['status'];
+      } | null = null;
       if (options?.force && isChapterLocked(chapterSnapshot)) {
-        const unlocked = unlockChapterForRewrite(chapterSnapshot);
-        patchChapterLocal(chapterId, unlocked);
-        await handleUpdateAndPersistProject((prev) => ({
-          chapters: prev.chapters.map((c) => (c.id === chapterId ? { ...c, ...unlocked } : c)),
-        }));
+        preUnlockState = {
+          locked: chapterSnapshot.locked,
+          lockedAt: chapterSnapshot.lockedAt,
+          status: chapterSnapshot.status,
+        };
+        patchChapterLocal(chapterId, unlockChapterForRewrite(chapterSnapshot));
       }
 
       const projectForSnap = projectRef.current || projectAtStart;
@@ -972,25 +980,42 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           streamBuffer ||
           projectRef.current?.chapters.find((c) => c.id === chapterId)?.content ||
           '';
-        patchChapterLocal(chapterId, {
-          content: partialContent,
-          wordCount: proseWords(partialContent),
-          status: '正文草稿',
-          locked: false,
-          lastModified: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        });
+        // force 解锁后一字未产出：还原锁与定稿状态，不把定稿章静默降级成草稿
+        const restoreLock = preUnlockState && !(streamBuffer && streamBuffer.trim());
+        if (restoreLock && preUnlockState) {
+          patchChapterLocal(chapterId, {
+            locked: preUnlockState.locked,
+            lockedAt: preUnlockState.lockedAt,
+            status: preUnlockState.status,
+          });
+        } else {
+          patchChapterLocal(chapterId, {
+            content: partialContent,
+            wordCount: proseWords(partialContent),
+            status: '正文草稿',
+            locked: false,
+            lastModified: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          });
+        }
         try {
           await handleUpdateAndPersistProject((prev) => ({
             chapters: prev.chapters.map((c) =>
               c.id === chapterId
-                ? {
-                    ...c,
-                    content: partialContent,
-                    wordCount: proseWords(partialContent),
-                    status: '正文草稿' as const,
-                    locked: false,
-                    contentUpdatedAt: new Date().toISOString(),
-                  }
+                ? restoreLock && preUnlockState
+                  ? {
+                      ...c,
+                      locked: preUnlockState.locked,
+                      lockedAt: preUnlockState.lockedAt,
+                      status: preUnlockState.status,
+                    }
+                  : {
+                      ...c,
+                      content: partialContent,
+                      wordCount: proseWords(partialContent),
+                      status: '正文草稿' as const,
+                      locked: false,
+                      contentUpdatedAt: new Date().toISOString(),
+                    }
                 : c
             ),
           }));

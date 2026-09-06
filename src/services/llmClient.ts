@@ -7,21 +7,11 @@ import {
   SchemaMismatchError,
   type RetryOptions,
 } from './llmResilience';
-import {
-  addUsageRecord,
-  checkBudgetBeforeCall,
-  estimateUsageCost,
-  getActiveUsageContext,
-  type LlmTier,
-} from './costControl';
 import { salvageJsonParse } from './jsonRepair';
 import { recordLlmCall } from './llmTrace';
 import type { LlmRole, LlmRoleRouting } from '../types/novel';
 import { resolveRouteForRole, type RoutingProfileLike } from './llmRouting';
 
-// R3-B：预算配置由应用层在项目加载/设置变更时注入（见 useChapterPipeline）
-export { setBudgetConfig, getBudgetConfig } from './costControl';
-export { isBudgetExceededError, setActiveUsageContext } from './costControl';
 // 中止语义（引擎/管线使用）：活动信号上下文已在上方直接导出 + 用户中止错误类型
 export { GenerationAbortedError, isGenerationAborted } from './llmResilience';
 // JSON 结构校验闸门：validate 不合格抛 SchemaMismatchError（可重试、带反馈重生成）
@@ -233,7 +223,7 @@ export async function fetchLLMModels(options?: {
   throw new Error(data.error || `拉取模型列表失败 [${res.status}]`);
 }
 
-/** 生成类请求可选参数：超时/重试覆盖默认值 + R3-B 用量记录上下文 */
+/** 生成类请求可选参数：超时/重试覆盖默认值 */
 export interface GenerateOptions<T = unknown> extends RetryOptions {
   /** R3 收尾：请求级模型覆盖（透传后端 body.model，未传则用激活配置档） */
   model?: string;
@@ -243,17 +233,9 @@ export interface GenerateOptions<T = unknown> extends RetryOptions {
    * 显式传入时优先于活动角色路由上下文。
    */
   profileId?: string;
-  /** 用户中止信号：中止后抛 GenerationAbortedError（不可重试、不计费）。
+  /** 用户中止信号：中止后抛 GenerationAbortedError（不可重试）。
    *  未显式传入时自动使用管线活动信号（setActiveAbortSignal）。 */
   signal?: AbortSignal;
-  /** 用量记录上下文（R3-B）：不传则不记录 */
-  usage?: {
-    projectId?: string;
-    chapterNumber?: number;
-    stage: string;
-    tier?: LlmTier;
-    model?: string;
-  };
   /** 结构校验闸门（仅 generateJSON）：返回错误文案表示不合格——
    *  会以「上次原始输出 + 修正指令」追加上下文重试；返回 null/undefined 视为合格。
    *  重试耗尽仍不合格则抛 SchemaMismatchError。 */
@@ -285,7 +267,7 @@ function buildSchemaFeedback(
   ];
 }
 
-// ── 管线活动中止信号（引擎级上下文，模式同 setActiveUsageContext）──
+// ── 管线活动中止信号（引擎级上下文）──
 // pipeline 启动时注入、finally 清理；generate* 未显式传 signal 时自动采用，
 // 免去把 signal 逐层穿过 aiEngine/agents 的全部函数签名。
 let activeAbortSignal: AbortSignal | null = null;
@@ -367,42 +349,6 @@ export async function resolveRoleRouteAsync(
   }
 }
 
-/** 用量记录所需的最小选项形状（GenerateOptions 泛型实例的结构子集，规避变型报错） */
-interface UsageOptionsLike {
-  model?: string;
-  usage?: GenerateOptions['usage'];
-}
-
-/** 生成成功后记录估算用量（prompt + 输出），失败不计（避免重复计数） */
-function recordUsageIfRequested(
-  options: UsageOptionsLike | undefined,
-  messages: { role: string; content: string }[],
-  completionText: string,
-  ok: boolean
-): void {
-  const usage = options?.usage ?? getActiveUsageContext();
-  if (!usage) return;
-  const promptText = (messages || []).map((m) => m.content || '').join('\n');
-  // 请求级 model 覆盖优先于上下文（估算按实际调用模型计价）
-  const est = estimateUsageCost(
-    options?.model || usage.model,
-    promptText,
-    completionText
-  );
-  addUsageRecord({
-    projectId: usage.projectId,
-    chapterNumber: usage.chapterNumber,
-    stage: usage.stage,
-    tier: usage.tier,
-    model: options?.model || usage.model,
-    promptChars: promptText.length,
-    completionChars: completionText.length,
-    estimatedTokens: est.tokens,
-    estimatedCostCny: est.costCny,
-    ok,
-  });
-}
-
 export async function generateJSON<T>(
   messages: { role: string; content: string }[],
   temperature = 0.7,
@@ -412,8 +358,6 @@ export async function generateJSON<T>(
   const signal = effectiveSignal(options);
   // 按角色路由：显式 options 优先，其次管线活动路由上下文（默认 null = 现状）
   const routeTarget = effectiveRouteTarget(options);
-  // R3-B：预算闸门（超限抛 BudgetExceededError，不重试）
-  checkBudgetBeforeCall();
   // 调用轨迹（AI 调用记录窗口）：记录最后一次尝试的 messages 与原始响应
   const traceStarted = performance.now();
   let traceMessages = messages;
@@ -490,17 +434,10 @@ export async function generateJSON<T>(
         }
       }
 
-      recordUsageIfRequested(
-        { model: routeTarget.model, usage: options?.usage },
-        attemptMessages,
-        rawContent,
-        true
-      );
       return salvaged.value;
     }, options);
     recordLlmCall({
       kind: 'json',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages: traceMessages,
       response: traceResponse,
@@ -510,18 +447,8 @@ export async function generateJSON<T>(
     });
     return value;
   } catch (err) {
-    // 用户主动中止不计费（请求未产生可用产出）
-    if (!isGenerationAborted(err)) {
-      recordUsageIfRequested(
-        { model: routeTarget.model, usage: options?.usage },
-        messages,
-        '',
-        false
-      );
-    }
     recordLlmCall({
       kind: 'json',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages: traceMessages,
       response: traceResponse,
@@ -542,8 +469,6 @@ export async function generateText(
   const signal = effectiveSignal(options);
   // 按角色路由：显式 options 优先，其次管线活动路由上下文（默认 null = 现状）
   const routeTarget = effectiveRouteTarget(options);
-  // R3-B：预算闸门
-  checkBudgetBeforeCall();
   // 调用轨迹
   const traceStarted = performance.now();
   try {
@@ -580,17 +505,10 @@ export async function generateText(
       }
 
       const content = (data.content || '').trim();
-      recordUsageIfRequested(
-        { model: routeTarget.model, usage: options?.usage },
-        messages,
-        content,
-        true
-      );
       return content;
     }, options);
     recordLlmCall({
       kind: 'text',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages,
       response: value,
@@ -599,18 +517,8 @@ export async function generateText(
     });
     return value;
   } catch (err) {
-    // 用户主动中止不计费
-    if (!isGenerationAborted(err)) {
-      recordUsageIfRequested(
-        { model: routeTarget.model, usage: options?.usage },
-        messages,
-        '',
-        false
-      );
-    }
     recordLlmCall({
       kind: 'text',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages,
       response: '',
@@ -633,8 +541,6 @@ export async function generateStream(
   const signal = effectiveSignal(options);
   // 按角色路由：显式 options 优先，其次管线活动路由上下文（默认 null = 现状）
   const routeTarget = effectiveRouteTarget(options);
-  // R3-B：预算闸门
-  checkBudgetBeforeCall();
   // 调用轨迹：流式记录最终拼接全文（中断时为已产出部分）
   const traceStarted = performance.now();
   // 流式只重试「0 字节产出」的失败（连接未建立/首个字节前断开）；
@@ -661,15 +567,8 @@ export async function generateStream(
       },
       { ...options, maxRetries: options?.maxRetries ?? 1 }
     );
-    recordUsageIfRequested(
-      { model: routeTarget.model, usage: options?.usage },
-      messages,
-      text,
-      true
-    );
     recordLlmCall({
       kind: 'stream',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages,
       response: text,
@@ -678,18 +577,8 @@ export async function generateStream(
     });
     return text;
   } catch (err) {
-    // 用户主动中止不计费
-    if (!isGenerationAborted(err)) {
-      recordUsageIfRequested(
-        { model: routeTarget.model, usage: options?.usage },
-        messages,
-        '',
-        false
-      );
-    }
     recordLlmCall({
       kind: 'stream',
-      stage: options?.usage?.stage,
       model: routeTarget.model,
       messages,
       response: '',

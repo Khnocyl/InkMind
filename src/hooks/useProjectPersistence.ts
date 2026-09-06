@@ -5,7 +5,7 @@ import type {
   SetStateAction,
 } from 'react';
 import type { BookProject, BookProjectSummary } from '../types/novel';
-import { saveProject, listProjects } from '../services/storage';
+import { saveProject, listProjects, isProjectConflictError } from '../services/storage';
 import { CoalescedWriter } from '../services/coalescedWriter';
 import { mergeStyleConfigPreserve } from '../services/styleImitate';
 import { flushAutoBackup } from '../services/autoBackup';
@@ -38,6 +38,8 @@ export function useProjectPersistence({
 }: UseProjectPersistenceOptions) {
   /** 串行化 IndexedDB 写入 + 合并突发（R2-3） */
   const persistWriterRef = useRef<CoalescedWriter | null>(null);
+  /** 跨标签页写冲突：只弹一次，避免每次去抖落盘都打断 */
+  const conflictAlertedRef = useRef(false);
   if (!persistWriterRef.current) {
     persistWriterRef.current = new CoalescedWriter(
       async () => {
@@ -47,7 +49,14 @@ export function useProjectPersistence({
         const updatedList = await listProjects();
         setProjectsList(updatedList);
       },
-      (err) => console.error('项目持久化失败:', err)
+      (err) => {
+        console.error('项目持久化失败:', err);
+        // 他页已修改导致拒写：静默 console 不足以止损（用户会继续敲而全部不落盘），显式打断一次
+        if (isProjectConflictError(err) && !conflictAlertedRef.current) {
+          conflictAlertedRef.current = true;
+          window.alert(err.message);
+        }
+      }
     );
   }
 
@@ -136,10 +145,11 @@ export function useProjectPersistence({
         const snap = lightSnapshotRef.current;
         lightSnapshotRef.current = null;
         if (snap && projectRef.current?.id !== snap.id) {
-          // 去抖窗口内切书：projectRef 已是新书，直接落盘旧书快照防丢编辑
+          // 去抖窗口内切书：projectRef 已是新书，直接落盘旧书快照防丢编辑。
+          // force：snap 是写回前的旧对象，rev 落后于库中值（本页写入所致），非他页冲突
           void (async () => {
             try {
-              await saveProject(snap);
+              await saveProject(snap, { force: true });
               setProjectsList(await listProjects());
             } catch (err) {
               console.error('项目持久化失败:', err);
@@ -159,6 +169,21 @@ export function useProjectPersistence({
       if (lightPersistTimerRef.current) {
         clearTimeout(lightPersistTimerRef.current);
         lightPersistTimerRef.current = null;
+        // 去抖窗口内还有未落盘的编辑：timer 清掉后快照无人消费，必须在此兜底落盘
+        // （此前只清 timer 不读 lightSnapshotRef，400ms 窗口内最后的击键必丢）
+        const snap = lightSnapshotRef.current;
+        lightSnapshotRef.current = null;
+        if (snap) {
+          if (projectRef.current?.id && projectRef.current.id !== snap.id) {
+            // 窗口内已切书：直接落盘旧书快照（force 原因同上：snap rev 落后于本页写入）
+            void saveProject(snap, { force: true }).catch((err) =>
+              console.error('项目持久化失败:', err)
+            );
+          } else {
+            // 写任务执行时读 projectRef 最新值（已含本次编辑）
+            void persistWriterRef.current?.schedule();
+          }
+        }
       }
       void persistWriterRef.current?.flush();
       flushAutoBackup();

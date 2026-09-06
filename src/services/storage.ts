@@ -63,12 +63,31 @@ export function getDefaultStyleConfig(): StyleConfig {
   };
 }
 
+/** 共享连接：此前每次 initDB 新开一个永不关闭的连接（Auto-Pilot 长会话可累积数百个） */
+let cachedDb: IDBDatabase | null = null;
+
 export function initDB(): Promise<IDBDatabase> {
+  if (cachedDb) return Promise.resolve(cachedDb);
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    // 其他标签页/旧版本页面持有连接时升级会被永久阻塞——明确失败而不是无声悬挂
+    request.onblocked = () => {
+      reject(
+        new Error('数据库被本应用的其他标签页占用，无法完成打开/升级。请关闭其他页面后刷新重试。')
+      );
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      // 他页请求升级时主动关闭并让缓存失效，避免阻塞对方的 onupgradeneeded
+      db.onversionchange = () => {
+        db.close();
+        cachedDb = null;
+      };
+      cachedDb = db;
+      resolve(db);
+    };
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
@@ -87,24 +106,65 @@ export function initDB(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveProject(project: BookProject): Promise<void> {
+/** 跨标签页写冲突：库中 rev 高于调用方携带值时拒写（防 last-writer-wins 静默覆盖） */
+export class ProjectConflictError extends Error {
+  readonly projectId: string;
+  constructor(projectId: string) {
+    super(
+      '保存被拒绝：这本书已在其他标签页/窗口被修改。为避免覆盖那边的改动，本次修改未落盘——请刷新页面后再试。'
+    );
+    this.name = 'ProjectConflictError';
+    this.projectId = projectId;
+  }
+}
+
+export function isProjectConflictError(e: unknown): e is ProjectConflictError {
+  return (
+    e instanceof ProjectConflictError ||
+    (e instanceof Error && e.name === 'ProjectConflictError')
+  );
+}
+
+/**
+ * 保存项目。在同一事务内读旧 rev、冲突检查、rev+1 落盘，并把新 rev 就地回写到
+ * 传入对象（与 lastModified 同样的约定）——因此持有活对象的调用方自动获得正确 rev。
+ * @param options.force 跳过冲突检查（快照恢复等明知要覆盖旧 rev 的路径）
+ * @returns 落盘后的新 rev
+ */
+export async function saveProject(
+  project: BookProject,
+  options?: { force?: boolean }
+): Promise<number> {
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PROJECTS, 'readwrite');
     const store = tx.objectStore(STORE_PROJECTS);
     project.lastModified = new Date().toISOString();
-    const request = store.put(project);
+
+    const getReq = store.get(project.id);
+    getReq.onerror = () => reject(getReq.error);
+    getReq.onsuccess = () => {
+      const existing = getReq.result as BookProject | undefined;
+      const existingRev = existing?.rev ?? 0;
+      const callerRev = project.rev ?? 0;
+      if (!options?.force && existing && existingRev > callerRev) {
+        // 另一标签页在我们最后一次读盘之后写过：拒写，让调用方提示刷新
+        reject(new ProjectConflictError(project.id));
+        return;
+      }
+      project.rev = existingRev + 1;
+      store.put(project);
+    };
 
     // 以事务提交为准（而非 request.onsuccess）：commit 阶段失败（典型
     // QuotaExceededError）时必须让调用方知道「没落盘」——useProjectPersistence
     // 的不变量是 resolve 即已落盘。
     tx.oncomplete = () => {
       invalidateProjectListCache();
-      resolve();
+      resolve(project.rev ?? 0);
     };
     tx.onabort = () => reject(tx.error || new Error('saveProject 事务中止'));
     tx.onerror = () => reject(tx.error || new Error('saveProject 事务失败'));
-    request.onerror = () => reject(request.error);
   });
 }
 

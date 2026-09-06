@@ -757,9 +757,8 @@ export function buildChapterExpandPrompt(options: {
     .slice(0, 6)
     .map((c) => `${c.name}（${c.status}/${c.realmOrTitle || '—'}）`)
     .join('；');
-  const bl = blacklist.length
-    ? blacklist.slice(0, 24).join('、')
-    : '那一刻、倒吸一口凉气、嘴角勾起一抹弧度';
+  // 全量注入（与写稿分支同口径），不截断、不用硬编码默认词冒充黑名单
+  const bl = blacklist.length ? blacklist.join('、') : '（无）';
   const intent = chapterIntentBlock?.trim() || '（沿用本章既有意图）';
   const activeProfile = styleConfig ? getActiveStyleProfile(styleConfig) : null;
   const styleHint =
@@ -921,7 +920,41 @@ export function buildHardDefensePrompt(options: {
 }) {
   let body = options.prose.trim();
   if (body.length > 7000) {
-    body = `${body.slice(0, 3200)}\n\n……（中间省略）……\n\n${body.slice(-3200)}`;
+    // 证据定位窗口：头尾截断会让辩护人对章节中段的指控结构性失明
+    // （「后文已化解」的辩护路径被物理关闭）。verified 指控的引文必逐字命中本章，
+    // 以命中点为中心切 ±1500 字窗口（A/B 证据各一个，重叠则合并），找不到引文才退回头尾截断。
+    const WINDOW = 1500;
+    const spans: { start: number; end: number }[] = [];
+    const locate = (quote?: string) => {
+      const q = (quote || '').trim();
+      if (!q) return;
+      const idx = body.indexOf(q);
+      if (idx >= 0) {
+        spans.push({
+          start: Math.max(0, idx - WINDOW),
+          end: Math.min(body.length, idx + q.length + WINDOW),
+        });
+      }
+    };
+    locate(options.evidenceA?.quote);
+    if ((options.evidenceB?.source || 'memory') === 'chapter') locate(options.evidenceB?.quote);
+    if (spans.length) {
+      spans.sort((a, b) => a.start - b.start);
+      const merged: { start: number; end: number }[] = [];
+      for (const s of spans) {
+        const last = merged[merged.length - 1];
+        if (last && s.start <= last.end) last.end = Math.max(last.end, s.end);
+        else merged.push({ ...s });
+      }
+      body = merged
+        .map(
+          (s) =>
+            `${s.start > 0 ? '……（前文省略）……\n\n' : ''}${body.slice(s.start, s.end)}${s.end < body.length ? '\n\n……（后文省略）……' : ''}`
+        )
+        .join('\n\n');
+    } else {
+      body = `${body.slice(0, 3200)}\n\n……（中间省略）……\n\n${body.slice(-3200)}`;
+    }
   }
   const systemPrompt = `你是连载小说的「作者辩护人」。有人对本章提出一条硬伤指控，你的职责是为作者辩护。
 请逐项检查指控是否可以被合理解释化解：

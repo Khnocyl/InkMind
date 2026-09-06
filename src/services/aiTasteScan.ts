@@ -514,7 +514,50 @@ export function scanAiTastePatterns(
 }
 
 /**
- * 合并扩展词表到黑名单扫描用列表（去重）；白名单条目不加入。
+ * 白名单豁免判定（统一口径，防静默击穿）：
+ * - 精确相等：任意长度都豁免（用户明确放行该词本身）；
+ * - 子串豁免：白名单词须 ≥4 字且占目标长度过半（目标本质是该词的装饰变体）。
+ * 旧口径「目标包含白名单词即豁免」允许一个高频短词（如「心中」）静默击穿整个黑名单，
+ * 且写前 prompt 注入与写后机检同步失效、无任何提示。
+ */
+export function isWhitelistExempt(target: string, whitelist: string[]): boolean {
+  const t = target.trim();
+  if (!t) return false;
+  for (const raw of whitelist) {
+    const w = (raw || '').trim();
+    if (!w) continue;
+    if (t === w) return true;
+    if (w.length >= 4 && t.includes(w) && w.length * 2 >= t.length) return true;
+  }
+  return false;
+}
+
+/**
+ * 收集当前被白名单豁免掉的黑名单条目（供面板明示，防止静默击穿）。
+ */
+export function collectBlacklistExemptions(
+  styleConfig: StyleConfig | null | undefined
+): string[] {
+  const base = [
+    ...(styleConfig?.clicheBlacklist || []),
+    ...(styleConfig?.customBlacklist || []),
+  ];
+  const extra =
+    styleConfig?.useExtendedClicheList === false ? [] : EXTENDED_CLICHE_PHRASES;
+  const wl = [...(styleConfig?.deslopWhitelist || []), ...(styleConfig?.aiTasteWhitelist || [])];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [...base, ...extra]) {
+    const t = p.trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    if (isWhitelistExempt(t, wl)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * 合并扩展词表到黑名单扫描用列表（去重）；按 isWhitelistExempt 口径剔除白名单豁免项。
  */
 export function mergeExtendedBlacklist(
   styleConfig: StyleConfig | null | undefined
@@ -523,11 +566,7 @@ export function mergeExtendedBlacklist(
     ...(styleConfig?.clicheBlacklist || []),
     ...(styleConfig?.customBlacklist || []),
   ];
-  const wl = new Set(
-    [...(styleConfig?.deslopWhitelist || []), ...(styleConfig?.aiTasteWhitelist || [])].map(
-      (s) => s.trim()
-    )
-  );
+  const wl = [...(styleConfig?.deslopWhitelist || []), ...(styleConfig?.aiTasteWhitelist || [])];
   const extra =
     styleConfig?.useExtendedClicheList === false ? [] : EXTENDED_CLICHE_PHRASES;
   const all = [...base, ...extra];
@@ -536,8 +575,8 @@ export function mergeExtendedBlacklist(
   for (const p of all) {
     const t = p.trim();
     if (!t || seen.has(t)) continue;
-    if ([...wl].some((w) => w && t.includes(w))) continue;
     seen.add(t);
+    if (isWhitelistExempt(t, wl)) continue;
     out.push(t);
   }
   return out;

@@ -6,7 +6,6 @@
 import type { PlotBeat } from '../../types/novel';
 import { step2_ExpandProse } from '../../services/aiEngine';
 import { buildConservativeProse } from '../../services/conservativeProse';
-import { isBudgetExceededError } from '../../services/llmClient';
 import { isGenerationAborted } from '../../services/llmResilience';
 import { proseWords } from '../../services/proseWords';
 import type { AgentContext } from '../types';
@@ -83,9 +82,7 @@ export async function runWriterAgent(
         summary: chapter.summary,
       },
     });
-    const reason = isBudgetExceededError(err)
-      ? '本月 LLM 预算已超限'
-      : `LLM 执笔失败（${msg.slice(0, 80)}）`;
+    const reason = `LLM 执笔失败（${msg.slice(0, 80)}）`;
     report(
       'write',
       `[Writer] ⚠️ ${reason}，已降级为本地保守稿（${conservative.wordCount} 字）`

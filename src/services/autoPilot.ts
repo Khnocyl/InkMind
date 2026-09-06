@@ -87,6 +87,8 @@ export function autoPilotWriteModeLabel(mode: AutoPilotWriteMode): string {
 
 /** 已有有效正文且流程走完（或明确待人工 / 已锁定） */
 export function isChapterEffectivelyDone(ch: Chapter): boolean {
+  // 显式解锁优先：用户点了「解锁重写」，即使状态仍是定稿也视为未完成（可重写）
+  if (ch.locked === false) return false;
   if (isChapterLocked(ch) || shouldAutoPilotSkip(ch)) return true;
   if (ch.status === '校验通过' || ch.status === '精修定稿' || ch.status === '校验精修定稿') {
     return true;
@@ -105,8 +107,8 @@ export function isChapterWriteCandidate(ch: Chapter): boolean {
   const summary = (ch.summary || '').trim();
   if (summary.length < 8) return false;
   const words = contentWordsOrFallback(ch.content, ch.wordCount);
-  // 已有长正文且曾绿通：不自动重写
-  if (words >= 200 && ch.status === '校验通过') return false;
+  // 已有长正文且曾绿通：不自动重写（用户显式解锁的除外）
+  if (words >= 200 && ch.status === '校验通过' && ch.locked !== false) return false;
   return true;
 }
 

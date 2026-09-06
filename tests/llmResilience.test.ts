@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   backoffDelayMs,
   fetchWithTimeout,
@@ -12,14 +12,7 @@ import {
   generateJSON,
   generateStream,
   generateText,
-  setActiveUsageContext,
-  setBudgetConfig,
 } from '../src/services/llmClient';
-import {
-  addUsageRecord,
-  BudgetExceededError,
-  loadUsageRecords,
-} from '../src/services/costControl';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -311,81 +304,8 @@ describe('llmClient · generateStream 中断恢复', () => {
   });
 });
 
-describe('llmClient · R3-B 预算闸门与用量记录', () => {
-  function mockLocalStorage() {
-    const store = new Map<string, string>();
-    const storage = {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: (i: number) => [...store.keys()][i] ?? null,
-      get length() {
-        return store.size;
-      },
-    };
-    vi.stubGlobal('localStorage', storage);
-    return storage;
-  }
-
-  function okFetch(content: string) {
-    return vi.fn(async () =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        json: async () => ({ success: true, content }),
-        text: async () => '',
-      } as unknown as Response)
-    );
-  }
-
-  beforeEach(() => {
-    mockLocalStorage();
-    setBudgetConfig({ enabled: false, monthlyLimitCny: 0 });
-    setActiveUsageContext(undefined);
-  });
-
-  it('预算超限 → 抛 BudgetExceededError 且不发起请求', async () => {
-    setBudgetConfig({ enabled: true, monthlyLimitCny: 0.001 });
-    // 先塞一条已超限记录
-    addUsageRecord({ stage: 'pre', estimatedTokens: 100, estimatedCostCny: 1, promptChars: 1, completionChars: 1, ok: true });
-    const mock = okFetch('你好');
-    vi.stubGlobal('fetch', mock);
-    await expect(
-      generateText([{ role: 'user', content: 'hi' }], 0.7, { retryDelayMs: 1 })
-    ).rejects.toBeInstanceOf(BudgetExceededError);
-    expect(mock).not.toHaveBeenCalled();
-  });
-
-  it('成功调用 + 传 usage → 记录一条 ok:true 用量', async () => {
-    vi.stubGlobal('fetch', okFetch('你好世界'));
-    const text = await generateText([{ role: 'user', content: '开始写作' }], 0.7, {
-      usage: { projectId: 'p1', chapterNumber: 2, stage: 'engine:write', model: 'deepseek-chat' },
-    });
-    expect(text).toBe('你好世界');
-    const records = loadUsageRecords();
-    expect(records).toHaveLength(1);
-    expect(records[0].ok).toBe(true);
-    expect(records[0].stage).toBe('engine:write');
-    expect(records[0].projectId).toBe('p1');
-    expect(records[0].estimatedTokens).toBeGreaterThan(0);
-  });
-
-  it('活动上下文（setActiveUsageContext）自动归属', async () => {
-    vi.stubGlobal('fetch', okFetch('测试内容'));
-    setActiveUsageContext({ projectId: 'p9', chapterNumber: 5, stage: 'engine:audit' });
-    await generateText([{ role: 'user', content: '审校正文' }], 0.7);
-    const records = loadUsageRecords();
-    expect(records).toHaveLength(1);
-    expect(records[0].stage).toBe('engine:audit');
-    expect(records[0].chapterNumber).toBe(5);
-    // 清空上下文后调用不再记录
-    setActiveUsageContext(undefined);
-    await generateText([{ role: 'user', content: '外部调用' }], 0.7);
-    expect(loadUsageRecords()).toHaveLength(1);
-  });
-
-  it('传 options.model → 请求体包含 model 覆盖且用量按实际模型估算', async () => {
+describe('llmClient · 请求级 model 覆盖', () => {
+  it('传 options.model → 请求体包含 model 覆盖', async () => {
     let sentBody: any = null;
     const mock = vi.fn(async (url: string, init?: any) => {
       sentBody = JSON.parse(init?.body || '{}');
@@ -400,12 +320,9 @@ describe('llmClient · R3-B 预算闸门与用量记录', () => {
     await generateJSON(
       [{ role: 'user', content: 'hi' }],
       0.7,
-      { model: 'deepseek-chat', usage: { stage: 'engine:beat' } }
+      { model: 'deepseek-chat' }
     );
     expect(sentBody.model).toBe('deepseek-chat');
-    const records = loadUsageRecords();
-    expect(records).toHaveLength(1);
-    expect(records[0].model).toBe('deepseek-chat');
   });
 
   it('不传 model → 请求体不含 model 字段（后端用激活配置档）', async () => {

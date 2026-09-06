@@ -590,9 +590,6 @@ export interface StyleConfig {
   aiProvider?: string;
   baseURL?: string;
   apiKey?: string;
-  /** R3-B：LLM 月度预算开关与上限（元）；未启用或 0 = 不限 */
-  llmBudgetEnabled?: boolean;
-  llmMonthlyBudgetCny?: number;
   /** 按角色路由模型（默认关闭）：角色 → 配置档 id；未配置走激活档 */
   llmRoleRouting?: LlmRoleRouting;
   /** 推进度审（分镜完成度/主线推进/注水/伏笔触达）；默认开，关闭省每章 1 次 LLM 调用 */
@@ -875,6 +872,12 @@ export interface BookProject {
   createdDate?: string;
   createdAt?: string;
   lastModified: string;
+  /**
+   * 落盘修订号（跨标签页写冲突检测）：由 saveProject 在同一事务内读旧值 +1 并就地回写。
+   * 写前若库中 rev 高于调用方携带值，说明他页已在我们最后一次读盘之后写过 → 拒写。
+   * 缺省=0（存量数据首次保存时从 1 开始）。
+   */
+  rev?: number;
   /**
    * 数据模型版本（R4 迁移框架）。
    * 缺省=0（存量数据）；当前最新见 services/migrations 的 CURRENT_SCHEMA_VERSION。

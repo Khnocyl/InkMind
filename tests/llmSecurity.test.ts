@@ -241,7 +241,7 @@ describe('llmSecurity · isSameOriginClient（P2-1 收紧）', () => {
     }
   });
 
-  it('无 metadata：Origin 回环 → 放行；无 Origin（curl）→ 放行', () => {
+  it('无 metadata：Origin 回环 → 放行；无 Origin 的脚本调用仅回环 IP 放行', () => {
     expect(
       isSameOriginClient({
         hostHeader: '127.0.0.1:3001',
@@ -249,12 +249,33 @@ describe('llmSecurity · isSameOriginClient（P2-1 收紧）', () => {
         isTrustedHostname: loopbackOnly,
       })
     ).toBe(true);
+    // 本机 curl（回环 IP）→ 放行
     expect(
       isSameOriginClient({
         hostHeader: 'localhost:3001',
+        isLoopbackClientIp: true,
         isTrustedHostname: loopbackOnly,
       })
     ).toBe(true);
+  });
+
+  it('LAN 部署：无 metadata 的局域网脚本调用不再豁免（token 必须生效）', () => {
+    // Host 是可信 LAN 主机名，但客户端 IP 非回环 → 需 token
+    const trustLan = (h: string) => loopbackOnly(h) || h === '192.168.1.5';
+    expect(
+      isSameOriginClient({
+        hostHeader: '192.168.1.5:3001',
+        isLoopbackClientIp: false,
+        isTrustedHostname: trustLan,
+      })
+    ).toBe(false);
+    // 未提供客户端 IP（未知来源）→ fail-closed，不豁免
+    expect(
+      isSameOriginClient({
+        hostHeader: '192.168.1.5:3001',
+        isTrustedHostname: trustLan,
+      })
+    ).toBe(false);
   });
 
   it('rebinding 域名的 Host → 一律拒绝（无论 metadata）', () => {

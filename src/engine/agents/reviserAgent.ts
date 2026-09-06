@@ -261,11 +261,16 @@ export async function runReviserAgent(
   if (hardReviewStale && !isHardReviewApiBlock(auditLog.hardReview)) {
     report('revise', `[Reviser] 修复后复检硬伤…`);
     // 已修账本：把本轮修复环动过的冲突描述带给复核，
-    // 复核只核验「是否修好 + 是否新出现」，不再对整章重新挑刺（防 phantom error 死循环）
-    const previouslyFixed = (auditLog.logicConflicts || [])
-      .filter((c) => c.lane === 'hard' || c.description?.startsWith('[规则机检'))
-      .slice(0, 10)
-      .map((c) => c.description || '');
+    // 复核只核验「是否修好 + 是否新出现」，不再对整章重新挑刺（防 phantom error 死循环）。
+    // 注意：修复环第 1 轮会清空 logicConflicts 中的 LLM 条目（见 runConflictFixLoop），
+    // 台账必须以修复前硬审原判（hardReview.issues）为主来源，否则补丁轮后「已修清单」只剩机检套话。
+    const previouslyFixed = (() => {
+      const fromHardReview = (auditLog.hardReview?.issues || []).map((i) => i.description || '');
+      const fromConflicts = (auditLog.logicConflicts || [])
+        .filter((c) => c.lane === 'hard' || c.description?.startsWith('[规则机检'))
+        .map((c) => c.description || '');
+      return [...new Set([...fromHardReview, ...fromConflicts])].filter(Boolean).slice(0, 10);
+    })();
     const hard2 = await runHardReview(
       prose,
       characters,

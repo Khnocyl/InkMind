@@ -192,12 +192,27 @@ describe('mergeExtendedBlacklist', () => {
     expect(out).toContain('嘴角勾起一抹');
   });
 
-  it('白名单子串命中 → 排除对应套话', () => {
+  it('白名单精确相等 → 豁免对应套话', () => {
     const out = mergeExtendedBlacklist(
-      style({ clicheBlacklist: ['眼中闪过一丝'], deslopWhitelist: ['眼中'] })
+      style({ clicheBlacklist: ['眼中闪过一丝'], deslopWhitelist: ['眼中闪过一丝'] })
     );
     expect(out).not.toContain('眼中闪过一丝');
     expect(out).toContain('嘴角勾起一抹');
+  });
+
+  it('白名单 ≥4 字且占条目长度过半 → 豁免装饰变体', () => {
+    const out = mergeExtendedBlacklist(
+      style({ clicheBlacklist: ['眼中闪过一丝'], deslopWhitelist: ['眼中闪过'] })
+    );
+    expect(out).not.toContain('眼中闪过一丝');
+  });
+
+  it('短白名单词（<4 字子串）不再静默击穿黑名单', () => {
+    const out = mergeExtendedBlacklist(
+      style({ clicheBlacklist: ['眼中闪过一丝'], deslopWhitelist: ['眼中'] })
+    );
+    // 旧口径「包含即豁免」会误放行整条套话；收紧后仅精确/主导子串才豁免
+    expect(out).toContain('眼中闪过一丝');
   });
 
   it('useExtendedClicheList=false → 不使用内置扩展表', () => {

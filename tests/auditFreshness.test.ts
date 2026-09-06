@@ -15,9 +15,6 @@ const generateStreamMock = vi.fn();
 vi.mock('../src/services/llmClient', () => ({
   generateJSON: (...args: unknown[]) => generateJSONMock(...(args as [])),
   generateStream: (...args: unknown[]) => generateStreamMock(...(args as [])),
-  isBudgetExceededError: () => false,
-  setBudgetConfig: vi.fn(),
-  setActiveUsageContext: vi.fn(),
   setActiveAbortSignal: vi.fn(),
   getActiveAbortSignal: () => null,
 }));

@@ -125,18 +125,22 @@ export function assertSafeUrl(url: string): void {
 }
 
 /**
- * 同源豁免判定（纯函数，安全审计 P2-1 收紧）：
+ * 同源豁免判定（纯函数，安全审计 P2-1 收紧 + 深度审查 LAN 缺口修复）：
  * - Host 必须是可信主机名（回环或显式 TRUSTED_HOSTS）——防 DNS rebinding；
  * - Sec-Fetch-Site=same-origin → 同源浏览器请求，放行；
  * - `none`（顶栏导航）与 `cross-site/same-site` → 需 token：恶意页面可诱导
  *   用户把浏览器导航到本机 API（此时 metadata 为 none），不能免 token 豁免；
  * - 无 fetch-metadata 的旧浏览器/非浏览器调用：带 Origin 时校验 Origin 主机名；
- *   两者皆无（curl 等本机进程）→ 放行（本机进程本可读 token 文件）。
+ * - 两者皆无（curl 等脚本调用）→ 仅当客户端 IP 为回环时放行（本机进程本可读
+ *   token 文件）。此前未校验来源 IP：LAN 部署（HOST=0.0.0.0 + TRUSTED_HOSTS）下
+ *   局域网内任何脚本都命中此分支，token 形同虚设。
  */
 export function isSameOriginClient(input: {
   hostHeader: string;
   secFetchSite?: string;
   origin?: string;
+  /** 客户端 IP 是否回环：无 metadata/Origin 的脚本类调用仅回环来源才豁免 token */
+  isLoopbackClientIp?: boolean;
   isTrustedHostname: (hostname: string) => boolean;
 }): boolean {
   try {
@@ -161,7 +165,7 @@ export function isSameOriginClient(input: {
       return false;
     }
   }
-  return true;
+  return input.isLoopbackClientIp === true;
 }
 
 function effectivePort(u: URL): string {

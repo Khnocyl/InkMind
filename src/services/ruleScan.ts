@@ -4,6 +4,7 @@ import { scoreOpeningEcho } from './antiEcho';
 import {
   mergeAiTasteIntoRuleHits,
   mergeExtendedBlacklist,
+  isWhitelistExempt,
   scanAiTastePatterns,
   type AiTasteReport,
 } from './aiTasteScan';
@@ -250,12 +251,13 @@ export function ruleScanProse(
     'error',
     '命中套话黑名单：请改写该处，使用具体动作/感官细节替代。'
   );
-  // 白名单豁免黑名单命中
+  // 白名单豁免黑名单命中（与 mergeExtendedBlacklist 同一收紧口径，防短词静默击穿）
   hits.push(
     ...blHits.filter((h) => {
       if (!whitelist.length) return true;
-      const blob = `${h.phrase}${h.sample || ''}`;
-      return !whitelist.some((w) => w.trim() && blob.includes(w.trim()));
+      if (isWhitelistExempt(h.phrase, whitelist)) return false;
+      if (h.sample && isWhitelistExempt(h.sample, whitelist)) return false;
+      return true;
     })
   );
 

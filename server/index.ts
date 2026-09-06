@@ -190,6 +190,13 @@ function isTrustedHostname(hostname: string): boolean {
   );
 }
 
+/** 客户端 IP 是否回环（脚本类调用的 token 豁免前提，防 LAN 下鉴权形同虚设） */
+function isLoopbackIp(ip?: string): boolean {
+  if (!ip) return false;
+  const h = ip.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === '127.0.0.1' || h === '::1' || h === '::ffff:127.0.0.1' || h === 'localhost';
+}
+
 function isSameOriginOrLocalClient(req: express.Request): boolean {
   const sfs = req.headers['sec-fetch-site'];
   const origin = req.headers.origin;
@@ -197,6 +204,7 @@ function isSameOriginOrLocalClient(req: express.Request): boolean {
     hostHeader: req.headers.host || '',
     secFetchSite: typeof sfs === 'string' ? sfs : undefined,
     origin: typeof origin === 'string' ? origin : undefined,
+    isLoopbackClientIp: isLoopbackIp(req.ip),
     isTrustedHostname,
   });
 }

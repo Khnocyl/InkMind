@@ -7,6 +7,7 @@ import type { Chapter, Character, PlotBeat, StyleConfig } from '../types/novel';
 import { generateStream } from './llmClient';
 import { buildChapterExpandPrompt } from './prompts';
 import { proseWords } from './proseWords';
+import { mergeExtendedBlacklist } from './aiTasteScan';
 
 export interface WordCountGate {
   target: number;
@@ -127,10 +128,8 @@ export async function ensureProseWordCount(options: {
     };
   }
 
-  const blacklist = [
-    ...(options.styleConfig?.clicheBlacklist || []),
-    ...(options.styleConfig?.customBlacklist || []),
-  ];
+  // 与写稿/写后机检同口径：自定义 + 扩展套话表，白名单豁免（此前缺扩展表与白名单过滤）
+  const blacklist = mergeExtendedBlacklist(options.styleConfig);
 
   while (current < fillGoal && expandRounds < maxRounds) {
     // 需求量朝补足目标推进，封顶到剩余余量：请求本身不允许越过上限带

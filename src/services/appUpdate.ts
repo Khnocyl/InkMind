@@ -1,8 +1,8 @@
-﻿/**
+/**
  * 客户端版本检测与在线更新服务
  */
 
-export const CURRENT_APP_VERSION = '1.0.0';
+export const CURRENT_APP_VERSION = '1.0.1';
 export const GITHUB_REPO = 'Khnocyl/InkMind';
 export const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
 

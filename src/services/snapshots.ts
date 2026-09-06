@@ -430,7 +430,8 @@ export async function restoreSnapshot(
     lastModified: new Date().toISOString(),
   };
 
-  await saveProject(restored);
+  // force：快照里的 rev 是历史旧值，低于库中当前 rev——恢复语义本就是覆盖，跳过冲突检查
+  await saveProject(restored, { force: true });
 
   const { project: _p, projectGz: _gz, ...restoredFrom } = snap;
   return { project: restored, safetySnapshot, restoredFrom };

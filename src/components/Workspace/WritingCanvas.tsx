@@ -109,7 +109,11 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
   /** 正文红色波浪线范围 */
   const [wavyRanges, setWavyRanges] = useState<{ start: number; end: number }[]>([]);
   const locked = isChapterLocked(chapter);
-  const contentReadOnly = isGenerating || locked;
+  // 局部精修期间同样锁正文：改写注入按偏移重建全文，期间击键会被静默覆盖
+  const contentReadOnly = isGenerating || locked || isInlineProcessing;
+  /** 最新正文快照：局部精修 await 后闭包内 chapter 是旧值，提交前用 ref 校验正文未被改动 */
+  const chapterContentRef = useRef(chapter.content);
+  chapterContentRef.current = chapter.content;
 
   const proseFontStyle: React.CSSProperties = {
     fontFamily: '"Noto Serif SC", "Songti SC", Georgia, serif',
@@ -205,6 +209,11 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
     setTodoDraft('');
     setHighlightedTodoId(null);
     setWavyRanges([]);
+    // 划选弹窗状态一并清空：残留的 selRange 配新章 content 会把改写注入到错误偏移
+    setSelectedText('');
+    setSelRange(null);
+    setSelectionPos(null);
+    setInlineFeedback(null);
     // 刻意只按 chapter.id 触发（换章重置面板）；同章待修变化不重置，避免打断用户
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapter.id]);
@@ -378,14 +387,15 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
       setSelRange({ start, end });
       if ('clientX' in e) {
         setSelectionPos({
-          x: Math.min(e.clientX, window.innerWidth - 420),
+          // 弹窗实宽可达 520px（max-w-[min(520px,96vw)]），钳位须按 540 预留，否则右缘溢出被裁
+          x: Math.max(8, Math.min(e.clientX, window.innerWidth - 540)),
           y: Math.max(e.clientY - 80, 72),
         });
       } else {
         // 键盘选区：放在画布上方大致位置
         const rect = textarea.getBoundingClientRect();
         setSelectionPos({
-          x: Math.min(rect.left + 40, window.innerWidth - 420),
+          x: Math.max(8, Math.min(rect.left + 40, window.innerWidth - 540)),
           y: Math.max(rect.top + 40, 72),
         });
       }
@@ -429,9 +439,14 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
       if (!mutates) {
         setInlineFeedback(`🛡️ 硬伤瞥：${text}`);
       } else {
-        // 按索引替换，避免同文多次出现时误伤
-        const newContent =
-          chapter.content.slice(0, selRange.start) + text + chapter.content.slice(selRange.end);
+        // 按索引替换，避免同文多次出现时误伤。
+        // await 期间闭包里的 chapter 是旧值：先取最新正文校验选区原文未被改动，再基于最新正文重建
+        const latest = chapterContentRef.current || '';
+        if (latest.slice(selRange.start, selRange.end) !== selectedText) {
+          setInlineFeedback('⚠️ 正文在处理期间已变化，未注入改写。请重新划选。');
+          return;
+        }
+        const newContent = latest.slice(0, selRange.start) + text + latest.slice(selRange.end);
         onUpdateChapter({
           ...chapter,
           content: newContent,
@@ -823,7 +838,7 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
               readOnly={locked}
               className={`relative z-10 w-full h-full font-serif text-base lg:text-lg border-none focus:outline-none resize-none leading-loose placeholder-neutral-400 p-0 select-text overflow-y-auto ${
                 wavyRanges.length > 0
-                  ? 'bg-transparent text-transparent caret-current'
+                  ? 'bg-transparent text-transparent caret-slate-900'
                   : 'bg-transparent text-slate-900 caret-current'
               }`}
               style={{

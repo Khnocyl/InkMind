@@ -19,8 +19,6 @@ import { runAuditorAgent } from './agents/auditorAgent';
 import { runReviserAgent } from './agents/reviserAgent';
 import { runSettlerAgent } from './agents/settlerAgent';
 import {
-  setBudgetConfig,
-  setActiveUsageContext,
   setActiveAbortSignal,
   getActiveAbortSignal,
   setActiveRoleRoute,
@@ -69,12 +67,6 @@ export async function runChapterPipeline(
 
   const report = (stage: EngineStage, message: string) => {
     stageReached = stage;
-    // R3-B：用量归属随阶段推进（引擎级上下文，llmClient 自动记录）
-    setActiveUsageContext({
-      projectId: input.project?.id,
-      chapterNumber,
-      stage: `engine:${stage}`,
-    });
     // 按角色路由：阶段 → 角色 → 配置档（关闭/未配置 → null，全走激活档）
     const role = stageToRole(stage);
     setActiveRoleRoute(
@@ -99,21 +91,11 @@ export async function runChapterPipeline(
     if (input.signal?.aborted) throw new GenerationAbortedError();
   };
 
-  // R3-B：注入预算配置（未启用/0 = 不限）
-  setBudgetConfig({
-    enabled: !!input.styleConfig?.llmBudgetEnabled,
-    monthlyLimitCny: input.styleConfig?.llmMonthlyBudgetCny ?? 0,
-  });
   // 用户中止信号：注入 llmClient 活动上下文，所有 generate* 自动携带。
   // 嵌套安全：保存外层信号（Auto-Pilot 循环级），退出时恢复——
   // 本管线无显式信号时沿用外层，保证 AP 规划等管线外调用同样可中止。
   const prevAbortSignal = getActiveAbortSignal();
   setActiveAbortSignal(input.signal ?? prevAbortSignal ?? null);
-  setActiveUsageContext({
-    projectId: input.project?.id,
-    chapterNumber,
-    stage: 'engine:init',
-  });
 
   try {
     // 启动前快失败：信号已中止则不发起任何 LLM 调用
@@ -311,9 +293,8 @@ export async function runChapterPipeline(
       errorMessage: msg,
     };
   } finally {
-    // 清理用量、中止与角色路由上下文（恢复外层信号），避免污染管线外的直接调用
+    // 清理中止与角色路由上下文（恢复外层信号），避免污染管线外的直接调用
     setActiveAbortSignal(prevAbortSignal ?? null);
-    setActiveUsageContext(undefined);
     setActiveRoleRoute(null);
   }
 }

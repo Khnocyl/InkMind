@@ -93,14 +93,16 @@ export function lockChapterAsFinal(ch: Chapter): Chapter {
 
 /**
  * 解锁以便重写。
- * 不删除正文；status 降为「正文草稿」以便 Auto-Pilot/流水线可选中。
+ * 不删除正文、不动定稿状态：显式 locked=false 已足以让流水线放行
+ * （isChapterLocked 显式 false 优先），状态等真正重写出新稿后自然流转。
+ * 此前会把 status 直接降为「正文草稿」——用户解锁后未重写，定稿状态被静默降级。
+ * Auto-Pilot 选章侧由 isChapterEffectivelyDone 对 locked===false 放行配合。
  */
 export function unlockChapterForRewrite(ch: Chapter): Chapter {
   return {
     ...ch,
     locked: false,
     lockedAt: undefined,
-    status: '正文草稿',
     lastModified: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
 }

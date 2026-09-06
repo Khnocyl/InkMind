@@ -54,6 +54,7 @@ import {
 } from '../../services/llmClient';
 import { invalidateEmbeddingConfigCache } from '../../services/embeddingIndex';
 import { resolveChapterWordTarget } from '../../services/proseWords';
+import { collectBlacklistExemptions } from '../../services/aiTasteScan';
 import { ALL_LLM_ROLES, ROLE_LABELS } from '../../services/llmRouting';
 
 /**
@@ -2450,6 +2451,27 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               ))
             )}
           </div>
+          {/* 豁免明示：白名单当前实际放行了多少条黑名单（防静默击穿）；短词仅精确匹配生效 */}
+          {(() => {
+            const exempted = collectBlacklistExemptions(styleConfig);
+            return (
+              <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+                {exempted.length > 0 ? (
+                  <>
+                    当前白名单豁免了 {exempted.length} 条黑名单：
+                    <span className="font-mono text-amber-700">
+                      {exempted.slice(0, 6).join('、')}
+                      {exempted.length > 6 ? ` 等 ${exempted.length} 条` : ''}
+                    </span>
+                  </>
+                ) : (
+                  '白名单当前未豁免任何黑名单条目。'
+                )}
+                <br />
+                规则：仅「与黑名单条目完全相同」或「≥4 字且占条目大半」的白名单词才生效，短词不再整条放行。
+              </p>
+            );
+          })()}
         </div>
       </div>
       )}
