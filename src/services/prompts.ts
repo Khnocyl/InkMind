@@ -1,5 +1,6 @@
 import { proseWords } from './proseWords';
 import type { ProjectConfig, Character, WorldSetting, PlotBeat, StyleConfig, Chapter } from '../types/novel';
+import { getGenrePackById } from './genrePacks';
 import {
   formatStyleProfileForPrompt,
   getActiveStyleProfile,
@@ -182,15 +183,24 @@ ${body || '（空）'}
 export function buildTitleAndSynopsisPrompt(config: ProjectConfig, styleStructureBlock?: string) {
   const totalCh = config.totalChapters || config.targetChapterCount || 100;
   const wordsCh = config.wordsPerChapter || config.targetWordCountPerChapter || 3000;
+  // 题材锚：用户选了题材规则包时，把该题材的冲突形态/必守/禁忌注入定调提示词，
+  // 防止「都市现实被写成悬疑罪案」类题材漂移（系统示例多为暗黑系，弱标签会被带偏）
+  const pack = getGenrePackById(config.customParameters?.genrePackId);
+  const packBlock = pack
+    ? `\n【题材定位（必须严格遵守）】：${pack.name} —— ${pack.description}
+本题材的核心冲突形态：${pack.mustHaves.join('；')}。
+本题材的禁忌（出现即为失败）：${pack.taboos.join('；')}。
+题材纪律：书名、题材分类、梗概、亮点的措辞与冲突形态必须落在本题材的世界观内；严禁为了"有张力"而漂移到其他类型（如现实题材强加凶案/罪案/超自然，言情强加命案悬案）。张力来自题材内部的冲突，不来自换类型。`
+    : '';
   const systemPrompt = `你是一位畅销顶尖网络小说与文学巨匠，精通构思引人入胜、设定严密且极具张力的小说书名与核心世界架构。
 请必须严格输出为合法 JSON 格式，不要有任何多余闲聊，结构如下：
 {
-  "title": "充满爆发力与辨识度的书名",
+  "title": "充满爆发力与辨识度的书名（贴合题材气质，现实题材不要故弄玄虚）",
   "subtitle": "极具吸引力的副标题或标语",
-  "genre": "精确分类类型，如 东方玄幻·暗黑诡秘 或 仙侠·克苏鲁修真 或 悬疑智斗",
-  "synopsis": "300-500字的核心剧情梗概与背景设定，交代起因、金手指/特别机缘、残酷世界规则与最终使命",
-  "hooks": ["核心亮点1：如独特的规则禁忌", "核心亮点2：如反套路主角性格", "核心亮点3：如深远的世界重置之谜"],
-  "coreConflict": "全书最大的终极矛盾与生存冲突"
+  "genre": "精确分类类型，与用户题材偏好保持同一类型；示例格式：东方玄幻·热血逆袭 或 都市现实·职场沉浮 或 悬疑智斗",
+  "synopsis": "300-500字的核心剧情梗概与背景设定，交代起因、金手指/特别机缘/机遇、世界规则（贴合题材的现实形态，不要刻意黑暗化）与核心使命",
+  "hooks": ["核心亮点1：题材内的独特规则或处境", "核心亮点2：如反套路主角性格", "核心亮点3：如深远的局势或关系布局"],
+  "coreConflict": "全书最大的终极矛盾（必须是该题材内真实存在的冲突形态）"
 }`;
 
   const userPrompt = `【用户原始灵感描述】：
@@ -198,9 +208,8 @@ ${config.inspiration}
 
 【目标篇幅】：总共 ${totalCh} 章，每章约 ${wordsCh} 字
 【目标风格】：${config.writingStyle}
-【题材偏好】：${config.genre || '根据灵感推导最适合的题材'}
-${styleStructureSection(styleStructureBlock)}
-请根据以上灵感，构思一部爆款且极具口碑与质感的小说方案。必须输出纯合法 JSON 格式。`;
+【题材偏好】：${config.genre || '根据灵感推导最适合的题材'}${packBlock}${styleStructureSection(styleStructureBlock)}
+请根据以上灵感，构思一部爆款且极具口碑与质感的小说方案。题材定位以【题材偏好】与【题材定位】为准：灵感描述若与题材有轻微出入，向题材靠拢；若灵感明确是另一种题材，以灵感为准并在 genre 里如实标注。必须输出纯合法 JSON 格式。`;
 
   return [
     { role: 'system', content: systemPrompt },

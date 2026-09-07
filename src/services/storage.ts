@@ -147,7 +147,9 @@ export async function saveProject(
       const existing = getReq.result as BookProject | undefined;
       const existingRev = existing?.rev ?? 0;
       const callerRev = project.rev ?? 0;
-      if (!options?.force && existing && existingRev > callerRev) {
+      // 桌面端为单实例单窗口（无跨标签页），且 callerRev === 0 属初始写入或迁移，均不应误判为冲突拒写
+      const isDesktop = typeof window !== 'undefined' && !!(window as any).electron;
+      if (!options?.force && !isDesktop && callerRev > 0 && existing && existingRev > callerRev) {
         // 另一标签页在我们最后一次读盘之后写过：拒写，让调用方提示刷新
         reject(new ProjectConflictError(project.id));
         return;

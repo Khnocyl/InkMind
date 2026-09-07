@@ -15,11 +15,13 @@ export interface RetryOptions {
 export const DEFAULT_MAX_RETRIES = 2;
 export const DEFAULT_RETRY_DELAY_MS = 600;
 /**
- * 单次尝试响应头超时（默认 240s）：
+ * 单次尝试响应头超时（默认 300s）：
  * - 隐藏推理型模型（如 stealth 系）接受请求后可能长时间不吐首字节；
- * - 流式空闲超时按此的 75% 联动放大（180s），避免长思考被误判为连接僵死。
+ * - 思考模型（DeepSeek-R1 / GLM 思考 / MiniMax-M3 等）在非流式调用下
+ *   整段思考时间都算在响应里，小说级大提示词思考 3-5 分钟属正常；
+ * - 流式空闲超时按此的 75% 联动放大（225s），避免长思考被误判为连接僵死。
  */
-export const DEFAULT_TIMEOUT_MS = 240_000;
+export const DEFAULT_TIMEOUT_MS = 300_000;
 
 /** 超时专用错误（可重试） */
 export class TimeoutError extends Error {

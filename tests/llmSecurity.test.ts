@@ -219,6 +219,55 @@ describe('llmSecurity · isSameOriginClient（P2-1 收紧）', () => {
     ).toBe(true);
   });
 
+  it('same-origin 携带 Origin：与 Host 同源 → 放行；Origin 对不上 → 拒绝', () => {
+    expect(
+      isSameOriginClient({
+        hostHeader: 'localhost:3001',
+        secFetchSite: 'same-origin',
+        origin: 'http://localhost:3001',
+        isTrustedHostname: loopbackOnly,
+      })
+    ).toBe(true);
+    // 伪造 sfs 头但 Origin 指向别处 → 拒绝
+    expect(
+      isSameOriginClient({
+        hostHeader: 'localhost:3001',
+        secFetchSite: 'same-origin',
+        origin: 'http://evil.example.com',
+        isTrustedHostname: loopbackOnly,
+      })
+    ).toBe(false);
+    // Origin 端口与 Host 不一致 → 拒绝
+    expect(
+      isSameOriginClient({
+        hostHeader: 'localhost:3001',
+        secFetchSite: 'same-origin',
+        origin: 'http://localhost:9999',
+        isTrustedHostname: loopbackOnly,
+      })
+    ).toBe(false);
+  });
+
+  it('LAN 部署：same-origin 浏览器请求（Origin 与可信 Host 同源）仍放行', () => {
+    const trustLan = (h: string) => loopbackOnly(h) || h === 'myhost';
+    expect(
+      isSameOriginClient({
+        hostHeader: 'myhost:3001',
+        secFetchSite: 'same-origin',
+        origin: 'http://myhost:3001',
+        isTrustedHostname: trustLan,
+      })
+    ).toBe(true);
+    expect(
+      isSameOriginClient({
+        hostHeader: 'myhost:3001',
+        secFetchSite: 'same-origin',
+        origin: 'http://other-lan-host:3001',
+        isTrustedHostname: trustLan,
+      })
+    ).toBe(false);
+  });
+
   it('none（顶栏导航）→ 不再豁免，需 token', () => {
     expect(
       isSameOriginClient({

@@ -17,6 +17,10 @@ interface TitleReviewStepProps {
   onRegenerate: () => void;
   isGenerating: boolean;
   progressMsg?: string;
+  /** 生成已进行秒数（思考模型构思可能数分钟） */
+  genElapsedSec?: number;
+  /** 停止本次生成（中止上游请求） */
+  onCancelGenerate?: () => void;
 }
 
 export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
@@ -26,6 +30,8 @@ export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
   onRegenerate,
   isGenerating,
   progressMsg,
+  genElapsedSec,
+  onCancelGenerate,
 }) => {
   const [title, setTitle] = useState(data.title);
   const [subtitle, setSubtitle] = useState(data.subtitle);
@@ -90,6 +96,18 @@ export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
           <div className="py-16 text-center space-y-4">
             <div className="w-12 h-12 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto" />
             <p className="text-sm font-medium text-slate-700">{progressMsg || 'AI 正在为你重构全新书名与梗概设计...'}</p>
+            <p className="text-[11px] text-slate-500">
+              已进行 {genElapsedSec ?? 0} 秒 · 思考模型构思可能需要 1-5 分钟，属正常现象
+            </p>
+            {onCancelGenerate && (
+              <button
+                type="button"
+                onClick={onCancelGenerate}
+                className="px-4 py-1.5 text-[11px] font-semibold rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 transition cursor-pointer"
+              >
+                停止生成
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-6">

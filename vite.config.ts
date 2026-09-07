@@ -4,6 +4,14 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
+
+// 版本号单一来源：构建时从 package.json 注入 __APP_VERSION__，
+// 前端代码不再手写版本常量（消除发版漏改的双处同步问题）。
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const pkgVersion = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')
+).version as string
 
 /**
  * 读取服务端 API Token（R8-2）。
@@ -37,6 +45,9 @@ const apiProxy: Record<string, ProxyOptions> = {
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkgVersion),
+  },
   plugins: [react(), tailwindcss()],
   server: {
     // 写配置/密钥时不要触发 Vite 整页刷新

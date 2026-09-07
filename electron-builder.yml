@@ -3,6 +3,12 @@
 electronDist: node_modules/electron/dist
 appId: com.inkmind.desktop
 productName: InkMind
+# 应用内自动更新源（electron-updater 据此生成 resources/app-update.yml）：
+# GitHub Releases 上的 latest.yml + NSIS 安装包
+publish:
+  provider: github
+  owner: Khnocyl
+  repo: InkMind
 directories:
   output: release-electron
   buildResources: build
@@ -11,6 +17,7 @@ asar: false
 files:
   - electron/main.cjs
   - electron/preload.cjs
+  - electron/updaterErrors.cjs
   - build/electron/server.cjs
   - build/icon.ico
   - build/icon.png

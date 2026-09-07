@@ -18,11 +18,26 @@ import {
   testEmbedding,
   createEmbeddings,
   resolveAllowedModels,
+  LLM_PROVIDERS,
 } from './llmService';
 import { isSameOriginClient } from './llmSecurity';
 import { hardenFilePermissions } from './llmService';
 import { runDoctor } from './doctor';
 import { writeProjectBackup, listProjectBackups, deleteProjectBackups } from './backupService';
+
+// 仅在本机显式配置 INKMIND_PROXY 时静默启用代理，对其他所有用户 100% 默认直连零干扰
+if (process.env.INKMIND_PROXY) {
+  try {
+    const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
+    process.env.HTTP_PROXY = process.env.INKMIND_PROXY;
+    process.env.HTTPS_PROXY = process.env.INKMIND_PROXY;
+    process.env.NO_PROXY = process.env.NO_PROXY || '127.0.0.1,localhost';
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+    console.log(`🌐 [Proxy] 已加载本机专属代理: ${process.env.INKMIND_PROXY}`);
+  } catch (err) {
+    console.warn('[Proxy] 专属代理加载失败:', err);
+  }
+}
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -50,6 +65,13 @@ const TOKEN_FILE = path.join(DATA_DIR, 'api-token');
 
 /** 显式允许无鉴权运行（默认关闭；仅限可信环境，不推荐）。 */
 const ALLOW_NO_AUTH = process.env.ALLOW_NO_AUTH === '1';
+// 无论 token 文件是否存在都打警告：此开关会关闭全部 /api/* 鉴权，
+// 忘记关闭时必须能从启动日志一眼看出来
+if (ALLOW_NO_AUTH) {
+  console.warn(
+    '⚠️ [Auth] ALLOW_NO_AUTH=1：所有 /api/* 接口已无鉴权开放（局域网内任何人可消耗你的 LLM 额度）！仅限可信内网临时调试，用完请移除该环境变量。'
+  );
+}
 
 function loadOrCreateApiToken(): string {
   const fromEnv = (process.env.API_TOKEN || '').trim();
@@ -212,9 +234,10 @@ function isSameOriginOrLocalClient(req: express.Request): boolean {
 // API Token 鉴权：放在 CORS / json 之后，确保 401/503 响应也带 CORS 头（前端可读错误）
 app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next(); // 健康检查无副作用，开放探活
+  // 显式禁用鉴权（临时局域网/内网调试场景）：优先级最高，token 文件存在与否均生效
+  if (ALLOW_NO_AUTH) return next();
   if (!API_TOKEN) {
     // fail-closed（安全加固 F2）：token 不可用且未显式 ALLOW_NO_AUTH → 拒绝全部 /api/*
-    if (ALLOW_NO_AUTH) return next();
     return res.status(503).json({
       success: false,
       error:
@@ -342,11 +365,19 @@ app.post('/api/config/llm', (req, res) => {
   try {
     const { provider, baseURL, modelName, temperature, apiKey, customHeaders, name } =
       req.body;
+    if (provider !== undefined && !LLM_PROVIDERS.includes(provider)) {
+      res.status(400).json({
+        success: false,
+        error: `不支持的服务商类型: ${String(provider).slice(0, 40)}`,
+      });
+      return;
+    }
     const updated = saveStoredConfig({
       provider,
       baseURL,
       modelName,
       temperature,
+      maxTokens: req.body?.maxTokens,
       apiKey,
       customHeaders,
       name,
@@ -383,6 +414,14 @@ app.get('/api/config/llm/profiles', (_req, res) => {
 /** 新建 / 更新配置档 */
 app.post('/api/config/llm/profiles', (req, res) => {
   try {
+    const provider = req.body?.provider;
+    if (provider !== undefined && !LLM_PROVIDERS.includes(provider)) {
+      res.status(400).json({
+        success: false,
+        error: `不支持的服务商类型: ${String(provider).slice(0, 40)}`,
+      });
+      return;
+    }
     const data = upsertProfile({
       id: req.body?.id,
       name: req.body?.name || '新模型',
@@ -390,6 +429,7 @@ app.post('/api/config/llm/profiles', (req, res) => {
       baseURL: req.body?.baseURL || '',
       modelName: req.body?.modelName || '',
       temperature: req.body?.temperature,
+      maxTokens: req.body?.maxTokens,
       apiKey: req.body?.apiKey,
       customHeaders: req.body?.customHeaders,
       activate: !!req.body?.activate,
@@ -483,7 +523,12 @@ app.post('/api/config/llm/models', rateLimitExpensive(), async (req, res) => {
   try {
     const baseURL = typeof req.body?.baseURL === 'string' ? req.body.baseURL : undefined;
     const apiKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey : undefined;
-    const result = await listLLMModels({ baseURL, apiKey });
+    const provider =
+      typeof req.body?.provider === 'string' && LLM_PROVIDERS.includes(req.body.provider as never)
+        ? (req.body.provider as (typeof LLM_PROVIDERS)[number])
+        : undefined;
+    const profileId = typeof req.body?.profileId === 'string' ? req.body.profileId : undefined;
+    const result = await listLLMModels({ baseURL, apiKey, provider, profileId });
     res.json({
       success: true,
       data: {
@@ -607,6 +652,10 @@ app.post('/api/llm/generate', rateLimitExpensive(), async (req, res) => {
         signal: upstream.signal,
         onChunk: (chunk) => {
           if (!res.writableEnded) res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+        },
+        onReasoning: (reasoning) => {
+          // 思考模型推理过程：单独帧型透传，前端显示「思考中」进度，不计入正文
+          if (!res.writableEnded) res.write(`data: ${JSON.stringify({ reasoning })}\n\n`);
         },
         onFinish: (info) => {
           // 截断信号透传（finish=length → 前端提示 max_tokens 上限）

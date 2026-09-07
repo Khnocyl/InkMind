@@ -13,6 +13,7 @@ import { WorkspaceTab } from './components/Workspace/WorkspaceTab';
 import { WorldBibleTab } from './components/WorldBible/WorldBibleTab';
 import { TimelinePlanner } from './components/PlotPlanner/TimelinePlanner';
 import { StyleAndEngineManager } from './components/StyleConfig/StyleAndEngineManager';
+import { DesktopUpdateToast } from './components/StyleConfig/DesktopUpdateToast';
 import { ProjectWizard } from './components/ProjectWizard/ProjectWizard';
 import { ProjectSelectorModal } from './components/ProjectSelectorModal';
 import {
@@ -593,6 +594,7 @@ export default function App() {
               lastModified: new Date().toISOString(),
             };
             await saveProject(ready);
+            setProjectSafe(ready);
             await refreshProjectsList();
             setIsWizardOpen(false);
             await openProjectInWorkspace(ready, { openWizardIfIncomplete: false });
@@ -944,6 +946,18 @@ export default function App() {
         project={currentProject}
         initialChapterId={activeChapterId}
         onClose={() => setIsReadingPreviewOpen(false)}
+      />
+
+      {/* 桌面端启动静默检查发现新版本 → 全局更新提示（仅 Electron 安装版有事件） */}
+      <DesktopUpdateToast
+        onOpenUpdateSection={() => {
+          setActiveTab('style');
+          window.setTimeout(() => {
+            document
+              .getElementById('sec-about')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 150);
+        }}
       />
     </div>
   );

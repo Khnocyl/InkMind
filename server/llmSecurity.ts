@@ -127,13 +127,18 @@ export function assertSafeUrl(url: string): void {
 /**
  * 同源豁免判定（纯函数，安全审计 P2-1 收紧 + 深度审查 LAN 缺口修复）：
  * - Host 必须是可信主机名（回环或显式 TRUSTED_HOSTS）——防 DNS rebinding；
- * - Sec-Fetch-Site=same-origin → 同源浏览器请求，放行；
+ * - Sec-Fetch-Site=same-origin → 同源浏览器请求，放行；该头是浏览器强制注入的
+ *   禁改头，网页场景不可伪造。非浏览器脚本可伪造任意头，但注意：LAN 部署
+ *   （TRUSTED_HOSTS）本身就是「局域网访问者共享本机 API 权限」的信任域
+ *   （SECURITY.md 已声明），脚本伪造并不越过该边界；默认仅回环绑定时，
+ *   局域网攻击者无法建立连接。若请求携带 Origin，则额外要求 Origin 与
+ *   可信 Host 同源——浏览器 same-origin POST 必然满足，伪造头但对不上
+ *   Origin 的请求在此被拒；
  * - `none`（顶栏导航）与 `cross-site/same-site` → 需 token：恶意页面可诱导
  *   用户把浏览器导航到本机 API（此时 metadata 为 none），不能免 token 豁免；
  * - 无 fetch-metadata 的旧浏览器/非浏览器调用：带 Origin 时校验 Origin 主机名；
  * - 两者皆无（curl 等脚本调用）→ 仅当客户端 IP 为回环时放行（本机进程本可读
- *   token 文件）。此前未校验来源 IP：LAN 部署（HOST=0.0.0.0 + TRUSTED_HOSTS）下
- *   局域网内任何脚本都命中此分支，token 形同虚设。
+ *   token 文件）。
  */
 export function isSameOriginClient(input: {
   hostHeader: string;
@@ -143,12 +148,10 @@ export function isSameOriginClient(input: {
   isLoopbackClientIp?: boolean;
   isTrustedHostname: (hostname: string) => boolean;
 }): boolean {
+  let hostUrl: URL;
   try {
-    if (
-      !input.isTrustedHostname(
-        new URL(`http://${input.hostHeader || ''}`).hostname
-      )
-    ) {
+    hostUrl = new URL(`http://${input.hostHeader || ''}`);
+    if (!input.isTrustedHostname(normalizeHostname(hostUrl.hostname))) {
       return false;
     }
   } catch {
@@ -156,7 +159,19 @@ export function isSameOriginClient(input: {
   }
   const sfs = input.secFetchSite;
   if (typeof sfs === 'string' && sfs) {
-    return sfs === 'same-origin';
+    if (sfs !== 'same-origin') return false;
+    if (typeof input.origin === 'string' && input.origin) {
+      try {
+        const originUrl = new URL(input.origin);
+        return (
+          input.isTrustedHostname(normalizeHostname(originUrl.hostname)) &&
+          effectivePort(originUrl) === effectivePort(hostUrl)
+        );
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
   if (typeof input.origin === 'string' && input.origin) {
     try {

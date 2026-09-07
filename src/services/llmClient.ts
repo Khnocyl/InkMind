@@ -24,6 +24,8 @@ export interface LLMProfilePublic {
   baseURL: string;
   modelName: string;
   temperature: number;
+  /** 输出预算 max_tokens；null = 服务端默认 8192 */
+  maxTokens?: number | null;
   hasKey: boolean;
   maskedKey: string;
   isActive: boolean;
@@ -31,7 +33,7 @@ export interface LLMProfilePublic {
 }
 
 export interface BackendLLMConfig {
-  provider: 'openai' | 'deepseek' | 'custom';
+  provider: 'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local';
   baseURL: string;
   modelName: string;
   temperature: number;
@@ -82,6 +84,8 @@ export async function saveLLMConfig(config: {
   baseURL: string;
   modelName: string;
   temperature: number;
+  /** 输出预算 max_tokens：留空/0 由服务端回落默认 8192 */
+  maxTokens?: number | null;
   apiKey?: string;
   customHeaders?: Record<string, string>;
   name?: string;
@@ -115,6 +119,8 @@ export async function upsertLLMProfile(input: {
   baseURL: string;
   modelName: string;
   temperature?: number;
+  /** 输出预算 max_tokens：留空/0 由服务端回落默认 8192 */
+  maxTokens?: number | null;
   apiKey?: string;
   activate?: boolean;
 }): Promise<{ activeProfileId: string; profiles: LLMProfilePublic[] }> {
@@ -207,6 +213,10 @@ export interface FetchLLMModelsResult {
 export async function fetchLLMModels(options?: {
   baseURL?: string;
   apiKey?: string;
+  /** 正在编辑的档的服务商类型（决定鉴权头形态） */
+  provider?: string;
+  /** 编辑已有档时传入，用该档自身已存密钥 */
+  profileId?: string;
 }): Promise<FetchLLMModelsResult> {
   const res = await fetch('/api/config/llm/models', {
     method: 'POST',
@@ -214,6 +224,8 @@ export async function fetchLLMModels(options?: {
     body: JSON.stringify({
       baseURL: options?.baseURL,
       apiKey: options?.apiKey,
+      provider: options?.provider,
+      profileId: options?.profileId,
     }),
   });
   const data = await res.json();
@@ -649,6 +661,12 @@ async function streamOnce(
   }
   if (onProgress) onProgress('AI 正在高速执笔输出中...');
 
+  // 思考模型（推理模型）：正文开始前模型会长时间输出 reasoning_content，
+  // 期间界面看起来像卡死——节流地把思考进度转发到 onProgress，让用户知道它活着
+  let reasoningChars = 0;
+  let lastReasoningProgressAt = 0;
+  let reasoningAnnounced = false;
+
   /** 处理单行 SSE 数据（错误帧会抛出） */
   const consumeLine = async (line: string) => {
     const trimmed = line.trim();
@@ -669,9 +687,24 @@ async function streamOnce(
     }
     const chunk = parsed.chunk || '';
     if (chunk) {
+      if (reasoningAnnounced && onProgress) {
+        // 思考结束转入正文：恢复常规输出提示
+        onProgress('思考完成，AI 正在高速执笔输出中...');
+        reasoningAnnounced = false;
+      }
       fullContent += chunk;
       if (onChunk) {
         onChunk(chunk);
+      }
+    }
+    // 思考模型推理过程增量：不计入正文，仅节流刷新进度（每秒至多一次）
+    if (typeof parsed.reasoning === 'string' && parsed.reasoning) {
+      reasoningChars += parsed.reasoning.length;
+      const now = Date.now();
+      if (onProgress && now - lastReasoningProgressAt > 1000) {
+        lastReasoningProgressAt = now;
+        reasoningAnnounced = true;
+        onProgress(`模型思考中（已思考 ${reasoningChars} 字）——思考模型构思阶段较慢，属正常现象`);
       }
     }
     // 截断信号（server 透传 finish_reason）：length = 被 max_tokens 截断

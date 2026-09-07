@@ -14,6 +14,10 @@ interface OutlineReviewStepProps {
   onFillPlaceholders: () => void;
   isGenerating: boolean;
   progressMsg?: string;
+  /** 生成已进行秒数（思考模型构思可能数分钟） */
+  genElapsedSec?: number;
+  /** 停止本次生成（中止上游请求） */
+  onCancelGenerate?: () => void;
 }
 
 /** 章节行状态 tag 配色（纯展示）：定稿=绿 / 占位=红 / 其余=灰 */
@@ -37,6 +41,8 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
   onFillPlaceholders,
   isGenerating,
   progressMsg,
+  genElapsedSec,
+  onCancelGenerate,
 }) => {
   const [volumes, setVolumes] = useState<Volume[]>(initialVolumes);
   const [chapters, setChapters] = useState<Chapter[]>(initialChapters);
@@ -177,6 +183,18 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
           <div className="py-16 text-center space-y-4">
             <div className="w-12 h-12 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto" />
             <p className="text-sm font-medium text-slate-700">{progressMsg || 'AI 正在分析几百万字网文排版规律，为你拆解宏伟分卷与具体章节剧情钩子...'}</p>
+            <p className="text-[11px] text-slate-500">
+              已进行 {genElapsedSec ?? 0} 秒 · 思考模型构思可能需要 1-5 分钟，属正常现象
+            </p>
+            {onCancelGenerate && (
+              <button
+                type="button"
+                onClick={onCancelGenerate}
+                className="px-4 py-1.5 text-[11px] font-semibold rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 transition cursor-pointer"
+              >
+                停止生成
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

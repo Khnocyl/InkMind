@@ -2,7 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
+import {
+  buildProviderRequest,
+  extractStreamEvent,
+  parseNonStreamResponse,
+  readUpstreamStreamError,
+  UpstreamStreamError,
+  type ChatProvider,
+} from './llmProviderRequest';
 import {
   assertSafeBaseUrl,
   assertSafeUrl,
@@ -15,7 +23,15 @@ import {
   encryptWithKeyGcm,
 } from './keyCipher';
 
-export type LLMProvider = 'openai' | 'deepseek' | 'custom';
+export type LLMProvider = 'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local';
+/** 服务商类型白名单（入口校验用，防止垃圾值落盘后在上游请求分支里走丢） */
+export const LLM_PROVIDERS: readonly LLMProvider[] = [
+  'openai',
+  'deepseek',
+  'custom',
+  'anthropic',
+  'local',
+] as const;
 
 /** 单个大模型配置档（可多档切换启用） */
 export interface LLMProfile {
@@ -25,9 +41,21 @@ export interface LLMProfile {
   baseURL: string;
   modelName: string;
   temperature: number;
+  /** 输出预算 max_tokens（含思考模型的思考消耗）；null/undefined = 用默认 8192 */
+  maxTokens?: number | null;
   encryptedApiKey?: string;
   customHeaders?: Record<string, string>;
   updatedAt?: string;
+}
+
+/**
+ * 清洗用户填写的输出预算：留空 / 0 / 负数 / 非数字 → null（跟随默认 8192）；
+ * 正数向下取整，封顶 100 万防误填天文数字。
+ */
+export function sanitizeMaxTokens(v: unknown): number | null {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(Math.floor(n), 1_000_000);
 }
 
 /** 向量检索 / Embedding API（OpenAI 兼容） */
@@ -57,6 +85,8 @@ export interface LLMServerConfig {
   baseURL: string;
   modelName: string;
   temperature: number;
+  /** 当前启用档的输出预算（null = 默认 8192） */
+  maxTokens?: number | null;
   encryptedApiKey?: string;
   customHeaders?: Record<string, string>;
   /** 扩展：当前档 id / 名 */
@@ -214,7 +244,7 @@ function migrateSecretKeyIfNeeded(): void {
           raw.embedding.encryptedApiKey = reencrypt(raw.embedding.encryptedApiKey);
         }
         if (changed) {
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2), 'utf-8');
+          persistConfigData(JSON.stringify(raw, null, 2));
         }
       }
     }
@@ -247,14 +277,17 @@ export function hardenFilePermissions(p: string, isDir: boolean): void {
     if (process.platform === 'win32') {
       const user = process.env.USERNAME || process.env.USER || '当前用户';
       const suffix = isDir ? '(OI)(CI)F' : 'F';
-      execSync(`icacls "${p}" /inheritance:r /grant:r "${user}:${suffix}"`, {
+      // 不经过 shell：用户名可含空格/特殊字符（如中文姓名），拼 shell 串会在
+      // icacls 参数解析处断裂并导致加固静默失效
+      execFileSync('icacls', [p, '/inheritance:r', '/grant:r', `${user}:${suffix}`], {
         stdio: 'ignore',
       });
     } else {
       fs.chmodSync(p, isDir ? 0o700 : 0o600);
     }
-  } catch {
-    /* 权限收紧失败不阻塞 */
+  } catch (err) {
+    // 权限收紧失败不阻塞，但至少留痕（否则加固形同虚设也无人知晓）
+    console.warn('[security] 文件权限收紧失败（尽力而为）:', (err as Error)?.message || err);
   }
 }
 
@@ -286,7 +319,7 @@ function migrateCipherToGcmIfNeeded(): void {
       raw.embedding.encryptedApiKey = upgrade(raw.embedding.encryptedApiKey);
     }
     if (changed) {
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2), 'utf-8');
+      persistConfigData(JSON.stringify(raw, null, 2));
       console.log('[config] API Key 密文已升级为 aes-256-gcm（带认证标签）');
     }
   } catch (err) {
@@ -352,15 +385,50 @@ function defaultProfile(partial?: Partial<LLMProfile>): LLMProfile {
     baseURL: partial?.baseURL || 'https://api.deepseek.com',
     modelName: partial?.modelName || 'deepseek-chat',
     temperature: partial?.temperature ?? 0.7,
+    maxTokens: sanitizeMaxTokens(partial?.maxTokens),
     encryptedApiKey: partial?.encryptedApiKey,
     customHeaders: partial?.customHeaders || {},
     updatedAt: new Date().toISOString(),
   };
 }
 
+/**
+ * 配置落盘（原子写 + 上一份留底）：写 tmp → 留底 → 原子改名。
+ * 进程在覆盖 config.json 的瞬间被杀（断电/升级重启）会留下半截 JSON，
+ * 直接覆盖式写入曾导致全部配置档与密文静默丢失。不调用 ensureDirectories
+ * （迁移函数也走此落盘，避免 递归）。
+ */
+function persistConfigData(data: string): void {
+  const tmp = `${CONFIG_FILE}.tmp`;
+  const bak = `${CONFIG_FILE}.bak`;
+  fs.writeFileSync(tmp, data, 'utf-8');
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      fs.copyFileSync(CONFIG_FILE, bak);
+    } catch {
+      /* 留底失败不阻塞主写入 */
+    }
+  }
+  try {
+    fs.renameSync(tmp, CONFIG_FILE);
+  } catch {
+    // Windows 上目标被独占打开（杀软实时扫描窗口等）时 rename 会 EPERM——
+    // 回退为直接写（非原子，但不比旧实现差），并清掉残留 tmp
+    try {
+      fs.writeFileSync(CONFIG_FILE, data, 'utf-8');
+    } finally {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function writeConfigFile(cfg: ConfigFileV2): void {
   ensureDirectories();
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+  persistConfigData(JSON.stringify(cfg, null, 2));
 }
 
 /** 读取并迁移 v1 单配置 → v2 多档 */
@@ -391,6 +459,7 @@ export function loadConfigFile(): ConfigFileV2 {
           baseURL: p.baseURL,
           modelName: p.modelName,
           temperature: p.temperature,
+          maxTokens: p.maxTokens,
           encryptedApiKey: p.encryptedApiKey,
           customHeaders: p.customHeaders,
         })
@@ -429,6 +498,19 @@ export function loadConfigFile(): ConfigFileV2 {
     return cfg;
   } catch (err) {
     console.error('Error reading config file:', err);
+    // 主文件损坏（写入中途被杀留下的半截 JSON）→ 尝试从上一份留底恢复
+    const bak = `${CONFIG_FILE}.bak`;
+    if (fs.existsSync(bak)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(bak, 'utf-8')) as ConfigFileV2;
+        if (cfg?.version === 2 && Array.isArray(cfg.profiles) && cfg.profiles.length) {
+          console.warn('[config] 主配置文件损坏，已从 config.json.bak 恢复上一份配置');
+          return cfg;
+        }
+      } catch (bakErr) {
+        console.warn('[config] config.json.bak 亦不可用:', (bakErr as Error)?.message || bakErr);
+      }
+    }
     const p = defaultProfile();
     return {
       version: 2,
@@ -488,6 +570,7 @@ export function getStoredConfig(): LLMServerConfig {
     baseURL: p.baseURL,
     modelName: p.modelName,
     temperature: p.temperature,
+    maxTokens: p.maxTokens ?? null,
     encryptedApiKey: p.encryptedApiKey,
     customHeaders: p.customHeaders,
     activeProfileId: p.id,
@@ -511,6 +594,10 @@ export function saveStoredConfig(
     modelName: newConfig.modelName || active.modelName,
     temperature:
       newConfig.temperature !== undefined ? newConfig.temperature : active.temperature,
+    maxTokens:
+      newConfig.maxTokens !== undefined
+        ? sanitizeMaxTokens(newConfig.maxTokens)
+        : (active.maxTokens ?? null),
     customHeaders: newConfig.customHeaders || active.customHeaders,
     name: newConfig.name?.trim() || active.name,
     updatedAt: new Date().toISOString(),
@@ -538,6 +625,7 @@ export function listProfilesPublic(): {
     baseURL: string;
     modelName: string;
     temperature: number;
+    maxTokens?: number | null;
     hasKey: boolean;
     maskedKey: string;
     isActive: boolean;
@@ -554,6 +642,7 @@ export function listProfilesPublic(): {
       baseURL: p.baseURL,
       modelName: p.modelName,
       temperature: p.temperature,
+      maxTokens: p.maxTokens ?? null,
       hasKey: !!(p.encryptedApiKey && p.encryptedApiKey.length > 0),
       maskedKey: p.encryptedApiKey
         ? 'sk-****' + p.encryptedApiKey.slice(-4)
@@ -571,6 +660,8 @@ export function upsertProfile(input: {
   baseURL: string;
   modelName: string;
   temperature?: number;
+  /** 输出预算：留空/0/非法值 → null（默认 8192） */
+  maxTokens?: unknown;
   apiKey?: string;
   customHeaders?: Record<string, string>;
   /** 保存后是否立即启用 */
@@ -593,6 +684,10 @@ export function upsertProfile(input: {
       modelName: input.modelName.trim() || existing.modelName,
       temperature:
         input.temperature !== undefined ? input.temperature : existing.temperature,
+      maxTokens:
+        input.maxTokens !== undefined
+          ? sanitizeMaxTokens(input.maxTokens)
+          : (existing.maxTokens ?? null),
       customHeaders: input.customHeaders || existing.customHeaders,
       updatedAt: new Date().toISOString(),
     };
@@ -611,6 +706,7 @@ export function upsertProfile(input: {
       baseURL: input.baseURL.trim(),
       modelName: input.modelName.trim(),
       temperature: input.temperature ?? 0.7,
+      maxTokens: sanitizeMaxTokens(input.maxTokens),
       customHeaders: input.customHeaders,
     });
     if (input.apiKey && !input.apiKey.startsWith('sk-****')) {
@@ -838,6 +934,8 @@ export function resolveOpenAICompatibleRoot(baseURL: string): string {
   u = u
     .replace(/\/v1\/chat\/completions$/i, '')
     .replace(/\/chat\/completions$/i, '')
+    .replace(/\/v1\/messages$/i, '')
+    .replace(/\/messages$/i, '')
     .replace(/\/v1\/embeddings$/i, '')
     .replace(/\/embeddings$/i, '')
     .replace(/\/v1\/models$/i, '')
@@ -863,6 +961,8 @@ export interface LLMModelInfo {
 export async function listLLMModels(options?: {
   baseURL?: string;
   apiKey?: string;
+  /** 显式指定服务商类型（编辑非激活档时前端传入；缺省用该档/激活档自身的 provider） */
+  provider?: LLMProvider;
   /** 指定配置档 id 取 Key（默认当前启用） */
   profileId?: string;
 }): Promise<{ models: LLMModelInfo[]; endpoint: string; count: number }> {
@@ -876,22 +976,38 @@ export async function listLLMModels(options?: {
   }
   assertSafeBaseUrl(baseURL);
 
-  const apiKey = resolveRequestApiKey({
-    requestedBaseURL: options?.baseURL,
-    storedBaseURL: profile.baseURL,
-    requestedApiKey: options?.apiKey,
-    storedApiKey: decryptKey(profile.encryptedApiKey),
-  });
+  // 鉴权形态按「正在编辑的档」而非激活档：否则编辑 Anthropic/local 档时
+  // 会拿激活档的 provider 发错鉴权头（401）或误要求 Key
+  const provider =
+    options?.provider && LLM_PROVIDERS.includes(options.provider)
+      ? options.provider
+      : profile.provider;
 
-  if (!apiKey) {
-    throw new Error('未配置 API Key：请先填写密钥并保存，或在刷新前粘贴有效 Key');
+  let apiKey: string;
+  if (provider === 'local') {
+    // 本地服务通常无 Key 可填：跳过跨 origin 回退校验，直接用显式传入值（可为空）
+    apiKey = (options?.apiKey || '').trim();
+  } else {
+    apiKey = resolveRequestApiKey({
+      requestedBaseURL: options?.baseURL,
+      storedBaseURL: profile.baseURL,
+      requestedApiKey: options?.apiKey,
+      storedApiKey: decryptKey(profile.encryptedApiKey),
+    });
+    if (!apiKey) {
+      throw new Error('未配置 API Key：请先填写密钥并保存，或在刷新前粘贴有效 Key');
+    }
   }
 
+  const protectedHeaders: Record<string, string> = { Accept: 'application/json' };
+  if (provider === 'anthropic') {
+    protectedHeaders['x-api-key'] = apiKey;
+    protectedHeaders['anthropic-version'] = '2023-06-01';
+  } else if (apiKey) {
+    protectedHeaders.Authorization = `Bearer ${apiKey}`;
+  }
   const headers: Record<string, string> = buildSafeHeaders(
-    {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-    },
+    protectedHeaders,
     profile.customHeaders
   );
 
@@ -1000,6 +1116,8 @@ export async function callLLMService(options: {
   response_format?: { type: 'json_object' | 'text' };
   stream?: boolean;
   onChunk?: (chunk: string) => void;
+  /** 思考模型推理过程增量（reasoning_content / thinking），仅供 UI 进度展示，不计入正文 */
+  onReasoning?: (chunk: string) => void;
   /** 流结束回调：finish_reason=length 表示被 max_tokens 截断（上游可见） */
   onFinish?: (info: { finishReason?: string }) => void;
   /** R3 收尾：请求级模型覆盖（未传则用激活配置档的 modelName） */
@@ -1026,6 +1144,7 @@ export async function callLLMService(options: {
         baseURL: routed.baseURL,
         modelName: routed.modelName,
         temperature: routed.temperature,
+        maxTokens: routed.maxTokens ?? null,
         encryptedApiKey: routed.encryptedApiKey,
         customHeaders: routed.customHeaders,
         activeProfileId: routed.id,
@@ -1034,8 +1153,9 @@ export async function callLLMService(options: {
     }
   }
   const apiKey = decryptKey(effectiveConfig.encryptedApiKey);
-
-  if (!apiKey) {
+  // 本地服务（Ollama / LM Studio 等）通常无需鉴权，允许空 Key
+  const isLocalProvider = effectiveConfig.provider === 'local';
+  if (!apiKey && !isLocalProvider) {
     throw new Error(
       '未配置或无法解析加密 API Key，请先在「引擎与风格」添加并启用模型配置档。'
     );
@@ -1043,36 +1163,40 @@ export async function callLLMService(options: {
 
   let baseURL = (effectiveConfig.baseURL || 'https://api.openai.com').replace(/\/+$/, '');
   assertSafeBaseUrl(baseURL);
-  let endpoint = `${baseURL}/v1/chat/completions`;
-  if (baseURL.endsWith('/v1/chat/completions') || baseURL.endsWith('/chat/completions')) {
-    endpoint = baseURL;
-  } else if (baseURL.endsWith('/v1')) {
-    endpoint = `${baseURL}/chat/completions`;
-  }
 
-  const payload: any = {
-    model: options.model?.trim() || effectiveConfig.modelName || 'deepseek-chat',
+  const provider = (effectiveConfig.provider || 'custom') as ChatProvider;
+  const model = options.model?.trim() || effectiveConfig.modelName || 'deepseek-chat';
+  const temperature =
+    options.temperature !== undefined ? options.temperature : effectiveConfig.temperature;
+  // 输出预算优先级：请求显式指定 > 启用档配置值 > 全局默认 8192
+  const maxTokens = options.maxTokens ?? sanitizeMaxTokens(effectiveConfig.maxTokens) ?? DEFAULT_LLM_MAX_TOKENS;
+
+  const built = buildProviderRequest({
+    provider,
+    baseURL,
+    model,
     messages: options.messages,
-    temperature:
-      options.temperature !== undefined ? options.temperature : effectiveConfig.temperature,
+    temperature,
+    maxTokens,
     stream: !!options.stream,
-    // 字数达标关键：显式给输出上限，避免中转/默认 4096 截断
-    max_tokens: options.maxTokens ?? DEFAULT_LLM_MAX_TOKENS,
-  };
+    apiKey,
+  });
+  const endpoint = built.endpoint;
 
-  if (options.response_format && (effectiveConfig.provider === 'openai' || effectiveConfig.provider === 'deepseek')) {
-    if (effectiveConfig.provider === 'openai' && (effectiveConfig.modelName || '').includes('gpt-4')) {
+  let payload: any = built.payload;
+
+  // response_format 仅在明确支持的 OpenAI 系 provider 上下发（中转/本地/Anthropic 不发）
+  if (options.response_format && (provider === 'openai' || provider === 'deepseek')) {
+    if (provider === 'openai' && (effectiveConfig.modelName || '').includes('gpt-4')) {
       payload.response_format = options.response_format;
-    } else if (effectiveConfig.provider === 'deepseek' && effectiveConfig.modelName === 'deepseek-chat') {
+    } else if (provider === 'deepseek' && effectiveConfig.modelName === 'deepseek-chat') {
       payload.response_format = { type: 'json_object' };
     }
   }
 
+  // 在受保护头之上合并用户自定义头（危险头过滤），Authorization/x-api-key 不可被覆盖
   const headers: Record<string, string> = buildSafeHeaders(
-    {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    built.headers,
     effectiveConfig.customHeaders
   );
 
@@ -1153,9 +1277,14 @@ export async function callLLMService(options: {
         if (dataStr === '[DONE]') continue;
         try {
           const parsed = JSON.parse(dataStr);
-          const chunk = parsed.choices?.[0]?.delta?.content || '';
-          if (parsed.choices?.[0]?.finish_reason) {
-            finishReason = parsed.choices[0].finish_reason;
+          // 上游流中错误帧（如 Anthropic overloaded_error / OpenAI error 对象）：
+          // 中断抛错走降级链，绝不把无声空稿交给管线当正常完成
+          const streamErr = readUpstreamStreamError(parsed);
+          if (streamErr) throw streamErr;
+          const { chunk, reasoning, finishReason: fr } = extractStreamEvent(parsed);
+          if (fr) finishReason = fr;
+          if (reasoning && options.onReasoning) {
+            options.onReasoning(reasoning);
           }
           if (chunk) {
             fullContent += chunk;
@@ -1163,7 +1292,9 @@ export async function callLLMService(options: {
               options.onChunk(chunk);
             }
           }
-        } catch {
+        } catch (frameErr) {
+          // 区分「错误帧主动抛出」与「单帧 JSON 解析失败（忽略）」
+          if (frameErr instanceof UpstreamStreamError) throw frameErr;
           // ignore
         }
       }
@@ -1200,11 +1331,11 @@ export async function callLLMService(options: {
     return fullContent;
   } else {
     const data = (await response.json()) as any;
-    const finishReason: string | undefined = data.choices?.[0]?.finish_reason;
-    if (finishReason === 'length') {
+    const { text, finishReason: fr } = parseNonStreamResponse(provider, data);
+    if (fr === 'length') {
       console.warn(`[LLM] 输出被 max_tokens 截断（finish=length）。`);
     }
-    options.onFinish?.({ finishReason });
-    return data.choices?.[0]?.message?.content || '';
+    options.onFinish?.({ finishReason: fr });
+    return text;
   }
 }

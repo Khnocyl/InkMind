@@ -35,6 +35,11 @@ import {
   GITHUB_RELEASES_URL,
   type CheckUpdateResult,
 } from '../../services/appUpdate';
+import {
+  hasDesktopUpdater,
+  probeDesktopUpdater,
+} from '../../services/desktopUpdater';
+import { DesktopUpdaterPanel } from './DesktopUpdaterPanel';
 
 import {
   getLLMConfig,
@@ -92,6 +97,18 @@ import {
 } from '../../services/doctorClient';
 import { GenrePackPanel } from './GenrePackPanel';
 import { StyleImitatePanel } from './StyleImitatePanel';
+
+/** 各服务商类型的默认/示例 Base URL（切换类型时自动填充） */
+const PROVIDER_DEFAULT_BASE_URL: Record<
+  'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local',
+  string
+> = {
+  deepseek: 'https://api.deepseek.com',
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com',
+  local: 'http://127.0.0.1:11434/v1',
+  custom: 'https://api.openai.com/v1',
+};
 
 interface StyleAndEngineManagerProps {
   styleConfig: StyleConfig;
@@ -195,7 +212,11 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   const [profiles, setProfiles] = useState<LLMProfilePublic[]>([]);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [inputProfileName, setInputProfileName] = useState('默认 DeepSeek');
-  const [inputProvider, setInputProvider] = useState<'openai' | 'deepseek' | 'custom'>('deepseek');
+  const [inputProvider, setInputProvider] = useState<
+    'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local'
+  >('deepseek');
+  /** 输出预算输入框字符串值（留空/0 = 服务端默认 8192） */
+  const [inputMaxTokens, setInputMaxTokens] = useState('');
   const [inputApiKey, setInputApiKey] = useState('');
   const [inputBaseURL, setInputBaseURL] = useState('https://api.deepseek.com');
   const [inputModelName, setInputModelName] = useState('deepseek-chat');
@@ -234,6 +255,24 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
     isChecking: false,
     result: null,
   });
+  // Electron 安装版 → 应用内下载+覆盖安装；Web/单文件 SEA → 跳转 GitHub（null = 探测中）
+  const [desktopUpdSupported, setDesktopUpdSupported] = useState<boolean | null>(() =>
+    hasDesktopUpdater() ? null : false
+  );
+  const [desktopUpdVersion, setDesktopUpdVersion] = useState<string>('');
+
+  useEffect(() => {
+    if (desktopUpdSupported !== null) return;
+    let alive = true;
+    probeDesktopUpdater().then((res) => {
+      if (!alive) return;
+      setDesktopUpdSupported(Boolean(res.supported));
+      if (res.currentVersion) setDesktopUpdVersion(res.currentVersion);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [desktopUpdSupported]);
 
   const handleCheckUpdate = async () => {
     setUpdateCheckState({ isChecking: true, result: null });
@@ -287,11 +326,12 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       setEditingProfileId(active.id);
       setInputProfileName(active.name);
       setInputProvider(
-        (active.provider as 'openai' | 'deepseek' | 'custom') || 'custom'
+        (active.provider as 'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local') || 'custom'
       );
       setInputBaseURL(active.baseURL || '');
       setInputModelName(active.modelName || '');
       setInputTemperature(active.temperature ?? 0.7);
+      setInputMaxTokens(active.maxTokens ? String(active.maxTokens) : '');
       setInputApiKey(active.hasKey && active.maskedKey ? active.maskedKey : '');
     }
   };
@@ -375,6 +415,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           baseURL: inputBaseURL.trim(),
           modelName: inputModelName.trim(),
           temperature: inputTemperature,
+          maxTokens: Number.isFinite(Number(inputMaxTokens)) ? Number(inputMaxTokens) : 0,
           apiKey: inputApiKey.startsWith('sk-****') ? undefined : inputApiKey,
           activate: false,
         });
@@ -417,6 +458,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           baseURL: inputBaseURL.trim(),
           modelName: inputModelName.trim(),
           temperature: inputTemperature,
+          maxTokens: Number.isFinite(Number(inputMaxTokens)) ? Number(inputMaxTokens) : 0,
           apiKey: inputApiKey.startsWith('sk-****') ? undefined : inputApiKey,
           activate: profiles.length === 0,
         });
@@ -435,6 +477,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           baseURL: inputBaseURL.trim(),
           modelName: inputModelName.trim(),
           temperature: inputTemperature,
+          maxTokens: Number.isFinite(Number(inputMaxTokens)) ? Number(inputMaxTokens) : 0,
           apiKey: inputApiKey.startsWith('sk-****') ? undefined : inputApiKey,
           name: inputProfileName.trim() || undefined,
         }).catch(() => null);
@@ -490,6 +533,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
     setInputBaseURL('https://api.openai.com/v1');
     setInputModelName('gpt-4o');
     setInputTemperature(0.7);
+    setInputMaxTokens('');
     setInputApiKey('');
     setModelOptions([]);
     setModelsHint('填写后保存，可再点「启用」切换到此档');
@@ -498,10 +542,11 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   const handleSelectProfileForEdit = (p: LLMProfilePublic) => {
     setEditingProfileId(p.id);
     setInputProfileName(p.name);
-    setInputProvider((p.provider as 'openai' | 'deepseek' | 'custom') || 'custom');
+    setInputProvider((p.provider as 'openai' | 'deepseek' | 'custom' | 'anthropic' | 'local') || 'custom');
     setInputBaseURL(p.baseURL);
     setInputModelName(p.modelName);
     setInputTemperature(p.temperature ?? 0.7);
+    setInputMaxTokens(p.maxTokens ? String(p.maxTokens) : '');
     setInputApiKey(p.hasKey && p.maskedKey ? p.maskedKey : '');
     setModelOptions([]);
   };
@@ -593,6 +638,8 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
       const result = await fetchLLMModels({
         baseURL: inputBaseURL.trim(),
         apiKey: inputApiKey.startsWith('sk-****') ? undefined : inputApiKey.trim() || undefined,
+        provider: inputProvider,
+        profileId: editingProfileId ?? undefined,
       });
       setModelOptions(result.models || []);
       const ids = (result.models || []).map((m) => m.id);
@@ -925,7 +972,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 <div className="flex items-center gap-2">
                   <h3 className="font-bold text-lg text-slate-900">InkMind</h3>
                   <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-black text-white dark:bg-white dark:text-neutral-950 shadow-xs">
-                    v{CURRENT_APP_VERSION}
+                    v{desktopUpdVersion || CURRENT_APP_VERSION}
                   </span>
                   <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800 flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" /> GNU AGPL v3
@@ -960,13 +1007,16 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 <div className="font-bold text-sm text-slate-900 flex items-center gap-2">
                   <span>官方在线更新检测</span>
                   <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
-                    （连接 GitHub Releases 官方发布源）
+                    （{desktopUpdSupported === true ? '应用内下载 · 自动覆盖安装' : '连接 GitHub Releases 官方发布源'}）
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  点击按钮即可实时查询线上是否有新版本安装包发布。
+                  {desktopUpdSupported === true
+                    ? '检测到新版本后可直接在软件内下载，完成后一键重启自动完成升级。'
+                    : '点击按钮即可实时查询线上是否有新版本安装包发布。'}
                 </p>
               </div>
+              {desktopUpdSupported === false && (
               <button
                 type="button"
                 disabled={updateCheckState.isChecking}
@@ -976,17 +1026,23 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 <RefreshCw className={`w-3.5 h-3.5 ${updateCheckState.isChecking ? 'animate-spin' : ''}`} />
                 {updateCheckState.isChecking ? '正在检测最新版本…' : '立即检查更新'}
               </button>
+              )}
             </div>
 
-            {/* 检查结果区域 */}
-            {updateCheckState.result && (
+            {/* Electron 安装版：应用内下载 + 一键重启覆盖安装 */}
+            {desktopUpdSupported === true && (
+              <DesktopUpdaterPanel currentVersion={desktopUpdVersion} />
+            )}
+
+            {/* 检查结果区域（Web / 单文件版：跳转 GitHub Releases） */}
+            {desktopUpdSupported === false && updateCheckState.result && (
               <div className="pt-2 animate-fadeIn">
                 {updateCheckState.result.status === 'latest' && (
                   <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/70 text-emerald-900 flex items-start gap-3 dark:border-emerald-800/60 dark:bg-emerald-950/30 dark:text-emerald-200">
                     <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                     <div className="space-y-1">
                       <div className="font-bold text-sm">
-                        🎉 当前已是最新版本 (v{CURRENT_APP_VERSION})
+                        当前已是最新版本 (v{CURRENT_APP_VERSION})
                       </div>
                       <p className="text-xs text-emerald-700 dark:text-emerald-300">
                         您的客户端已是官方最新版本，无需更新。祝您长篇小说创作灵感泉涌！
@@ -1002,7 +1058,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                         <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5" />
                         <div>
                           <div className="font-bold text-sm flex items-center gap-2">
-                            <span>🚀 发现新版本：v{updateCheckState.result.latestVersion}</span>
+                            <span>发现新版本：v{updateCheckState.result.latestVersion}</span>
                             {updateCheckState.result.publishedAt && (
                               <span className="text-[11px] font-normal text-indigo-600 dark:text-indigo-300">
                                 （发布于 {new Date(updateCheckState.result.publishedAt).toLocaleDateString()}）
@@ -1254,28 +1310,65 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               </label>
               <select
                 value={inputProvider}
-                onChange={(e) =>
-                  setInputProvider(e.target.value as 'openai' | 'deepseek' | 'custom')
-                }
+                onChange={(e) => {
+                  const next = e.target.value as
+                    | 'openai'
+                    | 'deepseek'
+                    | 'custom'
+                    | 'anthropic'
+                    | 'local';
+                  setInputProvider(next);
+                  // 切换类型时，若地址为空或仍是其他类型的示例地址，自动换成对应默认值
+                  const knownDefaults = [
+                    'https://api.deepseek.com',
+                    'https://api.openai.com/v1',
+                    'https://api.openai.com',
+                    'https://api.anthropic.com',
+                    'http://127.0.0.1:11434/v1',
+                    'http://127.0.0.1:1234/v1',
+                  ];
+                  if (!inputBaseURL.trim() || knownDefaults.includes(inputBaseURL.trim())) {
+                    setInputBaseURL(PROVIDER_DEFAULT_BASE_URL[next]);
+                  }
+                }}
                 className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm"
               >
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic（Claude）</option>
+                <option value="local">本地模型（Ollama / LM Studio 等）</option>
                 <option value="custom">自定义 / 中转（OpenAI 兼容）</option>
               </select>
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
                 <span>API Base URL (接口路径地址)</span>
-                <span className="text-[11px] text-slate-500 font-normal">支持 DeepSeek/OpenAI 及各类中转接口</span>
+                <span className="text-[11px] text-slate-500 font-normal">
+                  {inputProvider === 'anthropic'
+                    ? 'Anthropic 官方或兼容网关地址'
+                    : inputProvider === 'local'
+                      ? '本地服务地址，如 Ollama / LM Studio'
+                      : '支持 DeepSeek/OpenAI 及各类中转接口'}
+                </span>
               </label>
               <input
                 type="text"
                 value={inputBaseURL}
                 onChange={(e) => setInputBaseURL(e.target.value)}
-                placeholder="例如: https://api.deepseek.com"
+                placeholder={PROVIDER_DEFAULT_BASE_URL[inputProvider]}
                 className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm"
               />
+              {inputProvider === 'local' && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                  本地服务通常无需 API Key，留空即可；Ollama 默认
+                  http://127.0.0.1:11434/v1，LM Studio 默认 http://127.0.0.1:1234/v1。
+                </p>
+              )}
+              {inputProvider === 'anthropic' && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                  使用 Anthropic Messages 接口（/v1/messages），需 sk-ant- 开头的 API Key。
+                </p>
+              )}
               {thirdPartyHost(inputBaseURL) && (
                 <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -1380,7 +1473,11 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-amber-800 mb-1.5 flex items-center justify-between">
-                <span>API Key (大模型密钥 - 服务端加密存储)</span>
+                <span>
+                  {inputProvider === 'local'
+                    ? 'API Key (本地服务可留空)'
+                    : 'API Key (大模型密钥 - 服务端加密存储)'}
+                </span>
                 {backendConfig?.hasKey && (
                   <span className="text-[11px] text-emerald-700 flex items-center space-x-1 font-semibold">
                     <CheckCircle2 className="w-3 h-3 text-emerald-600" />
@@ -1414,6 +1511,26 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                 onChange={(e) => setInputTemperature(Number(e.target.value))}
                 className="w-full accent-neutral-900 mt-2 cursor-pointer"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
+                <span>输出预算 (max_tokens)</span>
+                <span className="text-[11px] text-slate-500">留空或 0 = 默认 8192</span>
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={1024}
+                value={inputMaxTokens}
+                onChange={(e) => setInputMaxTokens(e.target.value)}
+                placeholder="默认 8192"
+                className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:border-neutral-900 focus:outline-none shadow-sm font-mono"
+              />
+              <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+                单次生成的总输出上限（正文 + 思考共用）。使用思考模型（DeepSeek-R1 /
+                GLM 思考 / MiniMax-M3 等）建议 16384 以上，否则思考可能烧尽预算导致空稿报错。
+              </p>
             </div>
           </div>
 

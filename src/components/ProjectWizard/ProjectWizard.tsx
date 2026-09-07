@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { BookProject, ProjectConfig, Character, WorldSetting, Volume, Chapter, WizardStep, StyleProfile, StyleConfig } from '../../types/novel';
 import { InspirationStep } from './InspirationStep';
 import { TitleReviewStep } from './TitleReviewStep';
 import { CharactersReviewStep } from './CharactersReviewStep';
 import { WorldReviewStep } from './WorldReviewStep';
 import { OutlineReviewStep } from './OutlineReviewStep';
-import { generateJSON } from '../../services/llmClient';
+import {
+  generateJSON,
+  setActiveAbortSignal,
+} from '../../services/llmClient';
 import {
   buildTitleAndSynopsisPrompt,
   buildCharactersPrompt,
@@ -74,6 +77,35 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  /** 生成已进行秒数：思考模型构思可能持续数分钟，需要可感知的进度 */
+  const [genElapsedSec, setGenElapsedSec] = useState(0);
+  const genAbortRef = useRef<AbortController | null>(null);
+
+  // 生成期统一入口：注入中止信号（generate* 未显式传 signal 时自动采用）
+  const beginGenerate = () => {
+    setIsGenerating(true);
+    setErrorMsg('');
+    setGenElapsedSec(0);
+    const ac = new AbortController();
+    genAbortRef.current = ac;
+    setActiveAbortSignal(ac.signal);
+  };
+  const endGenerate = () => {
+    setIsGenerating(false);
+    setActiveAbortSignal(null);
+    genAbortRef.current = null;
+  };
+  const cancelGenerate = () => {
+    genAbortRef.current?.abort();
+  };
+
+  // 生成中每秒计时
+  useEffect(() => {
+    if (!isGenerating) return;
+    const timer = setInterval(() => setGenElapsedSec((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [isGenerating]);
+
   /** UI 当前页；与 project.wizardStep 分离，避免「已完成」点步骤条把 ready 冲掉 */
   const [viewStep, setViewStep] = useState<WizardStep>(() => initialViewStep(project));
 
@@ -86,6 +118,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
+  const projectRef = useRef<BookProject>(project);
+  projectRef.current = project;
+
   const updateAndSave = async (updates: Partial<BookProject>) => {
     // 已完成书：禁止无意中把 wizardStep 改回非 ready（除非显式 ready）
     let nextUpdates = { ...updates };
@@ -97,13 +132,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       const { wizardStep: _drop, ...rest } = nextUpdates;
       nextUpdates = rest;
     }
-    const nextProject = {
-      ...project,
+    const current = projectRef.current;
+    const nextProject: BookProject = {
+      ...current,
       ...nextUpdates,
       lastModified: new Date().toISOString(),
     };
-    onProjectChange(nextProject);
     await saveProject(nextProject);
+    projectRef.current = nextProject;
+    onProjectChange(nextProject);
     return nextProject;
   };
 
@@ -121,7 +158,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     config: ProjectConfig,
     meta?: { styleProfileId?: string | null; profile?: StyleProfile }
   ) => {
-    setIsGenerating(true);
+    beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在全盘解构你的灵感逻辑，脑暴推导引人入胜的绝佳书名与底层梗概...');
     try {
@@ -174,7 +211,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'AI 推导书名发生错误，请检查网络或 API Key 设置');
     } finally {
-      setIsGenerating(false);
+      endGenerate();
     }
   };
 
@@ -187,7 +224,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     hooks: string[];
     coreConflict: string;
   }) => {
-    setIsGenerating(true);
+    beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在精心设计立体核心出场人物，埋藏隐藏暗线与绝密性格动机...');
     try {
@@ -198,11 +235,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
         synopsis: titleData.synopsis,
       });
 
+      const cur = projectRef.current;
       const styleBlock = formatStyleStructureForPrompt(
-        getActiveStyleProfile(project.styleConfig),
-        titleData.genre || project.genre || project.config.genre
+        getActiveStyleProfile(cur.styleConfig),
+        titleData.genre || cur.genre || cur.config.genre
       );
-      const prompt = buildCharactersPrompt(project.config, titleData.title, titleData.synopsis, styleBlock);
+      const prompt = buildCharactersPrompt(cur.config, titleData.title, titleData.synopsis, styleBlock);
       const res = await generateJSON<{ characters: Character[] }>(prompt, 0.75);
 
       await updateAndSave({
@@ -213,23 +251,24 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'AI 推导人物发生错误');
     } finally {
-      setIsGenerating(false);
+      endGenerate();
     }
   };
 
   // Step 3 -> Step 4
   const handleGenerateWorld = async (updatedChars: Character[]) => {
-    setIsGenerating(true);
+    beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在推导自洽森严的力量体系、地理势力以及绝不吃书的【绝对约束红线】...');
     try {
       await updateAndSave({ characters: updatedChars });
 
+      const cur = projectRef.current;
       const styleBlock = formatStyleStructureForPrompt(
-        getActiveStyleProfile(project.styleConfig),
-        project.genre || project.config.genre
+        getActiveStyleProfile(cur.styleConfig),
+        cur.genre || cur.config.genre
       );
-      const prompt = buildWorldbuildingPrompt(project.config, project.title, project.synopsis, updatedChars, styleBlock);
+      const prompt = buildWorldbuildingPrompt(cur.config, cur.title, cur.synopsis, updatedChars, styleBlock);
       const res = await generateJSON<{ settings: WorldSetting[] }>(prompt, 0.7);
 
       await updateAndSave({
@@ -240,26 +279,27 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'AI 推导设定发生错误');
     } finally {
-      setIsGenerating(false);
+      endGenerate();
     }
   };
 
   // Step 4 -> Step 5：分卷骨架 + 分批拆章（对齐目标章数，避免只拆前 30 章）
   const handleGenerateOutline = async (updatedSettings: WorldSetting[]) => {
-    setIsGenerating(true);
+    beginGenerate();
     setErrorMsg('');
     setProgressMsg('分卷骨架 + 分批拆章进行中（对齐目标章数，可能多轮 API，请稍候）…');
     try {
       await updateAndSave({ settings: updatedSettings });
 
+      const cur = projectRef.current;
       // 多轮拆章：volumes → 每批 ≤20 章，勿再用单次 buildOutlinePrompt
       const result = await generateFullOutline({
-        config: project.config,
-        title: project.title,
-        synopsis: project.synopsis,
-        characters: project.characters,
+        config: cur.config,
+        title: cur.title,
+        synopsis: cur.synopsis,
+        characters: cur.characters,
         settings: updatedSettings,
-        styleConfig: project.styleConfig,
+        styleConfig: cur.styleConfig,
         onProgress: (msg) => setProgressMsg(msg),
       });
 
@@ -283,13 +323,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             id: `chap-${Date.now()}-1`,
             number: 1,
             title: '第1章 起手转折',
-            summary: project.synopsis || '故事从这里开启',
+            summary: cur.synopsis || '故事从这里开启',
             wordCount: 0,
             status: '大纲待拆',
             content: '',
             volumeId: defaultVolId,
             volumeNumber: 1,
-            involvedCharacterIds: project.characters.map((ch) => ch.id),
+            involvedCharacterIds: cur.characters.map((ch) => ch.id),
             involvedSettingIds: updatedSettings.map((st) => st.id),
             beats: [],
             lastModified: new Date().toISOString(),
@@ -313,25 +353,26 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'AI 拆建大纲发生错误');
     } finally {
-      setIsGenerating(false);
+      endGenerate();
     }
   };
 
   // 第五步内「只补占位章」：保留现有分卷结构与已拆章，仅重写占位章梗概
   const handleFillPlaceholders = async () => {
-    setIsGenerating(true);
+    beginGenerate();
     setErrorMsg('');
     setProgressMsg('AI 正在为占位章补齐详案梗概（保留现有分卷与拆章结果，多轮 API，请稍候）…');
     try {
+      const cur = projectRef.current;
       const result = await fillPlaceholderChapters({
-        config: project.config,
-        title: project.title,
-        synopsis: project.synopsis,
-        characters: project.characters,
-        settings: project.settings,
-        styleConfig: project.styleConfig,
-        volumes: project.volumes,
-        chapters: project.chapters,
+        config: cur.config,
+        title: cur.title,
+        synopsis: cur.synopsis,
+        characters: cur.characters,
+        settings: cur.settings,
+        styleConfig: cur.styleConfig,
+        volumes: cur.volumes,
+        chapters: cur.chapters,
         onProgress: (msg) => setProgressMsg(msg),
       });
       // 无损增量：只替换 chapters，不动 volumes / currentChapterId
@@ -346,23 +387,25 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'AI 补齐占位章梗概发生错误');
     } finally {
-      setIsGenerating(false);
+      endGenerate();
     }
   };
 
   // Final confirmation step
   const handleFinishWizard = async (finalVolumes: Volume[], finalChapters: Chapter[]) => {
     // 强制落盘 ready（updateAndSave 对 ready 写入放行）
+    const current = projectRef.current;
     const nextProject: BookProject = {
-      ...project,
+      ...current,
       volumes: finalVolumes,
       chapters: finalChapters,
-      currentChapterId: finalChapters[0]?.id || project.currentChapterId,
+      currentChapterId: finalChapters[0]?.id || current.currentChapterId,
       wizardStep: 'ready',
       lastModified: new Date().toISOString(),
     };
-    onProjectChange(nextProject);
     await saveProject(nextProject);
+    projectRef.current = nextProject;
+    onProjectChange(nextProject);
     setViewStep('outline-review');
     onComplete(nextProject);
   };
@@ -468,6 +511,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onNext={handleGenerateTitle}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
+            genElapsedSec={genElapsedSec}
+            onCancelGenerate={cancelGenerate}
           />
         )}
 
@@ -486,6 +531,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onRegenerate={() => handleGenerateTitle(project.config)}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
+            genElapsedSec={genElapsedSec}
+            onCancelGenerate={cancelGenerate}
           />
         )}
 
@@ -506,6 +553,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             }
             isGenerating={isGenerating}
             progressMsg={progressMsg}
+            genElapsedSec={genElapsedSec}
+            onCancelGenerate={cancelGenerate}
           />
         )}
 
@@ -517,6 +566,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onRegenerate={() => handleGenerateWorld(project.characters)}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
+            genElapsedSec={genElapsedSec}
+            onCancelGenerate={cancelGenerate}
           />
         )}
 
@@ -531,6 +582,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onFillPlaceholders={handleFillPlaceholders}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
+            genElapsedSec={genElapsedSec}
+            onCancelGenerate={cancelGenerate}
           />
         )}
       </main>

@@ -40,6 +40,9 @@ function decryptCbc(key: Buffer, cipherTextWithIv: string): string {
     const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
     let decrypted = decipher.update(encryptedHex, 'hex', 'utf-8');
     decrypted += decipher.final('utf-8');
+    if (!/^[\x20-\x7E]+$/.test(decrypted)) {
+      return '';
+    }
     return decrypted;
   } catch {
     return '';
