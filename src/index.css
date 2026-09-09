@@ -187,6 +187,13 @@
     border-color: var(--app-input-border);
   }
 
+  /* 下拉菜单选项原生弹窗适配（保障明亮与暗色模式下下拉弹窗均为纯色高对比度，消除白底浅字或透明穿透） */
+  select option,
+  option {
+    background-color: #ffffff;
+    color: #0f172a;
+  }
+
   /* 链接与正文可读性 */
   a {
     color: inherit;
@@ -535,9 +542,17 @@ html.dark select {
   background-color: var(--app-input-bg) !important;
   color: #ffffff !important;
   border-color: var(--app-input-border) !important;
+  color-scheme: dark;
 }
 html.dark textarea.text-transparent {
   color: transparent !important;
+}
+
+/* 深色模式下拉选项弹窗：强制不透明深底与明亮浅字，消除透明背景导致的白底浅字现象 */
+html.dark select option,
+html.dark option {
+  background-color: #1e1e22 !important;
+  color: #f4f4f5;
 }
 
 /* 深色模式下的主按钮（高对比浅底黑字） */
@@ -732,22 +747,25 @@ html.dark .border-\[\#999999\] {
   border-color: var(--app-border) !important;
 }
 html.dark .bg-\[\#f0f9f4\] {
-  background-color: rgba(6, 78, 59, 0.25) !important;
+  background-color: #0c2a18 !important;
 }
 html.dark .text-\[\#1b5e20\] {
   color: #6ee7b7 !important;
 }
 html.dark .border-\[\#2e8b57\] {
-  border-color: rgba(16, 185, 129, 0.3) !important;
+  border-color: #1e5a32 !important;
 }
 html.dark .bg-\[\#fff5f5\] {
-  background-color: rgba(136, 19, 55, 0.25) !important;
+  background-color: #321117 !important;
 }
 html.dark .text-\[\#b71c1c\] {
   color: #fda4af !important;
 }
 html.dark .border-\[\#d32f2f\] {
-  border-color: rgba(244, 63, 94, 0.3) !important;
+  border-color: #7f1d2e !important;
+}
+html.dark .border-\[\#e0b4b4\] {
+  border-color: #7f1d2e !important;
 }
 html.dark .border-white {
   border-color: var(--app-bg) !important;

@@ -71,12 +71,12 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
   const getStatusStyle = (status: CharacterStatus) => {
     switch (status) {
       case '活跃':
-        return 'bg-[#f0f9f4] text-[#1b5e20] border-[#2e8b57]';
+        return 'bg-[#f0f9f4] text-[#1b5e20] border-[#2e8b57] dark:bg-[#0c2a18] dark:text-[#6ee7b7] dark:border-[#1e5a32]';
       case '重伤':
       case '被捕受困':
-        return 'bg-[#fff5f5] text-[#b71c1c] border-[#d32f2f]';
+        return 'bg-[#fff5f5] text-[#b71c1c] border-[#d32f2f] dark:bg-[#321117] dark:text-[#fda4af] dark:border-[#7f1d2e]';
       default:
-        return 'bg-[#f5f5f5] text-[#555555] border-[#999999]';
+        return 'bg-[#f5f5f5] text-[#555555] border-[#999999] dark:bg-[#202024] dark:text-[#e4e4e7] dark:border-[#4a4a52]';
     }
   };
 
@@ -221,13 +221,13 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                   <select
                     value={formData.role}
                     onChange={(e) => setFormData({ ...formData, role: e.target.value as CharacterRole })}
-                    className="w-full p-2 border border-[#cccccc] rounded text-black bg-white focus:outline-none focus:border-black"
+                    className="w-full p-2 border border-[#cccccc] dark:border-neutral-700 rounded text-black dark:text-neutral-100 bg-white dark:bg-neutral-800 focus:outline-none focus:border-black dark:focus:border-neutral-400"
                   >
-                    <option value="主角">主角</option>
-                    <option value="重要配角">重要配角</option>
-                    <option value="反派">反派</option>
-                    <option value="势力首领">势力首领</option>
-                    <option value="神秘路人">神秘路人</option>
+                    <option value="主角" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">主角</option>
+                    <option value="重要配角" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">重要配角</option>
+                    <option value="反派" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">反派</option>
+                    <option value="势力首领" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">势力首领</option>
+                    <option value="神秘路人" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">神秘路人</option>
                   </select>
                 </div>
                 <div>
@@ -235,13 +235,13 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                   <select
                     value={formData.status}
                     onChange={(e) => setFormData({ ...formData, status: e.target.value as CharacterStatus })}
-                    className="w-full p-2 border border-[#cccccc] rounded text-black bg-white focus:outline-none focus:border-black"
+                    className="w-full p-2 border border-[#cccccc] dark:border-neutral-700 rounded text-black dark:text-neutral-100 bg-white dark:bg-neutral-800 focus:outline-none focus:border-black dark:focus:border-neutral-400"
                   >
-                    <option value="活跃">活跃</option>
-                    <option value="重伤">重伤</option>
-                    <option value="闭关突破">闭关突破</option>
-                    <option value="被捕受困">被捕受困</option>
-                    <option value="已阵亡/退出">已阵亡/退出</option>
+                    <option value="活跃" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">活跃</option>
+                    <option value="重伤" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">重伤</option>
+                    <option value="闭关突破" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">闭关突破</option>
+                    <option value="被捕受困" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">被捕受困</option>
+                    <option value="已阵亡/退出" className="bg-white text-neutral-900 dark:bg-[#1e1e22] dark:text-neutral-100">已阵亡/退出</option>
                   </select>
                 </div>
                 <div>
@@ -315,14 +315,14 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                   <select
                     value={selectedChar.status}
                     onChange={(e) => handleToggleStatus(e.target.value as CharacterStatus)}
-                    className={`text-xs px-2 py-0.5 rounded border font-medium ${getStatusStyle(selectedChar.status)} cursor-pointer`}
+                    className={`text-xs pl-2 pr-6 py-0.5 rounded border font-medium ${getStatusStyle(selectedChar.status)} cursor-pointer transition-colors focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500`}
                     title="修改角色生存状态（改变后自检引擎会重新审计相关章节）"
                   >
-                    <option value="活跃">活跃</option>
-                    <option value="重伤">重伤</option>
-                    <option value="闭关突破">闭关突破</option>
-                    <option value="被捕受困">被捕受困</option>
-                    <option value="已阵亡/退出">已阵亡/退出</option>
+                    <option value="活跃" className="bg-white text-emerald-800 dark:bg-[#1e1e22] dark:text-emerald-300 font-medium">活跃</option>
+                    <option value="重伤" className="bg-white text-rose-800 dark:bg-[#1e1e22] dark:text-rose-300 font-medium">重伤</option>
+                    <option value="闭关突破" className="bg-white text-neutral-700 dark:bg-[#1e1e22] dark:text-neutral-200 font-medium">闭关突破</option>
+                    <option value="被捕受困" className="bg-white text-rose-800 dark:bg-[#1e1e22] dark:text-rose-300 font-medium">被捕受困</option>
+                    <option value="已阵亡/退出" className="bg-white text-neutral-700 dark:bg-[#1e1e22] dark:text-neutral-200 font-medium">已阵亡/退出</option>
                   </select>
                   <span className="text-xs bg-black text-white px-2 py-0.5 rounded font-medium">
                     {selectedChar.role}
