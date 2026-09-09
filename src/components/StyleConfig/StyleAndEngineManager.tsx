@@ -115,6 +115,8 @@ interface StyleAndEngineManagerProps {
   onUpdateStyleConfig: (
     config: StyleConfig | ((prev: StyleConfig) => StyleConfig)
   ) => Promise<void> | void;
+  /** 删除文风仿写档案（App 侧统一清全局库 + 清理 config 悬空引用） */
+  onDeleteStyleProfile?: (id: string) => Promise<void> | void;
   /** 同步到 App 顶栏/工作流状态条，避免只写在页内看不见 */
   onNotifyStatus?: (msg: string) => void;
   /** 从快照找回丢失的文风仿写档案 */
@@ -198,6 +200,7 @@ const SETTING_NAV: {
 export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
   styleConfig,
   onUpdateStyleConfig,
+  onDeleteStyleProfile,
   onNotifyStatus,
   onRecoverStyleProfiles,
   genre,
@@ -2615,6 +2618,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
         <StyleImitatePanel
           styleConfig={styleConfig}
           onUpdateStyleConfig={onUpdateStyleConfig}
+          onDeleteStyleProfile={onDeleteStyleProfile}
         />
       </div>
       )}

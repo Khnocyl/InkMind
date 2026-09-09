@@ -30,6 +30,9 @@ import {
 } from './services/draftBackup';
 import { migrateLegacySnapshots } from './services/snapshots';
 import { removeCharacterFromProject, updateCharacterInList } from './services/characterOps';
+import { pruneDeletedStyleReferences } from './services/styleProfileCleanup';
+import { removeGlobalStyleProfile } from './services/styleProfileStore';
+import { removeStyleProfile } from './services/styleImitate';
 import { useProjectPersistence } from './hooks/useProjectPersistence';
 import { useProjectActions } from './hooks/useProjectActions';
 import { useChapterActions } from './hooks/useChapterActions';
@@ -868,13 +871,26 @@ export default function App() {
         {activeTab === 'style' && (
           <StyleAndEngineManager
             styleConfig={styleConfig}
-            onUpdateStyleConfig={(updated) => {
-              void handleUpdateAndPersistProject((prev) => ({
+            onUpdateStyleConfig={(updated) =>
+              handleUpdateAndPersistProject((prev) => ({
                 styleConfig:
                   typeof updated === 'function'
                     ? updated(prev.styleConfig || defaultStyleConfig)
                     : updated,
-              }));
+              })).then(() => undefined)
+            }
+            onDeleteStyleProfile={(id) => {
+              const prev = projectRef.current;
+              if (!prev) return;
+              const sc = prev.styleConfig || defaultStyleConfig;
+              const removed = (sc.styleProfiles || []).filter((p) => p.id === id);
+              // 1) 清全局库  2) 清 config 里对它的悬空引用（否则向导下拉仍显示已删档案）
+              removeGlobalStyleProfile(id);
+              const patch = pruneDeletedStyleReferences(prev, removed);
+              return handleUpdateAndPersistProject({
+                styleConfig: removeStyleProfile(sc, id),
+                ...patch,
+              }).then(() => undefined);
             }}
             onNotifyStatus={(msg) => setStatusMessage(msg)}
             onRecoverStyleProfiles={() =>

@@ -34,11 +34,14 @@ interface StyleImitatePanelProps {
   onUpdateStyleConfig: (
     config: StyleConfig | ((prev: StyleConfig) => StyleConfig)
   ) => Promise<void> | void;
+  /** 删除档案（由 App 统一处理：清全局库 + 清 config 悬空引用）；缺省时退化为仅改本书 */
+  onDeleteStyleProfile?: (id: string) => Promise<void> | void;
 }
 
 export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   styleConfig,
   onUpdateStyleConfig,
+  onDeleteStyleProfile,
 }) => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [sampleText, setSampleText] = useState('');
@@ -120,9 +123,14 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('删除该文风档案？写作将不再使用其指纹/指南。')) return;
-    await onUpdateStyleConfig((prev) => removeStyleProfile(prev, id));
-    // R3 收尾·文风全局化：同步删除全局库
-    removeGlobalStyleProfile(id);
+    if (onDeleteStyleProfile) {
+      // App 侧统一处理：清本书档案 + 全局库 + config 里对已删档案的悬空引用
+      await onDeleteStyleProfile(id);
+    } else {
+      await onUpdateStyleConfig((prev) => removeStyleProfile(prev, id));
+      // R3 收尾·文风全局化：同步删除全局库
+      removeGlobalStyleProfile(id);
+    }
     if (editId === id) setEditId(null);
     setMsg('已删除文风档案（已保存）');
   };

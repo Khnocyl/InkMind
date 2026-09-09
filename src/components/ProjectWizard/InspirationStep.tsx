@@ -123,12 +123,16 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     }
     const ws = initialConfig.writingStyle || '';
     if (ws && STYLE_PRESETS.includes(ws)) return ws;
-    // 与某档案 authorStyle 匹配
+    // 与某档案 authorStyle 匹配（或「仿写·<名字>：…」前缀匹配仍存在的档案）
     const hit = mergedProfiles.find(
-      (x) => x.profile.authorStyle === ws || `仿写·${x.profile.name}` === ws
+      (x) =>
+        x.profile.authorStyle === ws || ws.startsWith(`仿写·${x.profile.name}`)
     );
     if (hit) return `profile:${hit.profile.id}`;
     if (ws && !STYLE_PRESETS.includes(ws)) {
+      // 已删档案留下的「仿写·<名字>：…」文案：不再当作可选配置显示
+      // （用户反馈：删掉的文风仍出现在下拉里）
+      if (ws.startsWith('仿写·')) return STYLE_PRESETS[0];
       // 自定义历史值：挂到自定义项
       return ws;
     }
@@ -233,6 +237,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
           profile: p,
         };
       }
+      // 档案已不存在（被删/切书）：回落默认预设，别把 "profile:<id>" 写进配置
+      return { writingStyle: STYLE_PRESETS[0], styleProfileId: null };
     }
     return { writingStyle: key, styleProfileId: null };
   };

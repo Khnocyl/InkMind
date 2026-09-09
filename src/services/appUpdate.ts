@@ -7,7 +7,7 @@ declare const __APP_VERSION__: string;
 
 /** 构建注入缺失时（如个别测试环境）的后备值，正常发版走 define 注入 */
 export const CURRENT_APP_VERSION: string =
-  typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.2';
+  typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.3';
 export const GITHUB_REPO = 'Khnocyl/InkMind';
 export const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
 
