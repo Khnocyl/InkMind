@@ -58,6 +58,8 @@ export interface MemoryQueryInput {
    * 用真·向量结果，同步调用方（意图生成/写前检查）不传则维持本地检索。
    */
   semantic?: SemanticBoostMaps | null;
+  /** 语义后端来源（仅用于快照可观测性；不传按 local 记） */
+  semanticMode?: 'embedding' | 'local';
 }
 
 export interface ScoredFact {
@@ -95,61 +97,84 @@ const STOP = new Set([
   'chapter', 'story', 'focus', 'avoid',
 ]);
 
-/** 从意图/梗概/角色抽检索词 */
+/** 从意图/梗概/角色抽检索词（按重要度排序，避免 n-gram 挤掉实体名） */
 export function extractMemoryQueryTerms(params: {
   chapter: Chapter;
   characters?: Character[];
   intent?: ChapterIntent | null;
 }): string[] {
   const { chapter, characters = [], intent } = params;
-  const bits: string[] = [];
-  bits.push(chapter.title || '');
-  bits.push(chapter.summary || '');
-  bits.push(intent?.endingHook || chapter.intent?.endingHook || '');
-  for (const s of intent?.mustDo || chapter.intent?.mustDo || []) bits.push(s);
-  for (const s of intent?.mustAvoid || chapter.intent?.mustAvoid || []) bits.push(s);
-  for (const s of intent?.emotionalBeats || chapter.intent?.emotionalBeats || []) bits.push(s);
+  const out: string[] = [];
+  const seen = new Set<string>();
 
+  // 1) 出场角色名 / 称号 / 地点 —— 最高优先，绝不能被后面的 n-gram 挤掉
   const involved = new Set(chapter.involvedCharacterIds || []);
   for (const c of characters) {
     if (involved.has(c.id) || involved.size === 0) {
-      if (c.name) bits.push(c.name);
-      if (c.alias) bits.push(c.alias);
-      if (c.currentLocation) bits.push(c.currentLocation);
+      pushTerm(out, seen, c.name);
+      pushTerm(out, seen, c.alias);
+      pushTerm(out, seen, c.currentLocation);
     }
   }
 
-  return uniqueTerms(bits.join('\n')).slice(0, 16);
+  // 2) 写前意图（必须做/禁止做/钩子/情绪）
+  const it = intent || chapter.intent;
+  if (it) {
+    for (const s of it.mustDo || []) pushTextTerms(s, out, seen, 3);
+    for (const s of it.mustAvoid || []) pushTextTerms(s, out, seen, 2);
+    pushTextTerms(it.endingHook || '', out, seen, 2);
+    for (const s of it.emotionalBeats || []) pushTerm(out, seen, s);
+  }
+
+  // 3) 标题 / 梗概
+  pushTextTerms(chapter.title || '', out, seen, 3);
+  pushTextTerms(chapter.summary || '', out, seen, 5);
+
+  return out.slice(0, 18);
 }
 
-function uniqueTerms(text: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const push = (t: string) => {
-    const k = t.toLowerCase();
-    if (seen.has(k) || STOP.has(k) || STOP.has(t)) return;
-    if (t.length < 2) return;
-    seen.add(k);
-    out.push(t);
-  };
+function pushTerm(out: string[], seen: Set<string>, t: string | undefined): void {
+  const s = (t || '').trim();
+  if (s.length < 2) return;
+  const k = s.toLowerCase();
+  if (seen.has(k) || STOP.has(k) || STOP.has(s)) return;
+  seen.add(k);
+  out.push(s);
+}
 
-  const normalized = text.replace(/第\d+章/g, ' ');
-  for (const m of normalized.match(/[a-zA-Z]{3,}/g) || []) {
-    push(m);
-  }
-  for (const seg of normalized.match(/[\u4e00-\u9fff]{2,}/g) || []) {
-    if (seg.length <= 6) {
-      push(seg);
-    } else {
-      // 滑窗 2–4 字
-      for (let n = 4; n >= 2; n--) {
-        for (let i = 0; i + n <= Math.min(seg.length, 12); i++) {
-          push(seg.slice(i, i + n));
-        }
-      }
+/**
+ * 中文虚词/助词切分点：用它们把长句切成「词组」，再取 2–6 字整词。
+ * 没有分词器时，这比全量滑窗 n-gram 精确得多——旧实现会把前 12 个字的所有
+ * 2/3/4-gram 灌满预算，导致人名与关键词全部落选（实测：沈砚/账册/虎符缺失）。
+ */
+const CN_SPLIT = /[的了在与和把被对向从到为是有也就都而并或过着将之其，、；：！？。,.!?;:（）()【】「」“”"'’\s]+/;
+
+/** 把一段文本拆成候选词：短片段整取；长片段按虚词切开，仍长则限量取 4-gram */
+function pushTextTerms(
+  text: string,
+  out: string[],
+  seen: Set<string>,
+  gramBudget: number
+): void {
+  const normalized = (text || '').replace(/第\d+章/g, ' ');
+  for (const m of normalized.match(/[a-zA-Z]{3,}/g) || []) pushTerm(out, seen, m);
+
+  let grams = gramBudget;
+  for (const chunk of normalized.split(CN_SPLIT)) {
+    if (chunk.length < 2) continue;
+    if (chunk.length <= 6) {
+      pushTerm(out, seen, chunk);
+      continue;
+    }
+    // 过长词组：首、中、尾各取一个 4-gram，而不是滑窗全取
+    const positions = [0, Math.floor((chunk.length - 4) / 2), chunk.length - 4]
+      .filter((p, i, arr) => p >= 0 && arr.indexOf(p) === i);
+    for (const p of positions) {
+      if (grams <= 0) break;
+      pushTerm(out, seen, chunk.slice(p, p + 4));
+      grams -= 1;
     }
   }
-  return out;
 }
 
 /** 事实在 chapterNumber 是否有效 */
@@ -452,7 +477,7 @@ export function retrieveMemoryForChapter(input: MemoryQueryInput): MemoryRetriev
   if (debtThreads.length) previewParts.push(`债务${debtThreads.length}`);
   if (digests.length) previewParts.push(`摘要${digests.length}`);
   if (relatedChapters.length) previewParts.push(`相关章${relatedChapters.length}`);
-  if (semantic) previewParts.push('语义');
+  if (semantic) previewParts.push(input.semanticMode === 'embedding' ? '语义·向量' : '语义·本地');
   if (terms.length) previewParts.push(`词:${terms.slice(0, 4).join('/')}`);
   const tierHint = isEpic
     ? 'AI长跑：热=债务+角色/语义 · 温=弧/rolling · 冷=mega/super+相关章'
@@ -479,6 +504,7 @@ export function retrieveMemoryForChapter(input: MemoryQueryInput): MemoryRetriev
     source,
     tierHint,
     semanticUsed: !!semantic,
+    semanticMode: semantic ? (input.semanticMode ?? 'local') : undefined,
   };
 
   return {

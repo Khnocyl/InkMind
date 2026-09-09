@@ -707,8 +707,10 @@ export interface MemoryInjectionSnapshot {
   source: 'retrieval' | 'fallback_all';
   /** 长篇分层：hot=近章 hot+debt；warm=卷摘要；cold=检索旧事实 */
   tierHint?: string;
-  /** 是否启用了本地语义（TF-IDF）加持 */
+  /** 是否启用了语义加持（本地 TF-IDF 或真·向量都算） */
   semanticUsed?: boolean;
+  /** 语义后端：embedding=真·向量检索；local=本地 TF-IDF 降级 */
+  semanticMode?: 'embedding' | 'local';
 }
 
 /**

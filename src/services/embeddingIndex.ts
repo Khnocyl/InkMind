@@ -107,15 +107,18 @@ function hashText(text: string): number {
   return h ^ text.length;
 }
 
-function cacheKey(projectId: string, model: string): string {
-  return `embvec:${projectId}:${model}`;
+function cacheKey(projectId: string, model: string, dims?: number | null): string {
+  // 维度必须进 key：同模型名改了 dimensions（或服务端默认维度变化）时，
+  // 旧向量与新查询向量长度不一致，余弦会被算成「前 N 维部分点积」→ 相似度是垃圾。
+  return `embvec:${projectId}:${model}:${dims && dims > 0 ? dims : 'auto'}`;
 }
 
 async function loadVecCache(
   projectId: string,
-  model: string
+  model: string,
+  dims?: number | null
 ): Promise<ProjectVecCache> {
-  const key = cacheKey(projectId, model);
+  const key = cacheKey(projectId, model, dims);
   const mem = memCaches.get(key);
   if (mem) return mem;
   try {
@@ -139,8 +142,12 @@ async function loadVecCache(
   return fresh;
 }
 
-async function saveVecCache(projectId: string, cache: ProjectVecCache): Promise<void> {
-  const key = cacheKey(projectId, cache.model);
+async function saveVecCache(
+  projectId: string,
+  cache: ProjectVecCache,
+  dims?: number | null
+): Promise<void> {
+  const key = cacheKey(projectId, cache.model, dims);
   memCaches.set(key, cache);
   try {
     const db = await initDB();
@@ -160,7 +167,9 @@ async function saveVecCache(projectId: string, cache: ProjectVecCache): Promise<
 // ─── 向量检索本体 ──────────────────────────────────────────────────────
 
 function cosineVec(a: Float32Array, b: Float32Array): number {
-  const n = Math.min(a.length, b.length);
+  // 维度不一致说明缓存与当前模型不匹配：宁可判 0，也不做「前 N 维部分点积」
+  if (a.length !== b.length) return 0;
+  const n = a.length;
   let dot = 0;
   let na = 0;
   let nb = 0;
@@ -186,6 +195,7 @@ async function semanticBoostViaEmbedding(
 ): Promise<SemanticBoostResult> {
   const cfg = await getEmbeddingConfig();
   const model = cfg.modelName.trim();
+  const dims = cfg.dimensions ?? null;
   const docs = buildSemanticCorpus({
     memory: params.memory,
     chapters: params.chapters,
@@ -195,7 +205,7 @@ async function semanticBoostViaEmbedding(
     throw new Error('空 query 或空语料');
   }
 
-  const cache = await loadVecCache(params.projectId, model);
+  const cache = await loadVecCache(params.projectId, model, dims);
   const need: { idx: number; id: string; text: string }[] = [];
   for (let i = 0; i < docs.length; i++) {
     const d = docs[i];
@@ -216,7 +226,7 @@ async function semanticBoostViaEmbedding(
     });
   }
   if (need.length > 0) {
-    await saveVecCache(params.projectId, cache);
+    await saveVecCache(params.projectId, cache, dims);
   }
 
   const [queryVecRaw] = await embedTexts([query.slice(0, 2000)]);
@@ -328,6 +338,9 @@ export async function retrieveMemoryForChapterAsync(
   });
   return retrieveMemoryForChapter({
     ...input,
-    ...(semantic.mode === 'embedding' ? { semantic } : {}),
+    // 本地 TF-IDF 结果同样要传进去：否则 retrieveMemoryForChapter 会再算一遍
+    // （200 章语料 × 每章两次检索，白白翻倍）。
+    semantic,
+    semanticMode: semantic.mode,
   });
 }

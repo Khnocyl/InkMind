@@ -432,7 +432,13 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
       severity: debts.length > 0 ? 'warn' : 'ok',
       summary: `相关注入 ${retrieval.facts.length} 事实 · ${retrieval.threads.length} 伏笔${
         debts.length ? ` · 债务 ${debts.length}` : ''
-      }${retrieval.snapshot.semanticUsed ? ' · 语义' : ''}${
+      }${
+        retrieval.snapshot.semanticUsed
+          ? retrieval.snapshot.semanticMode === 'embedding'
+            ? ' · 向量语义'
+            : ' · 本地语义'
+          : ''
+      }${
         retrieval.relatedChapters?.length
           ? ` · 相关章${retrieval.relatedChapters.length}`
           : ''
