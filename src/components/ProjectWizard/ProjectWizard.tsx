@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { BookProject, ProjectConfig, Character, WorldSetting, Volume, Chapter, WizardStep, StyleProfile, StyleConfig } from '../../types/novel';
 import { InspirationStep } from './InspirationStep';
 import { TitleReviewStep } from './TitleReviewStep';
@@ -27,7 +27,7 @@ import {
 import { ArrowLeft, Library, X } from 'lucide-react';
 import { WizardStepper } from './WizardStepper';
 import { WindowControls } from '../WindowControls';
-import { WizardDraftSaver } from '../../services/wizardDraft';
+import { WizardDraftSaver, wizardDoneSteps } from '../../services/wizardDraft';
 
 // 防止 tree-shake 掉 buildOutlinePrompt（兼容热更新残留）
 void buildOutlinePrompt;
@@ -113,6 +113,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
   const persistedReady = isWizardReady(project.wizardStep);
   const currentStep = viewStep;
 
+  /**
+   * 各步「是否已有产出」——用于步骤条圆点状态。
+   * 按项目真实数据判断（而不是「位置在左边」），这样直接跳步后状态依然准确，
+   * 也便于用户从任意一步继续（例如书名满意、只想重跑角色）。
+   */
+  const doneSteps = useMemo(() => wizardDoneSteps(project), [project]);
+
   // 换书时同步视图步
   useEffect(() => {
     setViewStep(initialViewStep(project));
@@ -181,6 +188,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     config: ProjectConfig,
     meta?: { styleProfileId?: string | null; profile?: StyleProfile }
   ) => {
+    // 允许从任意一步进入，但缺前置输入时给出明确提示而不是生成垃圾
+    if (!config.inspiration?.trim()) {
+      setErrorMsg('请先在第 1 步填写灵感或故事梗概，再让 AI 推导书名。');
+      setViewStep('inspiration');
+      return;
+    }
     beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在全盘解构你的灵感逻辑，脑暴推导引人入胜的绝佳书名与底层梗概...');
@@ -247,15 +260,26 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     hooks: string[];
     coreConflict: string;
   }) => {
+    // 允许直接从第 3 步开始：书名/梗概为空时回落到灵感或项目已有值
+    const effectiveTitle = titleData.title?.trim() || project.title?.trim() || '';
+    const effectiveSynopsis =
+      titleData.synopsis?.trim() ||
+      project.synopsis?.trim() ||
+      project.config?.inspiration?.trim() ||
+      '';
+    if (!effectiveTitle && !effectiveSynopsis) {
+      setErrorMsg('请先在第 1/2 步填写灵感或书名梗概，再让 AI 推导角色。');
+      return;
+    }
     beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在精心设计立体核心出场人物，埋藏隐藏暗线与绝密性格动机...');
     try {
       await updateAndSave({
-        title: titleData.title,
+        title: effectiveTitle || titleData.title,
         subtitle: titleData.subtitle,
         genre: titleData.genre,
-        synopsis: titleData.synopsis,
+        synopsis: effectiveSynopsis,
       });
 
       const cur = projectRef.current;
@@ -263,7 +287,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
         getActiveStyleProfile(cur.styleConfig),
         titleData.genre || cur.genre || cur.config.genre
       );
-      const prompt = buildCharactersPrompt(cur.config, titleData.title, titleData.synopsis, styleBlock);
+      const prompt = buildCharactersPrompt(
+        cur.config,
+        effectiveTitle,
+        effectiveSynopsis,
+        styleBlock
+      );
       const res = await generateJSON<{ characters: Character[] }>(prompt, 0.75);
 
       await updateAndSave({
@@ -280,6 +309,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
   // Step 3 -> Step 4
   const handleGenerateWorld = async (updatedChars: Character[]) => {
+    if (!updatedChars.length) {
+      setErrorMsg('请先在第三步生成或新建至少一个角色，再让 AI 推导世界观。');
+      setViewStep('characters-review');
+      return;
+    }
     beginGenerate();
     setErrorMsg('');
     setProgressMsg('正在推导自洽森严的力量体系、地理势力以及绝不吃书的【绝对约束红线】...');
@@ -308,6 +342,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
   // Step 4 -> Step 5：分卷骨架 + 分批拆章（对齐目标章数，避免只拆前 30 章）
   const handleGenerateOutline = async (updatedSettings: WorldSetting[]) => {
+    if (!(projectRef.current.characters || []).length) {
+      setErrorMsg('请先在第三步生成核心角色，再让 AI 拆建分卷与章节大纲。');
+      setViewStep('characters-review');
+      return;
+    }
     beginGenerate();
     setErrorMsg('');
     setProgressMsg('分卷骨架 + 分批拆章进行中（对齐目标章数，可能多轮 API，请稍候）…');
@@ -416,6 +455,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
   // Final confirmation step
   const handleFinishWizard = async (finalVolumes: Volume[], finalChapters: Chapter[]) => {
+    // 允许直接跳到第 5 步，但不能在没有任何章节时把书标成「已完成孵化」
+    if (!finalChapters.length) {
+      setErrorMsg('至少需要一章大纲才能完成孵化：请先在第 4 步生成分卷与章节。');
+      return;
+    }
     // 先把挂起的草稿冲刷掉，避免「标 ready 之后草稿又写回」造成步骤错乱
     await draftSaverRef.current?.flush();
     // 强制落盘 ready（updateAndSave 对 ready 写入放行）
@@ -491,6 +535,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
           <WizardStepper
             steps={STEPS_LIST}
             currentStep={currentStep}
+            doneSteps={doneSteps}
             allCompleted={persistedReady}
             onStepSelect={goToStep}
           />

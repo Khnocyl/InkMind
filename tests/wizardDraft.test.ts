@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
-import { WizardDraftSaver } from '../src/services/wizardDraft';
+import { WizardDraftSaver, wizardDoneSteps } from '../src/services/wizardDraft';
 import { loadProject, saveProject } from '../src/services/storage';
 import type { BookProject } from '../src/types/novel';
 
@@ -79,6 +79,50 @@ describe('WizardDraftSaver', () => {
     await saver.flush();
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ title: 'B' });
+  });
+});
+
+describe('wizardDoneSteps · 按真实产出判定步骤完成态', () => {
+  const base = {
+    config: { inspiration: '' },
+    title: '',
+    synopsis: '',
+    characters: [],
+    settings: [],
+    chapters: [],
+  } as unknown as BookProject;
+
+  it('空项目 → 无完成步', () => {
+    expect(wizardDoneSteps(base)).toEqual([]);
+  });
+
+  it('只有灵感 → 第 1 步完成', () => {
+    expect(
+      wizardDoneSteps({ ...base, config: { inspiration: '灵感' } } as BookProject)
+    ).toEqual(['inspiration']);
+  });
+
+  it('书名 + 梗概 → 第 2 步完成（缺一不算）', () => {
+    const p = { ...base, config: { inspiration: 'x' }, title: '书名' } as BookProject;
+    expect(wizardDoneSteps(p)).toEqual(['inspiration']);
+    expect(wizardDoneSteps({ ...p, synopsis: '梗概' })).toEqual([
+      'inspiration',
+      'title-review',
+    ]);
+  });
+
+  it('角色/设定/章节各自独立判定', () => {
+    const p = {
+      ...base,
+      characters: [{ id: 'c1' }],
+      settings: [{ id: 's1' }],
+      chapters: [{ id: 'ch1' }],
+    } as unknown as BookProject;
+    expect(wizardDoneSteps(p)).toEqual([
+      'characters-review',
+      'world-review',
+      'outline-review',
+    ]);
   });
 });
 

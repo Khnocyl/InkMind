@@ -29,6 +29,7 @@ import {
   cleanupStaleDrafts,
 } from './services/draftBackup';
 import { migrateLegacySnapshots } from './services/snapshots';
+import { removeCharacterFromProject, updateCharacterInList } from './services/characterOps';
 import { useProjectPersistence } from './hooks/useProjectPersistence';
 import { useProjectActions } from './hooks/useProjectActions';
 import { useChapterActions } from './hooks/useChapterActions';
@@ -629,8 +630,13 @@ export default function App() {
 
   const handleUpdateCharacter = (updatedChar: Character) => {
     handleUpdateAndPersistProject((prev) => ({
-      characters: (prev.characters || []).map((c) => (c.id === updatedChar.id ? updatedChar : c)),
+      characters: updateCharacterInList(prev.characters, updatedChar),
     }));
+  };
+
+  /** 删除角色：同时清理章节出场引用与其他角色指向他的关系（防悬空 id） */
+  const handleDeleteCharacter = (id: string) => {
+    handleUpdateAndPersistProject((prev) => removeCharacterFromProject(prev, id));
   };
 
   const handleAddSetting = (newSet: WorldSetting) => {
@@ -844,6 +850,7 @@ export default function App() {
             currentChapterNumber={activeChapter?.number}
             onAddCharacter={handleAddCharacter}
             onUpdateCharacter={handleUpdateCharacter}
+            onDeleteCharacter={handleDeleteCharacter}
             onAddSetting={handleAddSetting}
             onUpdateMemory={(memory) => handleUpdateAndPersistProject({ memory })}
             onPatchBible={(patch) => handleUpdateAndPersistProject(patch)}

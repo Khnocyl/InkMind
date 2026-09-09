@@ -1,20 +1,25 @@
 import React, { useState } from 'react';
 import type { Character, CharacterRole, CharacterStatus } from '../../types/novel';
-import { UserPlus, ShieldAlert, Heart, MapPin, Eye, Award } from 'lucide-react';
+import { UserPlus, ShieldAlert, Heart, MapPin, Eye, Award, Pencil, Trash2 } from 'lucide-react';
 
 interface CharacterManagerProps {
   characters: Character[];
   onAddCharacter: (character: Character) => void;
   onUpdateCharacter: (character: Character) => void;
+  /** 删除角色（App 侧会级联清理章节引用与其他角色的关系） */
+  onDeleteCharacter: (id: string) => void;
 }
 
 export const CharacterManager: React.FC<CharacterManagerProps> = ({
   characters,
   onAddCharacter,
   onUpdateCharacter,
+  onDeleteCharacter,
 }) => {
   const [selectedCharId, setSelectedCharId] = useState<string>(characters[0]?.id || '');
   const [isCreating, setIsCreating] = useState(false);
+  /** 编辑模式：复用录入表单，提交时走 onUpdateCharacter */
+  const [isEditing, setIsEditing] = useState(false);
 
   const [formData, setFormData] = useState<Partial<Character>>({
     name: '',
@@ -31,6 +36,37 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
   });
 
   const selectedChar = characters.find((c) => c.id === selectedCharId) || characters[0];
+  const isFormOpen = isCreating || isEditing;
+
+  const startCreate = () => {
+    setIsCreating(true);
+    setIsEditing(false);
+    setFormData({
+      name: '',
+      alias: '',
+      role: '重要配角',
+      status: '活跃',
+      realmOrTitle: '筑基初境',
+      currentLocation: '青云宗外门',
+      personality: '',
+      appearance: '',
+      background: '',
+      secretNotes: '',
+      relations: [],
+    });
+  };
+
+  const startEdit = () => {
+    if (!selectedChar) return;
+    setIsCreating(false);
+    setIsEditing(true);
+    setFormData({ ...selectedChar });
+  };
+
+  const closeForm = () => {
+    setIsCreating(false);
+    setIsEditing(false);
+  };
 
   const getStatusStyle = (status: CharacterStatus) => {
     switch (status) {
@@ -47,6 +83,17 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name) return;
+    if (isEditing && selectedChar) {
+      // 保留 id / relations 等未在表单里的字段
+      onUpdateCharacter({
+        ...selectedChar,
+        ...formData,
+        id: selectedChar.id,
+        relations: selectedChar.relations || [],
+      } as Character);
+      closeForm();
+      return;
+    }
     const newChar: Character = {
       id: `char-${Date.now()}`,
       name: formData.name || '无名角色',
@@ -63,7 +110,18 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
     };
     onAddCharacter(newChar);
     setSelectedCharId(newChar.id);
-    setIsCreating(false);
+    closeForm();
+  };
+
+  const handleDelete = () => {
+    if (!selectedChar) return;
+    const ok = window.confirm(
+      `删除角色「${selectedChar.name}」？\n\n将同时从各章节的出场角色中移除，并清理其他角色指向他的关系。此操作不可撤销。`
+    );
+    if (!ok) return;
+    const remaining = characters.filter((c) => c.id !== selectedChar.id);
+    onDeleteCharacter(selectedChar.id);
+    setSelectedCharId(remaining[0]?.id || '');
   };
 
   const handleToggleStatus = (status: CharacterStatus) => {
@@ -80,9 +138,7 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
         <div className="p-4 border-b border-[#e5e5e5] flex items-center justify-between">
           <span className="font-bold text-sm text-black">角色追踪表 ({characters.length})</span>
           <button
-            onClick={() => {
-              setIsCreating(true);
-            }}
+            onClick={startCreate}
             className="flex items-center space-x-1 bg-black text-white px-2.5 py-1 rounded text-xs font-medium hover:bg-neutral-800 transition-all"
           >
             <UserPlus size={13} />
@@ -92,13 +148,13 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
 
         <div className="flex-1 overflow-y-auto divide-y divide-[#f0f0f0]">
           {characters.map((char) => {
-            const isSelected = char.id === selectedCharId && !isCreating;
+            const isSelected = char.id === selectedCharId && !isFormOpen;
             return (
               <div
                 key={char.id}
                 onClick={() => {
                   setSelectedCharId(char.id);
-                  setIsCreating(false);
+                  closeForm();
                 }}
                 className={`p-3.5 cursor-pointer transition-all ${
                   isSelected
@@ -127,10 +183,12 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
       </aside>
 
       <main className="flex-1 overflow-y-auto p-8 bg-white">
-        {isCreating ? (
+        {isFormOpen ? (
           <div className="max-w-3xl mx-auto">
             <h3 className="font-bold text-lg text-black mb-4 pb-2 border-b border-[#e5e5e5]">
-              录入新角色（系统将在 RAG 检索时自动抓取本设定）
+              {isEditing
+                ? `编辑角色：${selectedChar?.name || ''}`
+                : '录入新角色（系统将在 RAG 检索时自动抓取本设定）'}
             </h3>
             <form onSubmit={handleCreateSubmit} className="space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-4">
@@ -236,11 +294,11 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                   type="submit"
                   className="bg-black text-white px-4 py-2 rounded font-bold hover:bg-neutral-800 transition-all"
                 >
-                  保存并加入角色集
+                  {isEditing ? '保存修改' : '保存并加入角色集'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsCreating(false)}
+                  onClick={closeForm}
                   className="bg-[#f0f0f0] text-black px-4 py-2 rounded hover:bg-[#e0e0e0] transition-all"
                 >
                   取消
@@ -282,6 +340,24 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                   <MapPin size={13} />
                   <span>{selectedChar.currentLocation}</span>
                 </span>
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  className="text-xs bg-white border border-[#cccccc] text-black px-2.5 py-1 rounded flex items-center space-x-1 hover:bg-[#f0f0f0] transition-all"
+                  title="编辑该角色的全部字段"
+                >
+                  <Pencil size={13} />
+                  <span>编辑</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="text-xs bg-white border border-[#e0b4b4] text-[#b71c1c] px-2.5 py-1 rounded flex items-center space-x-1 hover:bg-[#fff5f5] transition-all"
+                  title="删除该角色（会清理章节出场与关系引用）"
+                >
+                  <Trash2 size={13} />
+                  <span>删除</span>
+                </button>
               </div>
             </div>
 
@@ -343,6 +419,17 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
               </div>
               <p className="text-[#333333] leading-relaxed font-mono">{selectedChar.secretNotes}</p>
             </div>
+          </div>
+        ) : characters.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center gap-3 text-[#777777]">
+            <p className="text-sm">这本书还没有角色</p>
+            <button
+              onClick={startCreate}
+              className="flex items-center space-x-1.5 bg-black text-white px-4 py-2 rounded text-xs font-medium hover:bg-neutral-800 transition-all"
+            >
+              <UserPlus size={14} />
+              <span>新建第一个角色</span>
+            </button>
           </div>
         ) : null}
       </main>

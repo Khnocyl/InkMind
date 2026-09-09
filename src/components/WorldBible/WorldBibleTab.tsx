@@ -23,6 +23,8 @@ export interface WorldBibleTabProps {
   currentChapterNumber: number | undefined;
   onAddCharacter: (c: Character) => void;
   onUpdateCharacter: (c: Character) => void;
+  /** 删除角色（级联清理章节出场与关系引用） */
+  onDeleteCharacter: (id: string) => void;
   onAddSetting: (s: WorldSetting) => void;
   onUpdateMemory: (memory: StoryMemory) => void;
   onPatchBible: (patch: { memory?: StoryMemory; characters?: Character[] }) => void;
@@ -43,6 +45,7 @@ export const WorldBibleTab: React.FC<WorldBibleTabProps> = ({
   currentChapterNumber,
   onAddCharacter,
   onUpdateCharacter,
+  onDeleteCharacter,
   onAddSetting,
   onUpdateMemory,
   onPatchBible,
@@ -96,6 +99,7 @@ export const WorldBibleTab: React.FC<WorldBibleTabProps> = ({
             characters={characters}
             onAddCharacter={onAddCharacter}
             onUpdateCharacter={onUpdateCharacter}
+            onDeleteCharacter={onDeleteCharacter}
           />
         ) : worldSubTab === 'settings' ? (
           <SettingManager settings={settings} onAddSetting={onAddSetting} />

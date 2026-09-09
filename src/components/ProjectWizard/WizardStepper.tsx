@@ -13,30 +13,33 @@ export interface WizardStepperItem {
 interface WizardStepperProps {
   steps: WizardStepperItem[];
   currentStep: WizardStep;
-  /** 已完成孵化：所有步视为「已完成」，全部可点回看 */
+  /** 已有产出的步骤（用于圆点完成态；与「当前位置」无关，跳步后依然准确） */
+  doneSteps: WizardStep[];
+  /** 已完成孵化：所有步视为「已完成」 */
   allCompleted: boolean;
   onStepSelect: (step: WizardStep) => void;
 }
 
 /**
  * 横向步骤条：编号圆点（①-⑤）+ 步骤短名，圆点间细连接线。
- * 已完成与当前步 = 黑底白字圆点；未来步 = 白底灰字（不可点）。
- * 点击语义与旧步骤条一致：仅「已完成或当前」步可点，由父级 goToStep 接管。
+ * 完成态来自 doneSteps（项目真实产出），不是「位置在左边」。
+ *
+ * 每一步都可点击：允许直接跳到任意一步重跑（例如对书名满意、只想重新推导角色，
+ * 就不必让 AI 把书名再跑一遍烧 token）。缺前置条件时由各步的生成处理器给出
+ * 明确提示，而不是静默生成垃圾内容。
  */
 export const WizardStepper: React.FC<WizardStepperProps> = ({
   steps,
   currentStep,
+  doneSteps,
   allCompleted,
   onStepSelect,
 }) => {
-  const currentIdx = steps.findIndex((s) => s.step === currentStep);
-
   return (
     <nav className="flex items-center w-full max-w-xl" aria-label="向导步骤">
       {steps.map((item, idx) => {
         const isActive = item.step === currentStep;
-        const isDone = allCompleted || (currentIdx > -1 && currentIdx > idx);
-        const clickable = isDone || isActive;
+        const isDone = allCompleted || doneSteps.includes(item.step);
 
         return (
           <React.Fragment key={item.step}>
@@ -50,12 +53,9 @@ export const WizardStepper: React.FC<WizardStepperProps> = ({
             )}
             <button
               type="button"
-              onClick={() => {
-                if (clickable) onStepSelect(item.step);
-              }}
-              disabled={!clickable}
-              title={item.label}
-              className="flex items-center gap-1.5 px-1 py-1 rounded-full focus:outline-none disabled:cursor-not-allowed cursor-pointer disabled:cursor-not-allowed group"
+              onClick={() => onStepSelect(item.step)}
+              title={`${item.label}（点击直接跳转到这一步）`}
+              className="flex items-center gap-1.5 px-1 py-1 rounded-full focus:outline-none cursor-pointer group"
             >
               <span
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 transition-colors ${

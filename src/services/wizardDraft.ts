@@ -1,6 +1,25 @@
-import type { BookProject } from '../types/novel';
+import type { BookProject, WizardStep } from '../types/novel';
 
 export type WizardDraftPatch = Partial<BookProject>;
+
+/**
+ * 各步「是否已有产出」——步骤条圆点状态与「从哪一步继续」的依据。
+ * 按项目真实数据判断（不是「位置在左边」），因此直接跳步后状态依然准确。
+ */
+export function wizardDoneSteps(
+  project: Pick<
+    BookProject,
+    'config' | 'title' | 'synopsis' | 'characters' | 'settings' | 'chapters'
+  >
+): WizardStep[] {
+  const done: WizardStep[] = [];
+  if (project.config?.inspiration?.trim()) done.push('inspiration');
+  if (project.title?.trim() && project.synopsis?.trim()) done.push('title-review');
+  if ((project.characters || []).length > 0) done.push('characters-review');
+  if ((project.settings || []).length > 0) done.push('world-review');
+  if ((project.chapters || []).length > 0) done.push('outline-review');
+  return done;
+}
 
 /**
  * 向导草稿自动落盘。
