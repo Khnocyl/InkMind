@@ -5,6 +5,7 @@
 
 import { proseWords } from './proseWords';
 import type {
+  BookProject,
   FewShotExample,
   StyleConfig,
   StyleFingerprint,
@@ -532,4 +533,111 @@ export function updateStyleProfile(
       : p
   );
   return { ...styleConfig, styleProfiles: profiles };
+}
+
+/**
+ * 档案 → 提示词里的「行文文风」文案（唯一口径）。
+ * 向导下拉、设置页激活、prompts 都走这里，避免多处各写一份格式。
+ */
+export function styleDirectiveForProfile(p: StyleProfile): string {
+  const tip = (p.authorStyle || p.styleGuide || p.name).trim().slice(0, 200);
+  return `仿写·${p.name}${tip ? `：${tip}` : ''}`;
+}
+
+/** 去掉不再指向任何档案的 few-shot 选择 */
+function clearProfileFewShot(styleConfig: StyleConfig): StyleConfig {
+  const sel = styleConfig.selectedExampleId || '';
+  if (!sel.startsWith('few-style-')) return styleConfig;
+  return { ...styleConfig, selectedExampleId: '' };
+}
+
+/**
+ * 向导第一步「行文文风」下拉的选中值 → 项目补丁。
+ *
+ * 用户反馈：设置里选的文风与向导里显示的不一致，且向导里改了设置不变。
+ * 根因是同一件事有两份状态：设置页写 `styleConfig.activeStyleProfileId`，
+ * 向导只写 `config.writingStyle`。这里让**一次选择同时更新两者**：
+ * - `profile:<id>` → 档案（全局档案会复制进本书）设为激活，config 写派生文案；
+ * - 内置预设 / 自定义文案 → 解除档案激活，config 写该文案。
+ */
+export function applyStyleKeyToProject(
+  project: Pick<BookProject, 'config' | 'styleConfig'>,
+  key: string,
+  mergedProfiles: { profile: StyleProfile }[]
+): Partial<BookProject> {
+  const baseConfig = project.config;
+  const baseStyle = project.styleConfig;
+  if (!baseConfig || !baseStyle) return {};
+  const params = { ...(baseConfig.customParameters || {}) } as Record<string, unknown>;
+
+  if (key.startsWith('profile:')) {
+    const id = key.slice('profile:'.length);
+    const hit = mergedProfiles.find((x) => x.profile.id === id);
+    if (!hit) {
+      // 档案已不存在：回落到「无档案」，不写入悬空 id
+      delete params.wizardStyleProfileId;
+      return {
+        styleConfig: baseStyle.activeStyleProfileId
+          ? clearProfileFewShot({ ...baseStyle, activeStyleProfileId: null })
+          : baseStyle,
+        config: { ...baseConfig, writingStyle: '', customParameters: params },
+      };
+    }
+    const p = hit.profile;
+    const hasInBook = (baseStyle.styleProfiles || []).some((x) => x.id === id);
+    const nextStyle = hasInBook
+      ? setActiveStyleProfile(baseStyle, id)
+      : importStyleProfile(baseStyle, p, { activate: true, syncFewShot: true });
+    params.wizardStyleProfileId = id;
+    return {
+      styleConfig: nextStyle,
+      config: {
+        ...baseConfig,
+        writingStyle: styleDirectiveForProfile(p),
+        customParameters: params,
+      },
+    };
+  }
+
+  // 内置预设 / 自定义文案：不绑定档案
+  delete params.wizardStyleProfileId;
+  return {
+    styleConfig: baseStyle.activeStyleProfileId
+      ? clearProfileFewShot({ ...baseStyle, activeStyleProfileId: null })
+      : baseStyle,
+    config: { ...baseConfig, writingStyle: key, customParameters: params },
+  };
+}
+
+/**
+ * 设置页（引擎与风格）激活/停用/删除档案后，把 `config.writingStyle` 与
+ * `wizardStyleProfileId` 同步过去，保证向导第一步显示的就是设置里的选择。
+ * 返回需要合并进保存补丁的 config（无变化返回 {}）。
+ */
+export function syncConfigWithActiveProfile(
+  project: Pick<BookProject, 'config' | 'styleConfig'>,
+  nextStyle: StyleConfig
+): Partial<BookProject> {
+  if (!project.config) return {};
+  const prevId = project.styleConfig?.activeStyleProfileId || null;
+  const nextId = nextStyle.activeStyleProfileId || null;
+  if (prevId === nextId) return {};
+
+  const params = { ...(project.config.customParameters || {}) } as Record<string, unknown>;
+  if (nextId) {
+    const p = (nextStyle.styleProfiles || []).find((x) => x.id === nextId);
+    if (!p) return {};
+    params.wizardStyleProfileId = nextId;
+    return {
+      config: {
+        ...project.config,
+        writingStyle: styleDirectiveForProfile(p),
+        customParameters: params,
+      },
+    };
+  }
+  delete params.wizardStyleProfileId;
+  return {
+    config: { ...project.config, writingStyle: '', customParameters: params },
+  };
 }

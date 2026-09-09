@@ -32,7 +32,7 @@ import { migrateLegacySnapshots } from './services/snapshots';
 import { removeCharacterFromProject, updateCharacterInList } from './services/characterOps';
 import { pruneDeletedStyleReferences } from './services/styleProfileCleanup';
 import { removeGlobalStyleProfile } from './services/styleProfileStore';
-import { removeStyleProfile } from './services/styleImitate';
+import { removeStyleProfile, syncConfigWithActiveProfile } from './services/styleImitate';
 import { useProjectPersistence } from './hooks/useProjectPersistence';
 import { useProjectActions } from './hooks/useProjectActions';
 import { useChapterActions } from './hooks/useChapterActions';
@@ -872,12 +872,17 @@ export default function App() {
           <StyleAndEngineManager
             styleConfig={styleConfig}
             onUpdateStyleConfig={(updated) =>
-              handleUpdateAndPersistProject((prev) => ({
-                styleConfig:
+              handleUpdateAndPersistProject((prev) => {
+                const nextSc =
                   typeof updated === 'function'
                     ? updated(prev.styleConfig || defaultStyleConfig)
-                    : updated,
-              })).then(() => undefined)
+                    : updated;
+                // 设置页切换/停用档案 → 同步 config.writingStyle，向导第一步即跟随
+                return {
+                  styleConfig: nextSc,
+                  ...syncConfigWithActiveProfile(prev, nextSc),
+                };
+              }).then(() => undefined)
             }
             onDeleteStyleProfile={(id) => {
               const prev = projectRef.current;

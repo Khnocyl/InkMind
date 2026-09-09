@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel';
+import type { BookProject, ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel';
 import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2, RefreshCw } from 'lucide-react';
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
 import { generateInspirationSparks, type InspirationSpark } from '../../services/inspirationSparks';
-import { analyzeReferenceStyle, importStyleProfile } from '../../services/styleImitate';
+import { analyzeReferenceStyle, applyStyleKeyToProject, importStyleProfile } from '../../services/styleImitate';
 import {
   mergeWizardStyleProfiles,
   upsertGlobalStyleProfiles,
@@ -31,9 +31,9 @@ interface InspirationStepProps {
   onStyleConfigChange?: (sc: StyleConfig) => Promise<unknown> | void;
   /**
    * 草稿自动落盘：未点「下一步」前表单只在本地 state，退出向导/切书/刷新会全丢。
-   * 每次字段变化回调最新配置，由向导去抖写回项目。
+   * 回调里同时带上 styleConfig 补丁，保证与设置页「文风仿写」选中项一致。
    */
-  onDraftChange?: (config: ProjectConfig) => void;
+  onDraftChange?: (patch: Partial<BookProject>) => void;
 }
 
 const PRESET_INSPIRATIONS = [
@@ -109,17 +109,18 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   );
 
   const initialStyleKey = useMemo(() => {
-    const fromParam = initialConfig.customParameters?.wizardStyleProfileId as
-      | string
-      | undefined;
-    if (fromParam && mergedProfiles.some((x) => x.profile.id === fromParam)) {
-      return `profile:${fromParam}`;
-    }
+    // 设置页（引擎与风格）的激活档案优先：保证向导跟随设置，而不是跟随向导自己的历史记录
     if (
       activeStyleProfileId &&
       mergedProfiles.some((x) => x.profile.id === activeStyleProfileId)
     ) {
       return `profile:${activeStyleProfileId}`;
+    }
+    const fromParam = initialConfig.customParameters?.wizardStyleProfileId as
+      | string
+      | undefined;
+    if (fromParam && mergedProfiles.some((x) => x.profile.id === fromParam)) {
+      return `profile:${fromParam}`;
     }
     const ws = initialConfig.writingStyle || '';
     if (ws && STYLE_PRESETS.includes(ws)) return ws;
@@ -262,6 +263,24 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     };
   };
 
+  /**
+   * 草稿补丁：config（表单值）+ styleConfig（文风档案选中态）。
+   * 两处一起写，避免「设置里选了 A、向导显示 B」的两份状态漂移。
+   */
+  const buildDraftPatch = (): Partial<BookProject> => {
+    const config = buildConfig();
+    const patch: Partial<BookProject> = { config };
+    if (styleConfig) {
+      const applied = applyStyleKeyToProject(
+        { config, styleConfig },
+        styleKey,
+        mergedProfiles
+      );
+      if (applied.styleConfig) patch.styleConfig = applied.styleConfig;
+    }
+    return patch;
+  };
+
   // 草稿自动落盘：跳过首次挂载（此时状态来自 initialConfig，且灵感默认值只是占位
   // 文案，不该在用户没动过任何东西时就写进项目）。
   const draftMountedRef = useRef(false);
@@ -271,7 +290,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
       draftMountedRef.current = true;
       return;
     }
-    onDraftChange(buildConfig());
+    onDraftChange(buildDraftPatch());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspiration, totalChapters, wordsPerChapter, genre, packId, styleKey]);
 
@@ -279,6 +298,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     e.preventDefault();
     if (!inspiration.trim()) return;
     const { styleProfileId, profile } = resolveWritingStyle(styleKey);
+    // 先把文风选中态（含「切到预设=解除档案激活」）排进落盘队列，再走生成
+    onDraftChange?.(buildDraftPatch());
     onNext(buildConfig(), { styleProfileId, profile });
   };
 

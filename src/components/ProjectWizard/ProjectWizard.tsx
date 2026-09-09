@@ -573,12 +573,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       <main className="flex-1 overflow-y-auto px-4 pb-12 select-auto">
         {currentStep === 'inspiration' && (
           <InspirationStep
+            key={`inspiration-${project.id}`}
             initialConfig={project.config}
             styleProfiles={project.styleConfig?.styleProfiles || []}
             activeStyleProfileId={project.styleConfig?.activeStyleProfileId}
             styleConfig={project.styleConfig}
             onStyleConfigChange={(sc) => updateAndSave({ styleConfig: sc })}
-            onDraftChange={(config) => queueDraft({ config })}
+            onDraftChange={(patch) => queueDraft(patch)}
             onNext={handleGenerateTitle}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
@@ -589,6 +590,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
         {currentStep === 'title-review' && (
           <TitleReviewStep
+            key={`title-${project.id}`}
             data={{
               title: project.title,
               subtitle: project.subtitle,
@@ -610,6 +612,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
         {currentStep === 'characters-review' && (
           <CharactersReviewStep
+            key={`chars-${project.id}`}
             characters={project.characters}
             onNext={handleGenerateWorld}
             onPrev={() => goToStep('title-review')}
@@ -633,6 +636,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
         {currentStep === 'world-review' && (
           <WorldReviewStep
+            key={`world-${project.id}`}
             settings={project.settings}
             onNext={handleGenerateOutline}
             onPrev={() => goToStep('characters-review')}
@@ -647,6 +651,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
         {currentStep === 'outline-review' && (
           <OutlineReviewStep
+            key={`outline-${project.id}`}
             volumes={project.volumes}
             chapters={project.chapters}
             projectConfig={project.config}
