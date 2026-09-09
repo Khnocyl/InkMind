@@ -25,16 +25,24 @@ if (!gotLock) {
 let PORT = 0;
 let win = null;
 
-/** 找一个从 start 起的空闲端口（探测后即释放，存在极小竞态，可接受） */
-function findFreePort(start) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on('error', () => resolve(findFreePort(start + 1)));
-    srv.listen(start, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
+/** 找一个从 start 起的空闲端口（探测后即释放，存在极小竞态，可接受）。
+ *  最多尝试 maxTries 次：否则端口段被防火墙/其他程序占满时会无限递归。 */
+function findFreePort(start, maxTries = 50) {
+  return new Promise((resolve, reject) => {
+    const tryPort = (port, left) => {
+      if (left <= 0) {
+        reject(new Error(`在 ${start}-${port} 范围内未找到空闲端口`));
+        return;
+      }
+      const srv = net.createServer();
+      srv.unref();
+      srv.on('error', () => tryPort(port + 1, left - 1));
+      srv.listen(port, '127.0.0.1', () => {
+        const { port: found } = srv.address();
+        srv.close(() => resolve(found));
+      });
+    };
+    tryPort(start, maxTries);
   });
 }
 
@@ -341,6 +349,8 @@ function createWindow() {
 
   // 外部链接一律调用系统默认浏览器打开；仅放行本项目相关域名的 https 链接，
   // 防止页面内被注入的任意 URL 借系统浏览器打开。
+  // 注意：此前用 hostname.endsWith('.github.io')，任何用户自己的 *.github.io
+  // 页面都会放行——收窄为本项目 Pages 域名。
   const allowedExternalHosts = new Set([
     'github.com',
     'www.github.com',
@@ -348,14 +358,12 @@ function createWindow() {
     'api.github.com',
     'raw.githubusercontent.com',
     'gist.github.com',
+    'khnocyl.github.io',
   ]);
   win.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url);
-      if (
-        parsed.protocol === 'https:' &&
-        (allowedExternalHosts.has(parsed.hostname) || parsed.hostname.endsWith('.github.io'))
-      ) {
+      if (parsed.protocol === 'https:' && allowedExternalHosts.has(parsed.hostname)) {
         shell.openExternal(url);
       }
     } catch {
@@ -379,6 +387,15 @@ function createWindow() {
 }
 
 function buildMenu() {
+  const viewSubmenu = [
+    { role: 'reload', label: '重新加载' },
+    // 生产包不暴露 DevTools（仅开发态菜单可见）
+    ...(app.isPackaged ? [] : [{ role: 'toggleDevTools', label: '开发者工具' }]),
+    { type: 'separator' },
+    { role: 'resetZoom', label: '重置缩放' },
+    { role: 'zoomIn', label: '放大' },
+    { role: 'zoomOut', label: '缩小' },
+  ];
   const menu = Menu.buildFromTemplate([
     {
       label: '文件',
@@ -393,14 +410,7 @@ function buildMenu() {
     },
     {
       label: '视图',
-      submenu: [
-        { role: 'reload', label: '重新加载' },
-        { role: 'toggleDevTools', label: '开发者工具' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: '重置缩放' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
-      ],
+      submenu: viewSubmenu,
     },
   ]);
   Menu.setApplicationMenu(menu);

@@ -6,7 +6,7 @@
  * 本服务把最新正文去抖落盘到 meta store，页面重新打开时提示恢复。
  */
 import { proseWords } from './proseWords';
-import { initDB, STORE_META } from './storage';
+import { DRAFT_META_PREFIX, initDB, STORE_META } from './storage';
 
 export interface DraftBackup {
   projectId: string;
@@ -20,7 +20,7 @@ export interface DraftBackup {
   updatedAt: string;
 }
 
-const DRAFT_PREFIX = 'draft:';
+const DRAFT_PREFIX = DRAFT_META_PREFIX;
 /** 草稿默认保留 7 天，超期自动清理 */
 export const DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -28,14 +28,19 @@ function draftKey(projectId: string, chapterId: string): string {
   return `${DRAFT_PREFIX}${projectId}:${chapterId}`;
 }
 
+/**
+ * 写/删一条 meta。
+ * 以事务提交为准（而非 request.onsuccess）：commit 阶段失败（典型
+ * QuotaExceededError）必须让调用方知道没写进去——否则草稿被当成已保存。
+ */
 async function putMeta(key: string, value: unknown): Promise<void> {
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_META, 'readwrite');
-    const store = tx.objectStore(STORE_META);
-    const req = store.put({ key, value });
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    tx.objectStore(STORE_META).put({ key, value });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('草稿写入失败'));
+    tx.onabort = () => reject(tx.error || new Error('草稿写入事务中止'));
   });
 }
 
@@ -43,10 +48,10 @@ async function deleteMeta(key: string): Promise<void> {
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_META, 'readwrite');
-    const store = tx.objectStore(STORE_META);
-    const req = store.delete(key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    tx.objectStore(STORE_META).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('草稿删除失败'));
+    tx.onabort = () => reject(tx.error || new Error('草稿删除事务中止'));
   });
 }
 
@@ -151,8 +156,16 @@ export async function flushDraftBackup(): Promise<void> {
   const job = pending;
   pending = null;
   if (saving) {
-    // 上一次写入还在进行：保留最新 job，由后续调度再写
+    // 上一次写入还在进行：保留最新 job，并**重新挂上定时器**。
+    // 此前只保留 pending 不再调度，若之后没有新的 schedule 调用，
+    // 这份最后的流式草稿会一直躺在内存里直到 pagehide。
     pending = job;
+    if (!timer) {
+      timer = setTimeout(() => {
+        timer = null;
+        void flushDraftBackup();
+      }, DEBOUNCE_MS);
+    }
     return;
   }
   saving = true;

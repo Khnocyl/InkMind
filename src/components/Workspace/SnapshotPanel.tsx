@@ -10,12 +10,19 @@ import {
   Shield,
 } from 'lucide-react';
 import {
+  getSnapshotCap,
   listSnapshots,
   deleteSnapshot,
+  pruneSnapshots,
+  setSnapshotCap,
   snapshotReasonLabel,
+  MAX_SNAPSHOTS_PER_PROJECT,
   type ProjectSnapshotMeta,
   type SnapshotReason,
 } from '../../services/snapshots';
+
+/** 可选快照保留上限 */
+const CAP_OPTIONS = [10, 30, 50, 100] as const;
 
 interface SnapshotPanelProps {
   projectId: string;
@@ -57,20 +64,42 @@ export const SnapshotPanel: React.FC<SnapshotPanelProps> = ({
   const [acting, setActing] = useState(false);
   const [items, setItems] = useState<ProjectSnapshotMeta[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** 项目级快照保留上限（未设置时显示默认值） */
+  const [cap, setCap] = useState<number>(MAX_SNAPSHOTS_PER_PROJECT);
+  const [capSaving, setCapSaving] = useState(false);
 
   const reload = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      const list = await listSnapshots(projectId);
+      const [list, savedCap] = await Promise.all([
+        listSnapshots(projectId),
+        getSnapshotCap(projectId),
+      ]);
       setItems(list);
+      setCap(savedCap ?? MAX_SNAPSHOTS_PER_PROJECT);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }, [projectId]);
+
+  const handleCapChange = async (next: number) => {
+    if (capSaving || busy || acting) return;
+    setCapSaving(true);
+    setError(null);
+    try {
+      await setSnapshotCap(projectId, next);
+      await pruneSnapshots(projectId); // 调小上限时立即生效
+      await reload();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCapSaving(false);
+    }
+  };
 
   useEffect(() => {
     reload();
@@ -144,8 +173,28 @@ export const SnapshotPanel: React.FC<SnapshotPanelProps> = ({
         <div className="px-4 pb-4 space-y-2">
           <p className="text-[10px] text-slate-500 leading-relaxed flex items-start gap-1">
             <Shield size={12} className="mt-0.5 shrink-0 text-slate-400" />
-            写前/写后自动备份全书；可一键回滚。每书最多保留 30 条。完整离线备份请用书库「导出 JSON」。
+            写前/写后自动备份全书；可一键回滚。迁移前/回滚前备份不会被自动清理。完整离线备份请用书库「导出 JSON」。
           </p>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-slate-500">每书保留上限</span>
+            <select
+              value={cap}
+              disabled={busy || acting || capSaving || loading}
+              onChange={(e) => void handleCapChange(Number(e.target.value))}
+              className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 bg-white text-slate-700 disabled:opacity-50"
+              title="超出上限时按时间淘汰最旧的普通快照"
+            >
+              {((CAP_OPTIONS as readonly number[]).includes(cap)
+                ? CAP_OPTIONS
+                : ([cap, ...CAP_OPTIONS].sort((a, b) => a - b) as readonly number[])
+              ).map((n) => (
+                <option key={n} value={n}>
+                  {n} 条
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="flex items-center gap-2">
             <button

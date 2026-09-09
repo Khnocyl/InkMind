@@ -75,10 +75,15 @@ class CrossTabLock {
       return;
     }
     if (msg.type === 'start' || msg.type === 'heartbeat') {
-      if (!msg.holder || msg.holder.token === this.own?.token) return;
+      const holder = msg.holder;
+      if (!holder || holder.token === this.own?.token) return;
       const cur = readLs();
-      // 只刷新"对方"的条目，不覆盖自己的锁
-      if (!cur || cur.token !== msg.holder.token) writeLs(msg.holder);
+      if (cur && cur.token === holder.token) return; // 已是该持有者，无需改写
+      // 只接受「更新」的条目：被接管的旧页（隐藏标签页被浏览器节流/冻结导致心跳
+      // 停超过 STALE_MS）恢复后会补发旧心跳，若无条件写回就会把新锁覆盖回去，
+      // 两页同时生成同一本书。
+      if (cur && holder.at <= cur.at) return;
+      writeLs(holder);
     }
   }
 
@@ -128,6 +133,17 @@ class CrossTabLock {
     if (this.heartbeatTimer == null) {
       this.heartbeatTimer = window.setInterval(() => {
         if (!this.own) return;
+        // 写心跳前复核所有权：若本地条目已被「更新」的他页条目取代，说明我们的锁
+        // 已因超时被接管 → 让出并停掉心跳，避免与接管方互相覆盖（双页同时生成）。
+        const cur = readLs();
+        if (cur && cur.token !== this.own.token && cur.at >= this.own.at) {
+          this.own = null;
+          if (this.heartbeatTimer != null) {
+            window.clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+          }
+          return;
+        }
         this.own = { ...this.own, at: Date.now() };
         writeLs(this.own);
         this.post({ type: 'heartbeat', holder: this.own });

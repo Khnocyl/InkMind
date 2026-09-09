@@ -12,6 +12,19 @@ const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
 export const STORE_META = 'meta';
 export const STORE_SNAPSHOTS = 'snapshots';
+/** 导出仅用于测试直接写原始行；业务代码请走 saveProject */
+export const STORE_PROJECTS_NAME = STORE_PROJECTS;
+
+/**
+ * meta store 中「属于某个项目」的键前缀/构造器。
+ * 定义在这里（而不是各自的 service）是为了让 deleteProject 能在同一事务内
+ * 级联清理，避免 storage 反向依赖 draftBackup/snapshots 造成循环导入。
+ */
+export const DRAFT_META_PREFIX = 'draft:';
+/** 项目级快照上限的 meta 键 */
+export function snapshotCapMetaKey(projectId: string): string {
+  return `snapshot-cap:${projectId}`;
+}
 
 export function getDefaultStyleConfig(): StyleConfig {
   return {
@@ -204,11 +217,27 @@ export async function loadProject(id: string): Promise<BookProject | null> {
   }
 
   // R4：schema 版本迁移（纯函数，见 migrations.ts）
-  const { project: migrated, fromVersion, toVersion, applied } =
-    migrateProjectToLatest(raw);  if (applied.length === 0) return migrated;
+  // 迁移函数本身抛错（缺迁移函数/脏数据）不能让整本书打不开——原样返回并告警。
+  let migrated: BookProject;
+  let fromVersion: number;
+  let toVersion: number;
+  let applied: ReturnType<typeof migrateProjectToLatest>['applied'];
+  try {
+    ({ project: migrated, fromVersion, toVersion, applied } = migrateProjectToLatest(raw));
+  } catch (e) {
+    console.error(`[migrations] ${id}: 迁移失败，按原数据加载（请勿在此状态继续写作）`, e);
+    return raw;
+  }
+  if (applied.length === 0) return migrated;
 
-  // 迁移结果落盘（下次加载不再迁移）
-  await saveProject(migrated);
+  // 迁移结果落盘（下次加载不再迁移）。落盘失败不阻断本次加载：
+  // 并发写导致的 ProjectConflictError 不该让「书打不开」。
+  try {
+    await saveProject(migrated);
+  } catch (e) {
+    console.warn(`[migrations] ${id}: 迁移结果落盘失败（本次仍按迁移后数据使用）`, e);
+    return migrated;
+  }
   console.info(
     `[migrations] ${id}: v${fromVersion} → v${toVersion}（${applied
       .map((a) => a.name)
@@ -300,6 +329,18 @@ export async function deleteProject(id: string): Promise<void> {
       if (getActiveReq.result && getActiveReq.result.value === id) {
         metaStore.delete('active_project_id');
       }
+    };
+
+    // 级联清理该书遗留的 meta：流式草稿备份 + 项目级快照上限。
+    // 此前只删 projects/snapshots，导致被删项目的整章正文长期残留在 IndexedDB。
+    metaStore.delete(snapshotCapMetaKey(id));
+    const draftPrefix = `${DRAFT_META_PREFIX}${id}:`;
+    const metaCursorReq = metaStore.openCursor();
+    metaCursorReq.onsuccess = () => {
+      const cursor = metaCursorReq.result;
+      if (!cursor) return;
+      if (String(cursor.key).startsWith(draftPrefix)) cursor.delete();
+      cursor.continue();
     };
 
     // 级联删除该书全部快照

@@ -28,14 +28,27 @@ class MemoryStorage implements Storage {
 }
 
 let storage: MemoryStorage;
+/** 记录 setInterval 注册的心跳回调，便于手动触发（id 从 1 开始） */
+let heartbeatCallbacks: Array<() => void> = [];
 
 function stubBrowserEnv() {
   storage = new MemoryStorage();
+  heartbeatCallbacks = [];
   vi.stubGlobal('localStorage', storage);
   vi.stubGlobal('window', {
-    setInterval: () => 1,
-    clearInterval: () => {},
+    setInterval: (cb: () => void) => {
+      heartbeatCallbacks.push(cb);
+      return heartbeatCallbacks.length;
+    },
+    clearInterval: (id: number) => {
+      if (id >= 1 && id <= heartbeatCallbacks.length) heartbeatCallbacks[id - 1] = () => {};
+    },
   });
+}
+
+/** 触发第 id 个注册的心跳回调（1 基） */
+function runHeartbeat(id: number) {
+  heartbeatCallbacks[id - 1]?.();
 }
 
 async function freshLock() {
@@ -87,6 +100,26 @@ describe('crossTabLock', () => {
     vi.setSystemTime(new Date('2026-08-03T12:01:20Z'));
     const other = await freshLock();
     expect(other.acquire('book-a', 'Auto-Pilot')).toBe(true);
+  });
+
+  it('被接管的旧页恢复心跳时让出，不覆盖新锁（防双页同时生成）', async () => {
+    // A 持锁（注册心跳回调 #1）
+    const a = await freshLock();
+    expect(a.acquire('book-a', '单章三步')).toBe(true);
+    // A 的标签页被冻结 → 心跳停超过 STALE_MS
+    vi.setSystemTime(new Date('2026-08-03T12:01:20Z'));
+    // B 接管（注册心跳回调 #2）
+    const b = await freshLock();
+    expect(b.acquire('book-a', 'Auto-Pilot')).toBe(true);
+    // A 复活：它的心跳回调必须让出，而不是把自己的旧条目写回去
+    runHeartbeat(1);
+    // 若 A 覆盖回去，a.isActiveElsewhere 会认为自己是持有者（active:false）
+    expect(a.isActiveElsewhere('book-a')).toMatchObject({
+      active: true,
+      holder: 'Auto-Pilot',
+    });
+    // B 仍是有效持有者
+    expect(b.isActiveElsewhere('book-a')).toEqual({ active: false });
   });
 
   it('不同书不互相阻塞', async () => {

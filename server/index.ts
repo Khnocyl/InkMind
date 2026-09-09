@@ -707,6 +707,32 @@ app.use('/api', (_req, res) => {
   res.status(404).json({ success: false, error: '接口不存在' });
 });
 
+// ─── 页面安全响应头（仅非 /api 资源；API 返回 JSON 无需）──────────────────
+// 说明：src/index.css 引了 Google Fonts（Inter / Noto Serif SC），因此 style/font
+// 需放行对应域名；script-src 暂含 'unsafe-inline'（index.html 有主题引导内联脚本），
+// 后续可改为 sha256 哈希后去掉。Vite dev 页面由 Vite 提供，不受此头影响。
+const PAGE_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) {
+    res.setHeader('Content-Security-Policy', PAGE_CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+  next();
+});
+
 // 静态托管前端构建产物（npm run build 后单进程即可提供完整应用，无需 Vite）
 // NOVEL_DIST_DIR：桌面端（Electron）显式指定前端产物目录
 const DIST_DIR = process.env.NOVEL_DIST_DIR

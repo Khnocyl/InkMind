@@ -3,8 +3,8 @@ import {
   compressSnapshotJson,
   decompressSnapshotJson,
   readSnapshotProject,
-  snapshotCapKey,
 } from '../src/services/snapshots';
+import { snapshotCapMetaKey } from '../src/services/storage';
 import type { BookProject } from '../src/types/novel';
 
 function makeProject(title: string): BookProject {
@@ -130,9 +130,9 @@ describe('readSnapshotProject 兼容 v1/v2', () => {
   });
 });
 
-describe('snapshotCapKey', () => {
+describe('snapshotCapMetaKey', () => {
   it('key 含 projectId 且稳定', () => {
-    expect(snapshotCapKey('abc')).toBe('snapshot-cap:abc');
-    expect(snapshotCapKey('abc')).not.toBe(snapshotCapKey('abd'));
+    expect(snapshotCapMetaKey('abc')).toBe('snapshot-cap:abc');
+    expect(snapshotCapMetaKey('abc')).not.toBe(snapshotCapMetaKey('abd'));
   });
 });

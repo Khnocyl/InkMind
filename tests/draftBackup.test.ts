@@ -8,6 +8,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // ── 内存 meta store 桩 ──
 const memStore = new Map<string, unknown>();
+/** 测试用闸门：非 null 时下一次 put 延迟到它 resolve 后才落盘（模拟慢写） */
+let putGate: Promise<void> | null = null;
 
 function makeReq(compute: (req: { result?: unknown }) => void) {
   const req: {
@@ -35,23 +37,43 @@ function makeReq(compute: (req: { result?: unknown }) => void) {
 
 vi.mock('../src/services/storage', () => ({
   STORE_META: 'meta',
+  DRAFT_META_PREFIX: 'draft:',
   initDB: vi.fn(async () => ({
-    transaction: () => ({
-      objectStore: () => ({
-        put: (rec: { key: string; value: unknown }) =>
-          makeReq(() => {
-            memStore.set(rec.key, rec.value);
-          }),
-        delete: (key: string) =>
-          makeReq(() => {
-            memStore.delete(key);
-          }),
-        getAll: () =>
-          makeReq((req) => {
-            req.result = [...memStore.entries()].map(([key, value]) => ({ key, value }));
-          }),
-      }),
-    }),
+    transaction: () => {
+      const tx = {
+        oncomplete: null as (() => void) | null,
+        onerror: null as (() => void) | null,
+        onabort: null as (() => void) | null,
+        _fire: () => queueMicrotask(() => tx.oncomplete?.()),
+        objectStore: () => ({
+          put: (rec: { key: string; value: unknown }) =>
+            makeReq(() => {
+              const apply = () => {
+                memStore.set(rec.key, rec.value);
+                tx._fire();
+              };
+              if (putGate) {
+                const g = putGate;
+                putGate = null;
+                void g.then(apply);
+              } else {
+                apply();
+              }
+            }),
+          delete: (key: string) =>
+            makeReq(() => {
+              memStore.delete(key);
+              tx._fire();
+            }),
+          getAll: () =>
+            makeReq((req) => {
+              req.result = [...memStore.entries()].map(([key, value]) => ({ key, value }));
+              tx._fire();
+            }),
+        }),
+      };
+      return tx;
+    },
   })),
 }));
 
@@ -286,5 +308,35 @@ describe('scheduleDraftBackup / flushDraftBackup（去抖）', () => {
     expect(all[0].content).toBe('未到点');
     // 冲刷后 pending 清空，再 flush 无副作用
     await m.flushDraftBackup();
+  });
+
+  it('写入进行中再次 flush → 重新调度，最后的草稿不会滞留内存', async () => {
+    const m = await freshModule();
+    let release!: () => void;
+    putGate = new Promise<void>((r) => {
+      release = r;
+    });
+    m.scheduleDraftBackup({
+      projectId: 'p1',
+      chapterId: 'c1',
+      chapterNumber: 1,
+      chapterTitle: '一',
+      content: '第一版',
+    });
+    void m.flushDraftBackup(); // 第一次写被闸门挂住（saving = true）
+    m.scheduleDraftBackup({
+      projectId: 'p1',
+      chapterId: 'c1',
+      chapterNumber: 1,
+      chapterTitle: '一',
+      content: '最终版',
+    });
+    // 写入仍在进行时再 flush：此前只保留 pending、不再调度 → 最终版永远不落盘
+    void m.flushDraftBackup();
+    release();
+    await vi.advanceTimersByTimeAsync(800);
+    const all = await m.listDraftBackups();
+    expect(all).toHaveLength(1);
+    expect(all[0].content).toBe('最终版');
   });
 });

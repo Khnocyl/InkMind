@@ -99,6 +99,24 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
   const [selectionPos, setSelectionPos] = useState<{ x: number; y: number } | null>(null);
   const [isInlineProcessing, setIsInlineProcessing] = useState(false);
   const [inlineFeedback, setInlineFeedback] = useState<string | null>(null);
+  /**
+   * 内联反馈的自动清除定时器。此前用裸 setTimeout 且不清理：换章后旧定时器
+   * 仍会触发，把**新章**的提示清掉；组件卸载后还可能对已卸载组件 setState。
+   */
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearFeedbackLater = useCallback((ms: number) => {
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => {
+      feedbackTimerRef.current = null;
+      setInlineFeedback(null);
+    }, ms);
+  }, []);
+  useEffect(
+    () => () => {
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    },
+    []
+  );
   const openTodoCount = (chapter.revisionTodos || []).filter((t) => t.status === 'open').length;
   // 默认收起（收束）：标题栏保留「N 项未完成」徽标可感知，避免一进画布就占满清单
   const [todosOpen, setTodosOpen] = useState(false);
@@ -156,7 +174,7 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
       if (!content.trim()) {
         setWavyRanges([]);
         setInlineFeedback('本章暂无正文');
-        window.setTimeout(() => setInlineFeedback(null), 2000);
+        clearFeedbackLater(2000);
         return;
       }
 
@@ -182,14 +200,14 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
             ? `红色波浪线 · ${ranges.length} 处 · 「${preview}」…`
             : `红色波浪线定位 · 「${preview}」…`
         );
-        window.setTimeout(() => setInlineFeedback(null), 3200);
+        clearFeedbackLater(3200);
       } else {
         setWavyRanges([]);
         setInlineFeedback('已选中待修（正文未匹配到相关片段）');
-        window.setTimeout(() => setInlineFeedback(null), 2400);
+        clearFeedbackLater(2400);
       }
     },
-    [chapter.content, scrollProseToOffset]
+    [chapter.content, scrollProseToOffset, clearFeedbackLater]
   );
 
   const handleClickTodo = (todo: ChapterRevisionTodo) => {
@@ -205,6 +223,10 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
 
   // 换章时：重置面板为收起（待修清单默认收束，不再自动弹开占屏）
   useEffect(() => {
+    if (feedbackTimerRef.current) {
+      clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
+    }
     setTodosOpen(false);
     setTodoDraft('');
     setHighlightedTodoId(null);
@@ -246,10 +268,10 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
       setInlineFeedback(
         `已定位「${chapter.content.slice(range.start, range.end).slice(0, 20)}」`
       );
-      window.setTimeout(() => setInlineFeedback(null), 2800);
+      clearFeedbackLater(2800);
     } else {
       setInlineFeedback('正文中未找到该片段（可能已改写）');
-      window.setTimeout(() => setInlineFeedback(null), 2200);
+      clearFeedbackLater(2200);
     }
     onFocusSnippetConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps

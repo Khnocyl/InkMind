@@ -1,14 +1,22 @@
 import { contentWordsOrFallback } from './proseWords';
 import type { BookProject } from '../types/novel';
-import { initDB, STORE_META, STORE_SNAPSHOTS, saveProject } from './storage';
+import {
+  initDB,
+  STORE_META,
+  STORE_SNAPSHOTS,
+  saveProject,
+  snapshotCapMetaKey,
+} from './storage';
 import { sanitizeProjectForExport } from './projectTransfer';
 
 /** 每书最多保留快照数（超出删最旧） */
 export const MAX_SNAPSHOTS_PER_PROJECT = 30;
-/** meta store key 前缀：项目级快照上限（默认 MAX_SNAPSHOTS_PER_PROJECT） */
-export function snapshotCapKey(projectId: string): string {
-  return `snapshot-cap:${projectId}`;
-}
+/**
+ * 永不参与裁剪的快照类型：迁移前备份是降级/迁移失败的唯一退路，
+ * 回滚前备份是「后悔药」（用于撤销一次错误回滚）。按时间淘汰会在几十条
+ * 普通快照之后把它们静默删掉；它们只由用户动作/schema 升级产生，数量有界。
+ */
+const PINNED_SNAPSHOT_REASONS = new Set<SnapshotReason>(['migration', 'pre_restore']);
 
 export type SnapshotReason =
   | 'pre_write'
@@ -195,7 +203,9 @@ export async function createSnapshot(
   });
 
   if (options.prune !== false) {
-    await pruneSnapshots(project.id, MAX_SNAPSHOTS_PER_PROJECT);
+    // 不传 keep → 读项目级上限（未设置时回退 MAX_SNAPSHOTS_PER_PROJECT）。
+    // 此前硬传常量，导致 setSnapshotCap 设置的每书上限永远不生效。
+    await pruneSnapshots(project.id);
   }
 
   const { project: _p, projectGz: _gz, ...meta } = snap;
@@ -278,7 +288,7 @@ export async function getSnapshotCap(projectId: string): Promise<number | null> 
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_META, 'readonly');
-    const req = tx.objectStore(STORE_META).get(snapshotCapKey(projectId));
+    const req = tx.objectStore(STORE_META).get(snapshotCapMetaKey(projectId));
     req.onsuccess = () => {
       const v = req.result?.value;
       resolve(typeof v === 'number' && v >= 1 ? Math.floor(v) : null);
@@ -297,9 +307,9 @@ export async function setSnapshotCap(
     const tx = db.transaction(STORE_META, 'readwrite');
     const store = tx.objectStore(STORE_META);
     if (cap == null || cap < 1) {
-      store.delete(snapshotCapKey(projectId));
+      store.delete(snapshotCapMetaKey(projectId));
     } else {
-      store.put({ key: snapshotCapKey(projectId), value: Math.floor(cap) });
+      store.put({ key: snapshotCapMetaKey(projectId), value: Math.floor(cap) });
     }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -316,7 +326,11 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
   });
 }
 
-/** 超出 keep（缺省读项目级 cap，再缺省 MAX_SNAPSHOTS_PER_PROJECT）时删除最旧快照 */
+/**
+ * 超出 keep（缺省读项目级 cap，再缺省 MAX_SNAPSHOTS_PER_PROJECT）时删除最旧快照。
+ * 迁移前备份 / 回滚前备份永不淘汰（见 PINNED_SNAPSHOT_REASONS）——它们不占
+ * 普通快照的配额，因此普通快照仍保留 cap 条，安全快照额外保留。
+ */
 export async function pruneSnapshots(
   projectId: string,
   keep?: number
@@ -324,8 +338,9 @@ export async function pruneSnapshots(
   const cap =
     keep ?? (await getSnapshotCap(projectId)) ?? MAX_SNAPSHOTS_PER_PROJECT;
   const metas = await listSnapshots(projectId);
-  if (metas.length <= cap) return 0;
-  const toDelete = metas.slice(cap); // metas 已新→旧，保留前 cap 条
+  const candidates = metas.filter((m) => !PINNED_SNAPSHOT_REASONS.has(m.reason));
+  if (candidates.length <= cap) return 0;
+  const toDelete = candidates.slice(cap); // candidates 已新→旧，保留前 cap 条
   const db = await initDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
