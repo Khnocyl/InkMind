@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { removeCharacterFromProject, updateCharacterInList } from '../src/services/characterOps';
+import {
+  normalizeCharacters,
+  removeCharacterFromProject,
+  updateCharacterInList,
+} from '../src/services/characterOps';
 import type { BookProject, Character } from '../src/types/novel';
 
 function char(id: string, relations: Character['relations'] = []): Character {
@@ -33,6 +37,42 @@ function project(overrides?: Partial<BookProject>): Pick<BookProject, 'character
     ...overrides,
   } as Pick<BookProject, 'characters' | 'chapters'>;
 }
+
+describe('normalizeCharacters · 补齐 AI 缺字段（回归 .map 崩溃）', () => {
+  it('缺 relations 的角色 → 补成空数组（否则角色图谱渲染崩溃）', () => {
+    const out = normalizeCharacters([{ id: 'c1', name: '叶无痕' }]);
+    expect(out).toHaveLength(1);
+    expect(out[0].relations).toEqual([]);
+    expect(out[0].role).toBe('重要配角');
+    expect(out[0].status).toBe('活跃');
+    expect(out[0].personality).toBe('');
+  });
+
+  it('保留已有 relations 与字段', () => {
+    const out = normalizeCharacters([
+      {
+        id: 'c1',
+        name: '甲',
+        role: '主角',
+        relations: [{ targetId: 'c2', relation: '宿敌', intimacy: -50 }],
+      },
+    ]);
+    expect(out[0].role).toBe('主角');
+    expect(out[0].relations).toHaveLength(1);
+  });
+
+  it('缺 id / name → 生成占位，不产生 undefined', () => {
+    const out = normalizeCharacters([{ personality: 'x' }]);
+    expect(out[0].id).toBeTruthy();
+    expect(out[0].name).toBeTruthy();
+  });
+
+  it('非数组 / 非对象条目 → 安全过滤', () => {
+    expect(normalizeCharacters(undefined)).toEqual([]);
+    expect(normalizeCharacters('nope')).toEqual([]);
+    expect(normalizeCharacters([null, 42, { id: 'ok' }])).toHaveLength(1);
+  });
+});
 
 describe('removeCharacterFromProject · 级联清理', () => {
   it('删除角色本身 + 章节引用 + 其他角色指向它的关系', () => {

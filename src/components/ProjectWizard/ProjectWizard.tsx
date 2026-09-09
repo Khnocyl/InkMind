@@ -28,6 +28,7 @@ import { ArrowLeft, Library, X } from 'lucide-react';
 import { WizardStepper } from './WizardStepper';
 import { WindowControls } from '../WindowControls';
 import { WizardDraftSaver, wizardDoneSteps } from '../../services/wizardDraft';
+import { normalizeCharacters } from '../../services/characterOps';
 
 // 防止 tree-shake 掉 buildOutlinePrompt（兼容热更新残留）
 void buildOutlinePrompt;
@@ -296,7 +297,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       const res = await generateJSON<{ characters: Character[] }>(prompt, 0.75);
 
       await updateAndSave({
-        characters: res.characters || [],
+        // 模型可能缺 relations 等字段：入口统一补齐，否则角色图谱渲染时 .map 崩溃
+        characters: normalizeCharacters(res.characters),
         ...(persistedReady ? {} : { wizardStep: 'characters-review' as WizardStep }),
       });
       setViewStep('characters-review');

@@ -389,7 +389,7 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
             <div className="p-4 bg-white border border-[#cccccc] rounded text-xs">
               <div className="font-bold text-black text-sm mb-3">关键关系链条（动态更新追踪图谱）</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {selectedChar.relations.map((rel, idx) => {
+                {(selectedChar.relations || []).map((rel, idx) => {
                   const target = characters.find((c) => c.id === rel.targetId);
                   return (
                     <div key={idx} className="p-2.5 bg-[#f9f9f9] border border-[#e0e0e0] rounded flex items-center justify-between">
@@ -406,7 +406,7 @@ export const CharacterManager: React.FC<CharacterManagerProps> = ({
                     </div>
                   );
                 })}
-                {selectedChar.relations.length === 0 && (
+                {(selectedChar.relations || []).length === 0 && (
                   <div className="text-[#888888] py-2">暂未记录外部人物关系</div>
                 )}
               </div>
