@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Sparkles, BookOpen, Flame, ArrowRight, ArrowLeft, RefreshCw, CheckCircle, Tag, AlertTriangle } from 'lucide-react';
 
 interface TitleData {
@@ -21,6 +21,8 @@ interface TitleReviewStepProps {
   genElapsedSec?: number;
   /** 停止本次生成（中止上游请求） */
   onCancelGenerate?: () => void;
+  /** 草稿自动落盘（退出向导/切书/刷新不丢未提交的编辑） */
+  onDraftChange?: (patch: { title: string; subtitle: string; genre: string; synopsis: string }) => void;
 }
 
 export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
@@ -32,6 +34,7 @@ export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
   progressMsg,
   genElapsedSec,
   onCancelGenerate,
+  onDraftChange,
 }) => {
   const [title, setTitle] = useState(data.title);
   const [subtitle, setSubtitle] = useState(data.subtitle);
@@ -40,6 +43,18 @@ export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
   const [coreConflict, setCoreConflict] = useState(data.coreConflict);
   const [hooks, setHooks] = useState<string[]>(data.hooks || []);
   const [newHook, setNewHook] = useState('');
+
+  // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
+  const draftMountedRef = useRef(false);
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (!draftMountedRef.current) {
+      draftMountedRef.current = true;
+      return;
+    }
+    onDraftChange({ title, subtitle, genre, synopsis });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, subtitle, genre, synopsis]);
 
   const handleAddHook = () => {
     if (newHook.trim()) {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { WorldSetting, SettingCategory } from '../../types/novel';
 import { Globe, Plus, Trash2, ArrowRight, ArrowLeft, RefreshCw, Zap, Check, Tag } from 'lucide-react';
 
@@ -13,6 +13,8 @@ interface WorldReviewStepProps {
   genElapsedSec?: number;
   /** 停止本次生成（中止上游请求） */
   onCancelGenerate?: () => void;
+  /** 草稿自动落盘（退出向导/切书/刷新不丢未提交的编辑） */
+  onDraftChange?: (settings: WorldSetting[]) => void;
 }
 
 const CATEGORIES: SettingCategory[] = [
@@ -32,11 +34,24 @@ export const WorldReviewStep: React.FC<WorldReviewStepProps> = ({
   progressMsg,
   genElapsedSec,
   onCancelGenerate,
+  onDraftChange,
 }) => {
   const [settings, setSettings] = useState<WorldSetting[]>(initialSettings);
   const [activeCategory, setActiveCategory] = useState<SettingCategory>(CATEGORIES[0]);
   const [activeSettingId, setActiveSettingId] = useState<string>(initialSettings[0]?.id || '');
   const [newRuleInput, setNewRuleInput] = useState('');
+
+  // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
+  const draftMountedRef = useRef(false);
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (!draftMountedRef.current) {
+      draftMountedRef.current = true;
+      return;
+    }
+    onDraftChange(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
 
   const filteredSettings = settings.filter((s) => s.category === activeCategory);
   const activeSetting = settings.find((s) => s.id === activeSettingId) || filteredSettings[0] || settings[0];

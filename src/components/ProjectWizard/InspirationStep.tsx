@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectConfig, StyleConfig, StyleProfile } from '../../types/novel';
 import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Fingerprint, Upload, Loader2, RefreshCw } from 'lucide-react';
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
@@ -29,6 +29,11 @@ interface InspirationStepProps {
   onCancelGenerate?: () => void;
   /** R3 收尾：向导内直接导入文风档案 → 写入新书 styleConfig（随向导落盘） */
   onStyleConfigChange?: (sc: StyleConfig) => Promise<unknown> | void;
+  /**
+   * 草稿自动落盘：未点「下一步」前表单只在本地 state，退出向导/切书/刷新会全丢。
+   * 每次字段变化回调最新配置，由向导去抖写回项目。
+   */
+  onDraftChange?: (config: ProjectConfig) => void;
 }
 
 const PRESET_INSPIRATIONS = [
@@ -77,6 +82,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   onCancelGenerate,
   onStyleConfigChange,
   styleConfig,
+  onDraftChange,
 }) => {
   const packs = listGenrePacks();
   const [inspiration, setInspiration] = useState(initialConfig.inspiration || PRESET_INSPIRATIONS[0].text);
@@ -231,27 +237,43 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     return { writingStyle: key, styleProfileId: null };
   };
 
+  /** 由当前表单状态构造 ProjectConfig（提交与草稿自动落盘共用同一份口径） */
+  const buildConfig = (): ProjectConfig => {
+    const { writingStyle, styleProfileId } = resolveWritingStyle(styleKey);
+    return {
+      inspiration,
+      totalChapters,
+      wordsPerChapter,
+      targetChapterCount: totalChapters,
+      targetWordCountPerChapter: wordsPerChapter,
+      writingStyle,
+      genre,
+      customParameters: {
+        ...(initialConfig.customParameters || {}),
+        genrePackId: packId,
+        wizardStyleProfileId: styleProfileId || undefined,
+      },
+    };
+  };
+
+  // 草稿自动落盘：跳过首次挂载（此时状态来自 initialConfig，且灵感默认值只是占位
+  // 文案，不该在用户没动过任何东西时就写进项目）。
+  const draftMountedRef = useRef(false);
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (!draftMountedRef.current) {
+      draftMountedRef.current = true;
+      return;
+    }
+    onDraftChange(buildConfig());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspiration, totalChapters, wordsPerChapter, genre, packId, styleKey]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inspiration.trim()) return;
-    const { writingStyle, styleProfileId, profile } = resolveWritingStyle(styleKey);
-    onNext(
-      {
-        inspiration,
-        totalChapters,
-        wordsPerChapter,
-        targetChapterCount: totalChapters,
-        targetWordCountPerChapter: wordsPerChapter,
-        writingStyle,
-        genre,
-        customParameters: {
-          ...(initialConfig.customParameters || {}),
-          genrePackId: packId,
-          wizardStyleProfileId: styleProfileId || undefined,
-        },
-      },
-      { styleProfileId, profile }
-    );
+    const { styleProfileId, profile } = resolveWritingStyle(styleKey);
+    onNext(buildConfig(), { styleProfileId, profile });
   };
 
   const estimatedTotal = totalChapters * wordsPerChapter;

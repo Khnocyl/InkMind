@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Volume, Chapter, ProjectConfig } from '../../types/novel';
 import { Layers, ChevronDown, ChevronRight, Plus, RefreshCw, CheckCircle, BookOpen, FileText, ArrowLeft, Target, Sparkles } from 'lucide-react';
 import { isPlaceholderChapter } from '../../services/outlineGenerate';
@@ -18,6 +18,8 @@ interface OutlineReviewStepProps {
   genElapsedSec?: number;
   /** 停止本次生成（中止上游请求） */
   onCancelGenerate?: () => void;
+  /** 草稿自动落盘（退出向导/切书/刷新不丢未提交的编辑） */
+  onDraftChange?: (patch: { volumes: Volume[]; chapters: Chapter[] }) => void;
 }
 
 /** 章节行状态 tag 配色（纯展示）：定稿=绿 / 占位=红 / 其余=灰 */
@@ -43,19 +45,46 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
   progressMsg,
   genElapsedSec,
   onCancelGenerate,
+  onDraftChange,
 }) => {
   const [volumes, setVolumes] = useState<Volume[]>(initialVolumes);
   const [chapters, setChapters] = useState<Chapter[]>(initialChapters);
   const [expandedVolId, setExpandedVolId] = useState<string>(initialVolumes[0]?.id || '');
   const [selectedChapId, setSelectedChapId] = useState<string>(initialChapters[0]?.id || '');
 
-  // 父级 AI 重拆后同步 props（避免仍显示旧章数）
+  // 当前 state 的引用快照：用于区分「父级 AI 重拆」与「草稿自动落盘回写」
+  const volumesRef = useRef(volumes);
+  volumesRef.current = volumes;
+  const chaptersRef = useRef(chapters);
+  chaptersRef.current = chapters;
+
+  // 父级 AI 重拆后同步 props（避免仍显示旧章数）。
+  // 草稿自动落盘会把同一数组引用回写成 props —— 那种情况必须跳过，
+  // 否则每次自动落盘都会把展开卷/选中章打回第一卷第一张。
   useEffect(() => {
+    if (
+      initialVolumes === volumesRef.current &&
+      initialChapters === chaptersRef.current
+    ) {
+      return;
+    }
     setVolumes(initialVolumes);
     setChapters(initialChapters);
     if (initialVolumes[0]?.id) setExpandedVolId(initialVolumes[0].id);
     if (initialChapters[0]?.id) setSelectedChapId(initialChapters[0].id);
   }, [initialVolumes, initialChapters]);
+
+  // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
+  const draftMountedRef = useRef(false);
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (!draftMountedRef.current) {
+      draftMountedRef.current = true;
+      return;
+    }
+    onDraftChange({ volumes, chapters });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [volumes, chapters]);
 
   const activeVol = volumes.find((v) => v.id === expandedVolId) || volumes[0];
   const activeChap = chapters.find((c) => c.id === selectedChapId) || chapters[0];

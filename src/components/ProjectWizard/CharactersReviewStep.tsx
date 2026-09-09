@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Character, CharacterRole } from '../../types/novel';
 
 import { Users, UserPlus, Trash2, ArrowRight, ArrowLeft, RefreshCw, Eye, ShieldAlert, Sparkles, MapPin, Award } from 'lucide-react';
@@ -14,6 +14,8 @@ interface CharactersReviewStepProps {
   genElapsedSec?: number;
   /** 停止本次生成（中止上游请求） */
   onCancelGenerate?: () => void;
+  /** 草稿自动落盘（退出向导/切书/刷新不丢未提交的编辑） */
+  onDraftChange?: (characters: Character[]) => void;
 }
 
 /** 身份 tag pill 色分：主角=黑 / 反派=红 / 神秘人=灰 / 其余=玫红 */
@@ -39,9 +41,22 @@ export const CharactersReviewStep: React.FC<CharactersReviewStepProps> = ({
   progressMsg,
   genElapsedSec,
   onCancelGenerate,
+  onDraftChange,
 }) => {
   const [characters, setCharacters] = useState<Character[]>(initialChars);
   const [activeCharId, setActiveCharId] = useState<string>(initialChars[0]?.id || '');
+
+  // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
+  const draftMountedRef = useRef(false);
+  useEffect(() => {
+    if (!onDraftChange) return;
+    if (!draftMountedRef.current) {
+      draftMountedRef.current = true;
+      return;
+    }
+    onDraftChange(characters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characters]);
 
   const activeChar = characters.find((c) => c.id === activeCharId) || characters[0];
 

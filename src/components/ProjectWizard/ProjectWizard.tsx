@@ -27,6 +27,7 @@ import {
 import { ArrowLeft, Library, X } from 'lucide-react';
 import { WizardStepper } from './WizardStepper';
 import { WindowControls } from '../WindowControls';
+import { WizardDraftSaver } from '../../services/wizardDraft';
 
 // 防止 tree-shake 掉 buildOutlinePrompt（兼容热更新残留）
 void buildOutlinePrompt;
@@ -152,6 +153,28 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       void updateAndSave({ wizardStep: step });
     }
   };
+
+  // ── 向导草稿自动落盘 ──
+  // 各步表单此前只在点「下一步」时落盘：退出向导/切书/刷新会丢掉未提交的编辑
+  // （用户实测第一步的灵感与参数退出后回来全空）。这里把每步的编辑去抖写回项目。
+  const updateAndSaveRef = useRef(updateAndSave);
+  updateAndSaveRef.current = updateAndSave;
+  const draftSaverRef = useRef<WizardDraftSaver | null>(null);
+  if (!draftSaverRef.current) {
+    draftSaverRef.current = new WizardDraftSaver((patch) =>
+      updateAndSaveRef.current(patch)
+    );
+  }
+  const queueDraft = (patch: Partial<BookProject>) => {
+    draftSaverRef.current?.queue(patch);
+  };
+  // 向导卸载（关闭/完成/切书）时把最后一击冲刷掉
+  useEffect(
+    () => () => {
+      void draftSaverRef.current?.flush();
+    },
+    []
+  );
 
   // Step 1 -> Step 2
   const handleGenerateTitle = async (
@@ -393,6 +416,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
 
   // Final confirmation step
   const handleFinishWizard = async (finalVolumes: Volume[], finalChapters: Chapter[]) => {
+    // 先把挂起的草稿冲刷掉，避免「标 ready 之后草稿又写回」造成步骤错乱
+    await draftSaverRef.current?.flush();
     // 强制落盘 ready（updateAndSave 对 ready 写入放行）
     const current = projectRef.current;
     const nextProject: BookProject = {
@@ -508,6 +533,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             activeStyleProfileId={project.styleConfig?.activeStyleProfileId}
             styleConfig={project.styleConfig}
             onStyleConfigChange={(sc) => updateAndSave({ styleConfig: sc })}
+            onDraftChange={(config) => queueDraft({ config })}
             onNext={handleGenerateTitle}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
@@ -529,6 +555,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onNext={handleGenerateCharacters}
             onPrev={() => goToStep('inspiration')}
             onRegenerate={() => handleGenerateTitle(project.config)}
+            onDraftChange={(patch) => queueDraft(patch)}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
             genElapsedSec={genElapsedSec}
@@ -551,6 +578,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
                 coreConflict: '',
               })
             }
+            onDraftChange={(characters) => queueDraft({ characters })}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
             genElapsedSec={genElapsedSec}
@@ -564,6 +592,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onNext={handleGenerateOutline}
             onPrev={() => goToStep('characters-review')}
             onRegenerate={() => handleGenerateWorld(project.characters)}
+            onDraftChange={(settings) => queueDraft({ settings })}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
             genElapsedSec={genElapsedSec}
@@ -580,6 +609,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
             onPrev={() => goToStep('world-review')}
             onRegenerate={() => handleGenerateOutline(project.settings)}
             onFillPlaceholders={handleFillPlaceholders}
+            onDraftChange={(patch) => queueDraft(patch)}
             isGenerating={isGenerating}
             progressMsg={progressMsg}
             genElapsedSec={genElapsedSec}
