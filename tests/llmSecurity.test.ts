@@ -3,18 +3,26 @@ import {
   assertSafeUrl,
   buildSafeHeaders,
   checkBaseUrlSafety,
+  checkBaseUrlSafetyResolved,
   isSameOriginClient,
+  resolveEmbeddingKeyFallback,
   resolveRequestApiKey,
   sameBaseUrlOrigin,
 } from '../server/llmSecurity';
 
 const ORIGINAL_BLOCK_PRIVATE = process.env.BLOCK_PRIVATE_LLM_BASE;
+const ORIGINAL_PROXY = process.env.INKMIND_PROXY;
 
 afterEach(() => {
   if (ORIGINAL_BLOCK_PRIVATE === undefined) {
     delete process.env.BLOCK_PRIVATE_LLM_BASE;
   } else {
     process.env.BLOCK_PRIVATE_LLM_BASE = ORIGINAL_BLOCK_PRIVATE;
+  }
+  if (ORIGINAL_PROXY === undefined) {
+    delete process.env.INKMIND_PROXY;
+  } else {
+    process.env.INKMIND_PROXY = ORIGINAL_PROXY;
   }
 });
 
@@ -358,5 +366,116 @@ describe('llmSecurity · assertSafeUrl（P3-2 重定向复检）', () => {
 
   it('回环地址默认放行（本地 Ollama 场景）', () => {
     expect(() => assertSafeUrl('http://127.0.0.1:11434/v1/models')).not.toThrow();
+  });
+});
+
+describe('llmSecurity · checkBaseUrlSafetyResolved（域名解析后校验）', () => {
+  it('域名解析到云元数据/链路本地地址 → 阻断（同步检查拦不住的形态）', async () => {
+    const r = await checkBaseUrlSafetyResolved('https://metadata.example.com/v1', async () => [
+      '169.254.169.254',
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('链路本地');
+  });
+
+  it('IPv6 映射形态的解析结果同样阻断', async () => {
+    const r = await checkBaseUrlSafetyResolved('https://evil.example.com/v1', async () => [
+      '::ffff:169.254.169.254',
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('解析到公网地址 → 放行', async () => {
+    const r = await checkBaseUrlSafetyResolved('https://api.deepseek.com', async () => [
+      '203.0.113.10',
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('解析到回环：默认放行（本地 Ollama），BLOCK_PRIVATE_LLM_BASE=1 时阻断', async () => {
+    const resolve = async () => ['127.0.0.1'];
+    expect((await checkBaseUrlSafetyResolved('http://localhost:11434/v1', resolve)).ok).toBe(
+      true
+    );
+    process.env.BLOCK_PRIVATE_LLM_BASE = '1';
+    const blocked = await checkBaseUrlSafetyResolved('http://localhost:11434/v1', resolve);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.reason).toContain('BLOCK_PRIVATE_LLM_BASE');
+  });
+
+  it('解析失败 → fail-closed（不放过未知主机）', async () => {
+    delete process.env.INKMIND_PROXY; // 开发机常已配置本机代理，需显式清掉才是直连路径
+    const r = await checkBaseUrlSafetyResolved('https://nope.invalid/v1', async () => {
+      throw new Error('ENOTFOUND');
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('无法解析');
+  });
+
+  it('配置了本机代理时解析失败放行（出口 DNS 在代理侧）', async () => {
+    process.env.INKMIND_PROXY = 'http://127.0.0.1:7890';
+    const r = await checkBaseUrlSafetyResolved('https://proxy-only.example.com/v1', async () => {
+      throw new Error('ENOTFOUND');
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('IP 字面量不触发 DNS 解析（同步检查已覆盖）', async () => {
+    let called = 0;
+    const r = await checkBaseUrlSafetyResolved('https://169.254.169.254/latest', async () => {
+      called += 1;
+      return [];
+    });
+    expect(r.ok).toBe(false);
+    expect(called).toBe(0);
+  });
+});
+
+describe('llmSecurity · resolveEmbeddingKeyFallback（密钥不回退异源）', () => {
+  const LLM_KEY = 'sk-llm-secret';
+  const LLM_URL = 'https://api.deepseek.com/v1';
+
+  it('embedding 有自己的 key → 用自己的', () => {
+    expect(
+      resolveEmbeddingKeyFallback({
+        embKey: 'sk-emb',
+        embBaseURL: 'https://free-embeddings.example.com/v1',
+        llmKey: LLM_KEY,
+        llmBaseURL: LLM_URL,
+      })
+    ).toBe('sk-emb');
+  });
+
+  it('异源地址且无专属 key → 不回退 LLM 密钥（防止密钥外泄）', () => {
+    expect(
+      resolveEmbeddingKeyFallback({
+        embKey: '',
+        embBaseURL: 'https://free-embeddings.example.com/v1',
+        llmKey: LLM_KEY,
+        llmBaseURL: LLM_URL,
+      })
+    ).toBe('');
+  });
+
+  it('同源（含路径差异）→ 允许回退', () => {
+    expect(
+      resolveEmbeddingKeyFallback({
+        embKey: '',
+        embBaseURL: 'https://api.deepseek.com',
+        llmKey: LLM_KEY,
+        llmBaseURL: LLM_URL,
+      })
+    ).toBe(LLM_KEY);
+  });
+
+  it('embBaseURL 留空（实际沿用 LLM 地址）→ 允许回退', () => {
+    expect(
+      resolveEmbeddingKeyFallback({
+        embKey: '',
+        embBaseURL: '',
+        llmKey: LLM_KEY,
+        llmBaseURL: LLM_URL,
+      })
+    ).toBe(LLM_KEY);
   });
 });

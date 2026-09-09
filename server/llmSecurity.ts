@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { lookup } from 'node:dns/promises';
 
 /**
  * 服务端请求安全（纯函数，无配置读写副作用，便于单测）。
@@ -108,6 +109,89 @@ export function checkBaseUrlSafety(baseURL: string): BaseUrlCheckResult {
 /** 校验并抛错（供保存配置 / 发起上游请求调用）。 */
 export function assertSafeBaseUrl(baseURL: string): void {
   const r = checkBaseUrlSafety(baseURL);
+  if (!r.ok) throw new Error(r.reason);
+}
+
+/** 主机名 → IP 列表（可注入，便于单测不触网） */
+export type HostResolver = (hostname: string) => Promise<string[]>;
+
+const defaultHostResolver: HostResolver = async (hostname) => {
+  const addrs = await lookup(hostname, { all: true, verbatim: true });
+  return addrs.map((a) => a.address);
+};
+
+/** 对单个已解析 IP 做「始终阻断 / 可选私网阻断」判定 */
+function checkResolvedAddress(address: string): BaseUrlCheckResult {
+  const family = net.isIP(address);
+  if (family === 4) {
+    if (alwaysBlockList.check(address, 'ipv4')) {
+      return { ok: false, reason: `Base URL 解析到链路本地/云元数据地址（${address}），已阻断` };
+    }
+    if (isBlockPrivateEnabled() && privateBlockList.check(address, 'ipv4')) {
+      return { ok: false, reason: `Base URL 解析到回环/私网地址（${address}），已被 BLOCK_PRIVATE_LLM_BASE 阻断` };
+    }
+    return { ok: true };
+  }
+  if (family === 6) {
+    const mapped = ipv4MappedAddress(address);
+    if (mapped) return checkResolvedAddress(mapped);
+    if (alwaysBlockList.check(address, 'ipv6')) {
+      return { ok: false, reason: `Base URL 解析到链路本地地址（${address}），已阻断` };
+    }
+    if (isBlockPrivateEnabled() && privateBlockList.check(address, 'ipv6')) {
+      return { ok: false, reason: `Base URL 解析到回环/私网地址（${address}），已被 BLOCK_PRIVATE_LLM_BASE 阻断` };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * 域名解析后再校验（安全审计 H1）。
+ *
+ * 同步的 checkBaseUrlSafety 只能看 hostname 字符串：`metadata.google.internal`、
+ * `localhost`、`*.nip.io`、DNS rebinding 域名都能绕过 IP 字面量黑名单。
+ * 这里在真正发请求前解析域名，逐个 IP 套用同一套网段规则：
+ * - 链路本地 / 云元数据（169.254/16、fe80::/10）**始终**阻断；
+ * - 回环 / 私网仅在 BLOCK_PRIVATE_LLM_BASE=1 时阻断（默认放行本地 Ollama）。
+ *
+ * 残留风险：解析与连接之间仍存在 TOCTOU（要彻底消除需自定义 undici dispatcher
+ * 固定拨号地址）。解析失败按 fail-closed 处理——随后本来也发不出去。
+ */
+export async function checkBaseUrlSafetyResolved(
+  baseURL: string,
+  resolve: HostResolver = defaultHostResolver
+): Promise<BaseUrlCheckResult> {
+  const sync = checkBaseUrlSafety(baseURL);
+  if (!sync.ok) return sync;
+
+  const hostname = normalizeHostname(new URL(baseURL.trim()).hostname);
+  if (net.isIP(hostname)) return { ok: true }; // IP 字面量：同步检查已覆盖
+
+  let addresses: string[];
+  try {
+    addresses = await resolve(hostname);
+  } catch {
+    // 配置了本机代理时出口 DNS 在代理侧，本地解析失败不代表不可达 → 放行
+    // （代理是用户显式声明的信任边界；默认直连路径仍 fail-closed）
+    if (process.env.INKMIND_PROXY) return { ok: true };
+    return { ok: false, reason: `Base URL 主机名无法解析：${hostname}` };
+  }
+  if (!addresses.length) {
+    return { ok: false, reason: `Base URL 主机名无法解析：${hostname}` };
+  }
+  for (const address of addresses) {
+    const r = checkResolvedAddress(address);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
+/** 解析后校验并抛错（发起上游请求前调用）。 */
+export async function assertSafeBaseUrlResolved(
+  baseURL: string,
+  resolve?: HostResolver
+): Promise<void> {
+  const r = await checkBaseUrlSafetyResolved(baseURL, resolve);
   if (!r.ok) throw new Error(r.reason);
 }
 
@@ -229,6 +313,26 @@ export function resolveRequestApiKey(input: {
     throw new Error('探测新地址请先粘贴 API Key（已保存密钥不会发往不同的服务地址）');
   }
   return input.storedApiKey;
+}
+
+/**
+ * Embedding 解析密钥（安全审计：密钥不回退异源）。
+ *
+ * 独立 embedding 地址且未配置专属 key 时，历史上会回退到已存的 LLM 密钥——
+ * 于是把 embedding baseURL 指向任意第三方主机就能让 DeepSeek/OpenAI 的密钥
+ * 被当作 Bearer 发出去。现在只有「embedding 地址与 LLM 地址同源」才允许回退
+ * （embBaseURL 留空 → 实际用 LLM 地址，属同源，行为不变）。
+ */
+export function resolveEmbeddingKeyFallback(input: {
+  embKey: string;
+  embBaseURL: string;
+  llmKey: string;
+  llmBaseURL: string;
+}): string {
+  if (input.embKey) return input.embKey;
+  // 未指定独立 embedding 地址 = 实际沿用 LLM 地址（调用方已做替换）→ 允许回退
+  if (!input.embBaseURL.trim()) return input.llmKey;
+  return sameBaseUrlOrigin(input.embBaseURL, input.llmBaseURL) ? input.llmKey : '';
 }
 
 /** 不可被 customHeaders 覆盖/注入的危险头（大小写不敏感）。 */

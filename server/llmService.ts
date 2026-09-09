@@ -13,8 +13,10 @@ import {
 } from './llmProviderRequest';
 import {
   assertSafeBaseUrl,
+  assertSafeBaseUrlResolved,
   assertSafeUrl,
   buildSafeHeaders,
+  resolveEmbeddingKeyFallback,
   resolveRequestApiKey,
   sameBaseUrlOrigin,
 } from './llmSecurity';
@@ -768,7 +770,12 @@ export function getEmbeddingConfigPublic(): {
     : emb.baseURL || llm.baseURL;
   const resolvedKey = emb.useSameAsLlm
     ? decryptKey(llm.encryptedApiKey)
-    : decryptKey(emb.encryptedApiKey) || decryptKey(llm.encryptedApiKey);
+    : resolveEmbeddingKeyFallback({
+        embKey: decryptKey(emb.encryptedApiKey),
+        embBaseURL: resolvedBaseURL,
+        llmKey: decryptKey(llm.encryptedApiKey),
+        llmBaseURL: llm.baseURL,
+      });
   return {
     enabled: !!emb.enabled,
     useSameAsLlm: emb.useSameAsLlm !== false,
@@ -784,6 +791,11 @@ export function getEmbeddingConfigPublic(): {
   };
 }
 
+/**
+ * 保存 Embedding 配置。
+ * 安全审计：地址换到不同 origin 且未提供新 key 时清除旧密钥（与 LLM 配置档同规则）；
+ * 密钥解析阶段的异源回退由 llmSecurity.resolveEmbeddingKeyFallback 兜底。
+ */
 export function saveEmbeddingConfig(input: {
   enabled?: boolean;
   useSameAsLlm?: boolean;
@@ -796,6 +808,7 @@ export function saveEmbeddingConfig(input: {
   if (input.baseURL && input.baseURL.trim()) {
     assertSafeBaseUrl(input.baseURL);
   }
+  const prevEmbBaseURL = (file.embedding?.baseURL || '').trim();
   const emb = { ...defaultEmbedding(), ...(file.embedding || {}) };
   if (input.enabled !== undefined) emb.enabled = !!input.enabled;
   if (input.useSameAsLlm !== undefined) emb.useSameAsLlm = !!input.useSameAsLlm;
@@ -804,6 +817,12 @@ export function saveEmbeddingConfig(input: {
   if (input.dimensions !== undefined) emb.dimensions = input.dimensions;
   if (input.apiKey && !input.apiKey.startsWith('sk-****')) {
     emb.encryptedApiKey = encryptKey(input.apiKey);
+  } else if (
+    input.baseURL !== undefined &&
+    !shouldKeepExistingKey(prevEmbBaseURL, emb.baseURL, input.apiKey)
+  ) {
+    // 地址换到不同 origin 且未提供新 key：清除旧密钥（与 LLM 配置档同规则）
+    emb.encryptedApiKey = '';
   }
   emb.updatedAt = new Date().toISOString();
   file.embedding = emb;
@@ -825,7 +844,13 @@ function resolveEmbeddingCredentials(): {
   if (emb.useSameAsLlm) {
     apiKey = decryptKey(llm.encryptedApiKey);
   } else {
-    apiKey = decryptKey(emb.encryptedApiKey) || decryptKey(llm.encryptedApiKey);
+    // 异源地址禁止回退 LLM 密钥（见 resolveEmbeddingKeyFallback 注释）
+    apiKey = resolveEmbeddingKeyFallback({
+      embKey: decryptKey(emb.encryptedApiKey),
+      embBaseURL: baseURL,
+      llmKey: decryptKey(llm.encryptedApiKey),
+      llmBaseURL: llm.baseURL,
+    });
   }
   return {
     baseURL,
@@ -843,7 +868,7 @@ export async function createEmbeddings(
   const cred = resolveEmbeddingCredentials();
   const baseURL = (options?.baseURL?.trim() || cred.baseURL || '').trim();
   if (!baseURL) throw new Error('Embedding Base URL 为空');
-  assertSafeBaseUrl(baseURL);
+  await assertSafeBaseUrlResolved(baseURL);
   const apiKey = resolveRequestApiKey({
     requestedBaseURL: options?.baseURL,
     storedBaseURL: cred.baseURL,
@@ -974,7 +999,7 @@ export async function listLLMModels(options?: {
   if (!baseURL) {
     throw new Error('请先填写 API Base URL');
   }
-  assertSafeBaseUrl(baseURL);
+  await assertSafeBaseUrlResolved(baseURL);
 
   // 鉴权形态按「正在编辑的档」而非激活档：否则编辑 Anthropic/local 档时
   // 会拿激活档的 provider 发错鉴权头（401）或误要求 Key
@@ -1162,7 +1187,7 @@ export async function callLLMService(options: {
   }
 
   let baseURL = (effectiveConfig.baseURL || 'https://api.openai.com').replace(/\/+$/, '');
-  assertSafeBaseUrl(baseURL);
+  await assertSafeBaseUrlResolved(baseURL);
 
   const provider = (effectiveConfig.provider || 'custom') as ChatProvider;
   const model = options.model?.trim() || effectiveConfig.modelName || 'deepseek-chat';

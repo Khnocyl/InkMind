@@ -7,6 +7,7 @@ import type {
 import type { BookProject, BookProjectSummary } from '../types/novel';
 import { saveProject, listProjects, isProjectConflictError } from '../services/storage';
 import { CoalescedWriter } from '../services/coalescedWriter';
+import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import { mergeStyleConfigPreserve } from '../services/styleImitate';
 import { flushAutoBackup } from '../services/autoBackup';
 
@@ -28,8 +29,8 @@ export interface UseProjectPersistenceOptions {
  * - handleUpdateAndPersistProject：合并 partial 更新 → 保护文风档案
  *   （styleConfig 陈旧整表覆盖）→ 同步 ref/state → 合并式落盘。
  *
- * 不变量：`await` 返回时本次数据必已落盘（状态先同步进 ref，
- * 写任务执行时读最新 ref）。
+ * 不变量：返回 `{ ok: true }` 表示本次数据必已落盘；`{ ok: false }` 表示
+ * 写盘失败（配额超限/跨页冲突），调用方**不得**当成已保存（关键路径必须检查）。
  */
 export function useProjectPersistence({
   projectRef,
@@ -80,9 +81,9 @@ export function useProjectPersistence({
   const handleUpdateAndPersistProject = useCallback(
     async (
       updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
-    ) => {
+    ): Promise<CoalescedWriteResult> => {
       const base = projectRef.current;
-      if (!base) return;
+      if (!base) return { ok: true };
 
       let partial = typeof updates === 'function' ? updates(base) : updates;
       // 保护文风仿写档案：禁止陈旧 styleConfig 整表覆盖冲掉 styleProfiles
@@ -100,8 +101,9 @@ export function useProjectPersistence({
       setProjectSafe(next);
 
       // 合并式持久化：突发更新只写「正在跑 + 末尾一次」；
-      // await 语义不变 —— resolve 时本次状态已随某次写落盘
-      await persistWriterRef.current?.schedule();
+      // 返回值即本次是否真的落盘 —— resolve 不代表成功（写失败时 ok:false）
+      const result = await persistWriterRef.current?.schedule();
+      return result ?? { ok: true };
     },
     // projectRef / persistWriterRef 均为 ref（引用恒定），不会导致重创建
     [projectRef, setProjectSafe]

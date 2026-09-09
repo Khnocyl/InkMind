@@ -40,6 +40,8 @@ if (process.env.INKMIND_PROXY) {
 }
 
 const app = express();
+// 不暴露技术栈版本（信息泄露最小化）
+app.disable('x-powered-by');
 const PORT = Number(process.env.PORT) || 3001;
 // 默认只绑定回环地址（安全加固 F1）：避免无意间把 LLM 代理暴露到局域网/公网。
 // 如需局域网使用可显式 HOST=0.0.0.0（启动时会打印风险提示）。
@@ -364,7 +366,7 @@ app.get('/api/config/llm', (_req, res) => {
 app.post('/api/config/llm', (req, res) => {
   try {
     const { provider, baseURL, modelName, temperature, apiKey, customHeaders, name } =
-      req.body;
+      req.body ?? {};
     if (provider !== undefined && !LLM_PROVIDERS.includes(provider)) {
       res.status(400).json({
         success: false,
@@ -605,7 +607,7 @@ app.delete('/api/backup', (req, res) => {
 
 // Generate or Stream completion
 app.post('/api/llm/generate', rateLimitExpensive(), async (req, res) => {
-  const { messages, temperature, response_format, stream, model } = req.body;
+  const { messages, temperature, response_format, stream, model } = req.body ?? {};
   // 按角色路由：客户端选定的已保存配置档 id（串类型校验，防注入非预期形状）
   const profileId =
     typeof req.body?.profileId === 'string' && req.body.profileId.trim()
@@ -700,6 +702,11 @@ app.post('/api/llm/generate', rateLimitExpensive(), async (req, res) => {
   }
 });
 
+// 未命中的 /api 路由：返回 JSON 404（前端 fetch 统一按 JSON 解析，避免拿到 HTML）
+app.use('/api', (_req, res) => {
+  res.status(404).json({ success: false, error: '接口不存在' });
+});
+
 // 静态托管前端构建产物（npm run build 后单进程即可提供完整应用，无需 Vite）
 // NOVEL_DIST_DIR：桌面端（Electron）显式指定前端产物目录
 const DIST_DIR = process.env.NOVEL_DIST_DIR
@@ -718,6 +725,42 @@ if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
 } else {
   console.log('💡 [Static] 未找到 dist/（仅 API 模式）。先 npm run build 可获得单进程完整应用。');
 }
+
+// ─── 统一错误兜底（必须注册在所有路由/中间件之后）────────────────────────
+// 没有它时 Express 默认处理器会返回 HTML 栈（含本机绝对路径），并把客户端错误
+// 记成 500。这里统一转成 JSON，并按 body-parser 的 status 区分 400/413。
+app.use(
+  (
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    if (res.headersSent) return next(err as Error); // 已开始响应：交回默认处理器收尾
+    const e = err as {
+      status?: number;
+      statusCode?: number;
+      type?: string;
+      message?: string;
+    };
+    const status =
+      typeof e?.status === 'number'
+        ? e.status
+        : typeof e?.statusCode === 'number'
+          ? e.statusCode
+          : 500;
+    const message =
+      e?.type === 'entity.parse.failed'
+        ? '请求体不是合法 JSON'
+        : status === 413
+          ? '请求体过大'
+          : status >= 500
+            ? '服务器内部错误'
+            : '请求无效';
+    console.error(`[Error] ${status} ${e?.message || String(err)}`);
+    res.status(status).json({ success: false, error: message });
+  }
+);
 
 /** 单文件可执行形态：监听后自动拉起浏览器（NOVEL_OPEN=0 可关闭 / =1 强制开） */
 function maybeOpenBrowser(url: string) {

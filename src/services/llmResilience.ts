@@ -97,10 +97,36 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 响应对象 → 解除外部 signal 监听的句柄。
+ * 用 WeakMap 而非挂在 Response 上，避免污染对象、也不阻碍其回收。
+ */
+const responseAbortHandles = new WeakMap<Response, () => void>();
+
+/**
+ * 响应体读取结束后调用：解除 fetchWithTimeout 在响应头阶段挂上的外部中止监听。
+ *
+ * 为什么不自动解除：非流式调用的真正等待发生在 body（`res.json()`），
+ * 必须让用户「停止」在 body 阶段依然生效。调用方读完 body 后主动释放，
+ * 避免同一个 signal 上累积监听（Node 超过 10 个会告警）。
+ */
+export function releaseResponseAbort(res: Response): void {
+  const release = responseAbortHandles.get(res);
+  if (release) {
+    responseAbortHandles.delete(res);
+    release();
+  }
+}
+
+/**
  * 带超时的 fetch（响应头到达前超时）+ 可选外部中止信号。
  * - 超时通过内部 AbortController 中断，抛 TimeoutError（可重试）；
  * - 外部 signal 中止（用户停止）抛 GenerationAbortedError（不可重试）；
  * - 两者任一触发都会中断同一请求。
+ *
+ * 重要：外部中止监听在**响应头到达后仍然保留**——非流式调用随后才读 body
+ * （`res.json()`），那才是真正的生成等待期。此前在 finally 里一并摘除，导致
+ * 「停止」对非流式调用无效、且 body 阶段没有任何超时。读完 body 请调用
+ * `releaseResponseAbort(res)` 释放监听。
  */
 export async function fetchWithTimeout(
   input: RequestInfo | URL,
@@ -122,16 +148,21 @@ export async function fetchWithTimeout(
     else signal.addEventListener('abort', onExternalAbort, { once: true });
   }
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const res = await fetch(input, { ...init, signal: controller.signal });
+    // 响应头已到达：解除「头超时」，但保留外部中止监听直到 body 读完
+    if (timer) clearTimeout(timer);
+    if (signal) {
+      responseAbortHandles.set(res, () => signal.removeEventListener('abort', onExternalAbort));
+    }
+    return res;
   } catch (err) {
+    if (timer) clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
     if (controller.signal.aborted) {
       if (signal?.aborted) throw new GenerationAbortedError();
       throw new TimeoutError(timeoutMs);
     }
     throw err;
-  } finally {
-    if (timer) clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', onExternalAbort);
   }
 }
 

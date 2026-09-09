@@ -50,6 +50,7 @@ import { pruneStaleAutoTodos } from '../services/revisionTodos';
 import { fingerprintProse } from '../services/auditFreshness';
 import { retrieveMemoryForChapterAsync } from '../services/embeddingIndex';
 import { scheduleAutoBackup } from '../services/autoBackup';
+import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import { resolveChapterWordTarget, proseWords } from '../services/proseWords';
 import { consolidateMemoryAfterChapter } from '../services/longformMemory';
 import {
@@ -88,7 +89,7 @@ export interface UseChapterPipelineDeps {
   ) => void;
   handleUpdateAndPersistProject: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
-  ) => Promise<void>;
+  ) => Promise<CoalescedWriteResult>;
   bumpSnapshotList: () => void;
 }
 
@@ -846,7 +847,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           }
         );
 
-        await handleUpdateAndPersistProject((prev) => {
+        const finalPersist = await handleUpdateAndPersistProject((prev) => {
           const newW = countContentWords(finalChapter.content, finalChapter.wordCount);
           const delta = newW - pipelineStartWords;
           return {
@@ -860,6 +861,13 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               : {}),
           };
         });
+        // 终稿**未落盘**（配额超限/跨页冲突）时必须中止在清草稿之前：
+        // 否则内存状态显示成功、磁盘没有正文，恢复草稿还被删掉 = 静默丢章。
+        if (!finalPersist.ok) {
+          throw finalPersist.error instanceof Error
+            ? finalPersist.error
+            : new Error('终稿落盘失败（可能是存储配额或跨页冲突），已保留流式草稿备份');
+        }
         // 终稿已落盘，清除流式备份
         try {
           await clearDraftBackup(liveProject.id, chapterId);

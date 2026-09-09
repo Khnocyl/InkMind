@@ -10,11 +10,15 @@
  * - 返回的 Promise 在该次状态「已随某次写落盘」后 resolve ——
  *   因为调用方先同步更新 state/ref，写任务执行时读到的永远是最新值，
  *   所以 resolve 时刻本次数据必已在磁盘（与旧的串行队列语义等价，甚至更快）；
- * - 永不 reject：写失败交给 onError，队列可继续。
+ * - 永不 reject，但**必须如实回报结果**：写失败返回 { ok:false, error }，
+ *   同时交给 onError（弹窗/日志）。调用方若把 resolve 当成「已落盘」就会
+ *   丢数据（配额超限、跨页冲突），因此关键路径必须检查返回值。
  */
+export type CoalescedWriteResult = { ok: true } | { ok: false; error: unknown };
+
 export class CoalescedWriter {
-  private tail: Promise<void> | null = null;
-  private queued: Promise<void> | null = null;
+  private tail: Promise<CoalescedWriteResult> | null = null;
+  private queued: Promise<CoalescedWriteResult> | null = null;
   private readonly write: () => Promise<void>;
   private readonly onError: (e: unknown) => void;
 
@@ -26,8 +30,8 @@ export class CoalescedWriter {
     this.onError = onError;
   }
 
-  /** 请求一次写入（合并突发），返回本次数据已落盘的 Promise（永不 reject） */
-  schedule(): Promise<void> {
+  /** 请求一次写入（合并突发），返回本次数据是否已落盘（永不 reject） */
+  schedule(): Promise<CoalescedWriteResult> {
     if (!this.tail) {
       // 无在跑任务：立即开始一次写
       const p = this.exec();
@@ -51,17 +55,20 @@ export class CoalescedWriter {
     if (t) await t;
   }
 
-  private async exec(): Promise<void> {
+  private async exec(): Promise<CoalescedWriteResult> {
     // 本任务若为合并任务，开始执行即释放排队位（后续新调用可再排队）
     this.queued = null;
     try {
       await this.write();
+      return { ok: true };
     } catch (e) {
+      // 不 reject（避免 fire-and-forget 调用点产生未处理拒绝），但如实回报失败
       this.onError(e);
+      return { ok: false, error: e };
     }
   }
 
-  private attachCleanup(p: Promise<void>): void {
+  private attachCleanup(p: Promise<CoalescedWriteResult>): void {
     void p.then(() => {
       if (this.tail === p) this.tail = null;
       if (this.queued === p) this.queued = null;

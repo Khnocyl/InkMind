@@ -5,6 +5,7 @@ import type { GapReport } from '../services/gapScanner';
 import { scanChapterGaps, scanProjectGaps } from '../services/gapScanner';
 import { isChapterLocked } from '../services/chapterLock';
 import { crossTabLock } from '../services/crossTabLock';
+import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import { generateChapterIntent } from '../services/chapterIntent';
 import { buildPreviousContextPack } from '../services/contextPack';
 import { setActiveAbortSignal } from '../services/llmClient';
@@ -82,10 +83,10 @@ export interface UseGapFillerDeps {
       signal?: AbortSignal;
     }
   ) => Promise<ChapterPipelineResult>;
-  /** 落盘路径（来自 useProjectPersistence） */
+  /** 落盘路径（来自 useProjectPersistence）：ok:false 表示未落盘 */
   handleUpdateAndPersistProject: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
-  ) => Promise<void>;
+  ) => Promise<CoalescedWriteResult>;
   setStatusMessage: Dispatch<SetStateAction<string>>;
   /** 生成中（UI state；三步 / AP 共用显示态） */
   isGenerating: boolean;

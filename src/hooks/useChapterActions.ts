@@ -11,6 +11,7 @@ import type {
   CrossChapterIssue,
   StyleConfig,
 } from '../types/novel';
+import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import {
   isChapterLocked,
   lockChapterAsFinal,
@@ -92,10 +93,10 @@ export interface UseChapterActionsOptions {
   setAiTasteScanBusy: Dispatch<SetStateAction<boolean>>;
   setAiTasteScanMessage: Dispatch<SetStateAction<string | null>>;
   setCrossAuditBusy: Dispatch<SetStateAction<boolean>>;
-  /** R2-3 合并式持久化（来自 useProjectPersistence） */
+  /** R2-3 合并式持久化（来自 useProjectPersistence）：ok:false 表示未落盘 */
   handleUpdateAndPersistProject: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
-  ) => Promise<void>;
+  ) => Promise<CoalescedWriteResult>;
   /** 击键级元数据编辑专用：状态立即、落盘 400ms 去抖（性能） */
   handleUpdateAndPersistProjectDebounced: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)

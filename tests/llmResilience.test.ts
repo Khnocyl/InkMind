@@ -167,6 +167,40 @@ describe('llmResilience · fetchWithTimeout', () => {
       fetchWithTimeout('/api/llm/generate', { method: 'POST' }, 30_000, controller.signal)
     ).rejects.toBeInstanceOf(GenerationAbortedError);
   });
+
+  it('响应头已到、body 读取阶段中止 → 仍抛 GenerationAbortedError（stop 不能失效）', async () => {
+    // 关键回归：此前 finally 在响应头到达后就摘除了外部中止监听，
+    // 非流式调用随后 await res.json() 时点「停止」完全无效。
+    const controller = new AbortController();
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        calls += 1;
+        const sig = init?.signal;
+        return {
+          ok: true,
+          status: 200,
+          body: null,
+          text: async () => '',
+          // body 挂起：中止时 reject AbortError（与真实 fetch 的 body 中止一致）
+          json: () =>
+            new Promise((_resolve, reject) => {
+              sig?.addEventListener('abort', () =>
+                reject(new DOMException('Aborted', 'AbortError'))
+              );
+            }),
+        } as unknown as Response;
+      })
+    );
+    const p = generateText([{ role: 'user', content: 'hi' }], 0.7, {
+      retryDelayMs: 1,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 10);
+    await expect(p).rejects.toBeInstanceOf(GenerationAbortedError);
+    expect(calls).toBe(1); // 用户中止 → 不重试
+  });
 });
 
 describe('llmResilience · 用户中止语义', () => {

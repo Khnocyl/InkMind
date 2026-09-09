@@ -861,14 +861,14 @@ export default function App() {
         {activeTab === 'style' && (
           <StyleAndEngineManager
             styleConfig={styleConfig}
-            onUpdateStyleConfig={(updated) =>
-              handleUpdateAndPersistProject((prev) => ({
+            onUpdateStyleConfig={(updated) => {
+              void handleUpdateAndPersistProject((prev) => ({
                 styleConfig:
                   typeof updated === 'function'
                     ? updated(prev.styleConfig || defaultStyleConfig)
                     : updated,
-              }))
-            }
+              }));
+            }}
             onNotifyStatus={(msg) => setStatusMessage(msg)}
             onRecoverStyleProfiles={() =>
               void (async () => {

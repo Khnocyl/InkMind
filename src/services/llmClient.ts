@@ -1,6 +1,7 @@
 import {
   DEFAULT_TIMEOUT_MS,
   fetchWithTimeout,
+  releaseResponseAbort,
   withRetry,
   GenerationAbortedError,
   isGenerationAborted,
@@ -402,51 +403,61 @@ export async function generateJSON<T>(
         signal
       );
 
-      if (!res.ok) {
-        const errText = await res.text();
-        const err = new Error(
-          `请求服务端接口出错 [${res.status}]: ${errText}`
-        ) as Error & { status: number };
-        err.status = res.status;
-        throw err;
-      }
-
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || 'AI 生成请求失败');
-      }
-
-      let rawContent: string = data.content || '';
-      rawContent = rawContent.trim();
-      traceResponse = rawContent;
-
-      const salvaged = salvageJsonParse<T>(rawContent);
-      if (!salvaged.ok) {
-        console.error('JSON Parse Error. Raw AI Response:', rawContent);
-        throw new Error(
-          'AI 返回的内容无法解析为有效 JSON格式。请检查模型配置或重试。'
-        );
-      }
-      traceStrategy = salvaged.strategy;
-
-      if (
-        salvaged.strategy !== 'direct' &&
-        salvaged.strategy !== 'fence-strip'
-      ) {
-        console.warn('[jsonRepair] 使用修复策略', salvaged.strategy);
-      }
-
-      // 校验闸门：形状/覆盖不合格 → 抛 SchemaMismatchError（可重试），下轮带上反馈
-      if (options?.validate) {
-        const mismatch = options.validate(salvaged.value);
-        if (mismatch) {
-          console.warn('[schemaGate] 结构校验未通过：', mismatch);
-          priorExchange = buildSchemaFeedback(rawContent, mismatch);
-          throw new SchemaMismatchError(mismatch);
+      try {
+        if (!res.ok) {
+          const errText = await res.text();
+          const err = new Error(
+            `请求服务端接口出错 [${res.status}]: ${errText}`
+          ) as Error & { status: number };
+          err.status = res.status;
+          throw err;
         }
-      }
 
-      return salvaged.value;
+        const data = await res.json();
+        if (!data.success) {
+          throw new Error(data.error || 'AI 生成请求失败');
+        }
+
+        let rawContent: string = data.content || '';
+        rawContent = rawContent.trim();
+        traceResponse = rawContent;
+
+        const salvaged = salvageJsonParse<T>(rawContent);
+        if (!salvaged.ok) {
+          console.error('JSON Parse Error. Raw AI Response:', rawContent);
+          throw new Error(
+            'AI 返回的内容无法解析为有效 JSON格式。请检查模型配置或重试。'
+          );
+        }
+        traceStrategy = salvaged.strategy;
+
+        if (
+          salvaged.strategy !== 'direct' &&
+          salvaged.strategy !== 'fence-strip'
+        ) {
+          console.warn('[jsonRepair] 使用修复策略', salvaged.strategy);
+        }
+
+        // 校验闸门：形状/覆盖不合格 → 抛 SchemaMismatchError（可重试），下轮带上反馈
+        if (options?.validate) {
+          const mismatch = options.validate(salvaged.value);
+          if (mismatch) {
+            console.warn('[schemaGate] 结构校验未通过：', mismatch);
+            priorExchange = buildSchemaFeedback(rawContent, mismatch);
+            throw new SchemaMismatchError(mismatch);
+          }
+        }
+
+        return salvaged.value;
+      } catch (err) {
+        // body 读取阶段被用户中止（fetchWithTimeout 的监听仍在生效）→ 统一映射为不可重试错误
+        if (signal?.aborted && !isGenerationAborted(err)) {
+          throw new GenerationAbortedError();
+        }
+        throw err;
+      } finally {
+        releaseResponseAbort(res);
+      }
     }, options);
     recordLlmCall({
       kind: 'json',
@@ -502,22 +513,32 @@ export async function generateText(
         signal
       );
 
-      if (!res.ok) {
-        const errText = await res.text();
-        const err = new Error(
-          `请求服务端接口出错 [${res.status}]: ${errText}`
-        ) as Error & { status: number };
-        err.status = res.status;
+      try {
+        if (!res.ok) {
+          const errText = await res.text();
+          const err = new Error(
+            `请求服务端接口出错 [${res.status}]: ${errText}`
+          ) as Error & { status: number };
+          err.status = res.status;
+          throw err;
+        }
+
+        const data = await res.json();
+        if (!data.success) {
+          throw new Error(data.error || 'AI 生成请求失败');
+        }
+
+        const content = (data.content || '').trim();
+        return content;
+      } catch (err) {
+        // 同 generateJSON：body 阶段的中止映射为不可重试的用户停止
+        if (signal?.aborted && !isGenerationAborted(err)) {
+          throw new GenerationAbortedError();
+        }
         throw err;
+      } finally {
+        releaseResponseAbort(res);
       }
-
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || 'AI 生成请求失败');
-      }
-
-      const content = (data.content || '').trim();
-      return content;
     }, options);
     recordLlmCall({
       kind: 'text',
@@ -629,126 +650,131 @@ async function streamOnce(
     signal
   );
 
-  if (!res.ok || !res.body) {
-    const errText = await res.text();
-    const err = new Error(
-      `流式响应请求失败 [${res.status}]: ${errText}`
-    ) as Error & { status: number };
-    err.status = res.status;
-    throw err;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let fullContent = '';
-  let bytesProduced = 0;
-  let buffer = '';
-  // 流读取空闲超时：两次数据块间隔超过该值判定连接僵死（长文生成中模型也可能停很久，给足 90s）
-  const idleTimeoutMs = Math.max(30_000, Math.round(timeoutMs * 0.75));
-
-  /** 尽力释放底层连接（中止/中断路径必须调用，否则连接悬挂到 GC、后端继续烧上游） */
-  const releaseReader = async () => {
-    try {
-      await reader.cancel();
-    } catch {
-      /* ignore */
-    }
-  };
-
-  if (signal?.aborted) {
-    await releaseReader();
-    throw new GenerationAbortedError();
-  }
-  if (onProgress) onProgress('AI 正在高速执笔输出中...');
-
-  // 思考模型（推理模型）：正文开始前模型会长时间输出 reasoning_content，
-  // 期间界面看起来像卡死——节流地把思考进度转发到 onProgress，让用户知道它活着
-  let reasoningChars = 0;
-  let lastReasoningProgressAt = 0;
-  let reasoningAnnounced = false;
-
-  /** 处理单行 SSE 数据（错误帧会抛出） */
-  const consumeLine = async (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith('data: ')) return;
-    const dataStr = trimmed.slice(6).trim();
-    if (dataStr === '[DONE]') return;
-    let parsed: any;
-    try {
-      parsed = JSON.parse(dataStr);
-    } catch {
-      // 非 JSON 行忽略（心跳/注释等）
-      return;
-    }
-    // 服务端错误帧：类型化判断（不再靠 message 是否含 "JSON" 的脆弱启发式）
-    if (parsed && typeof parsed.error === 'string' && parsed.error) {
-      await releaseReader();
-      throw new Error(parsed.error);
-    }
-    const chunk = parsed.chunk || '';
-    if (chunk) {
-      if (reasoningAnnounced && onProgress) {
-        // 思考结束转入正文：恢复常规输出提示
-        onProgress('思考完成，AI 正在高速执笔输出中...');
-        reasoningAnnounced = false;
-      }
-      fullContent += chunk;
-      if (onChunk) {
-        onChunk(chunk);
-      }
-    }
-    // 思考模型推理过程增量：不计入正文，仅节流刷新进度（每秒至多一次）
-    if (typeof parsed.reasoning === 'string' && parsed.reasoning) {
-      reasoningChars += parsed.reasoning.length;
-      const now = Date.now();
-      if (onProgress && now - lastReasoningProgressAt > 1000) {
-        lastReasoningProgressAt = now;
-        reasoningAnnounced = true;
-        onProgress(`模型思考中（已思考 ${reasoningChars} 字）——思考模型构思阶段较慢，属正常现象`);
-      }
-    }
-    // 截断信号（server 透传 finish_reason）：length = 被 max_tokens 截断
-    if (parsed.finish === 'length') {
-      if (onProgress) {
-        onProgress(
-          `⚠️ 输出被模型上限截断（finish=length，已产出 ${fullContent.length} 字）。` +
-            `补写轮会继续加厚；若仍不足请调大 NOVEL_LLM_MAX_TOKENS 或换输出上限更高的模型。`
-        );
-      }
-    }
-  };
-
-  while (true) {
-    let result: ReadableStreamReadResult<Uint8Array>;
-    try {
-      result = await readWithIdleTimeout(reader, idleTimeoutMs, signal);
-    } catch (err) {
-      await releaseReader();
-      // 用户主动停止：无论已产出多少都不当作成功稿
-      if (isGenerationAborted(err)) throw err;
-      // 流中断：已有产出则返回部分（不重试），否则抛错让 withRetry 重试
-      if (bytesProduced > 0) {
-        if (onProgress) {
-          onProgress(`⚠️ 连接中断，已保留已生成部分（${fullContent.length} 字）`);
-        }
-        return { text: fullContent, bytesProduced };
-      }
+  try {
+    if (!res.ok || !res.body) {
+      const errText = await res.text();
+      const err = new Error(
+        `流式响应请求失败 [${res.status}]: ${errText}`
+      ) as Error & { status: number };
+      err.status = res.status;
       throw err;
     }
-    const { done, value } = result;
-    if (done) break;
-    bytesProduced += value?.byteLength || 0;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) await consumeLine(line);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let fullContent = '';
+    let bytesProduced = 0;
+    let buffer = '';
+    // 流读取空闲超时：两次数据块间隔超过该值判定连接僵死（长文生成中模型也可能停很久，给足 90s）
+    const idleTimeoutMs = Math.max(30_000, Math.round(timeoutMs * 0.75));
+
+    /** 尽力释放底层连接（中止/中断路径必须调用，否则连接悬挂到 GC、后端继续烧上游） */
+    const releaseReader = async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    if (signal?.aborted) {
+      await releaseReader();
+      throw new GenerationAbortedError();
+    }
+    if (onProgress) onProgress('AI 正在高速执笔输出中...');
+
+    // 思考模型（推理模型）：正文开始前模型会长时间输出 reasoning_content，
+    // 期间界面看起来像卡死——节流地把思考进度转发到 onProgress，让用户知道它活着
+    let reasoningChars = 0;
+    let lastReasoningProgressAt = 0;
+    let reasoningAnnounced = false;
+
+    /** 处理单行 SSE 数据（错误帧会抛出） */
+    const consumeLine = async (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) return;
+      const dataStr = trimmed.slice(6).trim();
+      if (dataStr === '[DONE]') return;
+      let parsed: any;
+      try {
+        parsed = JSON.parse(dataStr);
+      } catch {
+        // 非 JSON 行忽略（心跳/注释等）
+        return;
+      }
+      // 服务端错误帧：类型化判断（不再靠 message 是否含 "JSON" 的脆弱启发式）
+      if (parsed && typeof parsed.error === 'string' && parsed.error) {
+        await releaseReader();
+        throw new Error(parsed.error);
+      }
+      const chunk = parsed.chunk || '';
+      if (chunk) {
+        if (reasoningAnnounced && onProgress) {
+          // 思考结束转入正文：恢复常规输出提示
+          onProgress('思考完成，AI 正在高速执笔输出中...');
+          reasoningAnnounced = false;
+        }
+        fullContent += chunk;
+        if (onChunk) {
+          onChunk(chunk);
+        }
+      }
+      // 思考模型推理过程增量：不计入正文，仅节流刷新进度（每秒至多一次）
+      if (typeof parsed.reasoning === 'string' && parsed.reasoning) {
+        reasoningChars += parsed.reasoning.length;
+        const now = Date.now();
+        if (onProgress && now - lastReasoningProgressAt > 1000) {
+          lastReasoningProgressAt = now;
+          reasoningAnnounced = true;
+          onProgress(`模型思考中（已思考 ${reasoningChars} 字）——思考模型构思阶段较慢，属正常现象`);
+        }
+      }
+      // 截断信号（server 透传 finish_reason）：length = 被 max_tokens 截断
+      if (parsed.finish === 'length') {
+        if (onProgress) {
+          onProgress(
+            `⚠️ 输出被模型上限截断（finish=length，已产出 ${fullContent.length} 字）。` +
+              `补写轮会继续加厚；若仍不足请调大 NOVEL_LLM_MAX_TOKENS 或换输出上限更高的模型。`
+          );
+        }
+      }
+    };
+
+    while (true) {
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await readWithIdleTimeout(reader, idleTimeoutMs, signal);
+      } catch (err) {
+        await releaseReader();
+        // 用户主动停止：无论已产出多少都不当作成功稿
+        if (isGenerationAborted(err)) throw err;
+        // 流中断：已有产出则返回部分（不重试），否则抛错让 withRetry 重试
+        if (bytesProduced > 0) {
+          if (onProgress) {
+            onProgress(`⚠️ 连接中断，已保留已生成部分（${fullContent.length} 字）`);
+          }
+          return { text: fullContent, bytesProduced };
+        }
+        throw err;
+      }
+      const { done, value } = result;
+      if (done) break;
+      bytesProduced += value?.byteLength || 0;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) await consumeLine(line);
+    }
+
+    // 流末冲刷：取出 TextDecoder 残留的半个多字节字符 + 处理 buffer 里最后一条无换行结尾的行
+    buffer += decoder.decode();
+    if (buffer) await consumeLine(buffer);
+
+    return { text: fullContent, bytesProduced };
+  } finally {
+    // 流读取结束/失败/中止：解除外部 signal 监听（body 阶段中止由 readWithIdleTimeout 负责）
+    releaseResponseAbort(res);
   }
-
-  // 流末冲刷：取出 TextDecoder 残留的半个多字节字符 + 处理 buffer 里最后一条无换行结尾的行
-  buffer += decoder.decode();
-  if (buffer) await consumeLine(buffer);
-
-  return { text: fullContent, bytesProduced };
 }
 
 /**

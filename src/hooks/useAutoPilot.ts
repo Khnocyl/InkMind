@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { BookProject, Chapter, StyleConfig } from '../types/novel';
 import { crossTabLock } from '../services/crossTabLock';
+import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import {
   resolveAutoPilotConfig,
   pickNextChapterToWrite,
@@ -43,10 +44,10 @@ export interface UseAutoPilotDeps {
       signal?: AbortSignal;
     }
   ) => Promise<ChapterPipelineResult>;
-  /** 落盘路径（来自 useProjectPersistence） */
+  /** 落盘路径（来自 useProjectPersistence）：ok:false 表示未落盘 */
   handleUpdateAndPersistProject: (
     updates: Partial<BookProject> | ((prev: BookProject) => Partial<BookProject>)
-  ) => Promise<void>;
+  ) => Promise<CoalescedWriteResult>;
   setStatusMessage: Dispatch<SetStateAction<string>>;
   /** 生成中（UI state；三步 / AP 共用显示态） */
   isGenerating: boolean;

@@ -71,7 +71,7 @@ describe('CoalescedWriter', () => {
     expect(writes[writes.length - 1]).toBe(10); // 末次写含全部状态
   });
 
-  it('写失败不 reject，交给 onError，队列可继续', async () => {
+  it('写失败不 reject，但如实回报 ok:false，且队列可继续', async () => {
     const onError = vi.fn();
     let fail = true;
     const w = new CoalescedWriter(
@@ -81,12 +81,23 @@ describe('CoalescedWriter', () => {
       },
       onError
     );
-    await expect(w.schedule()).resolves.toBeUndefined();
+    // 关键不变量：resolve 不等于落盘 —— 失败必须让调用方看见
+    await expect(w.schedule()).resolves.toMatchObject({ ok: false });
     expect(onError).toHaveBeenCalledTimes(1);
-    // 失败后仍可继续写
+    // 失败后仍可继续写，且成功时 ok:true
     fail = false;
-    await expect(w.schedule()).resolves.toBeUndefined();
+    await expect(w.schedule()).resolves.toEqual({ ok: true });
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('写失败时错误对象透传给调用方（数据安全：调用方据此不清草稿）', async () => {
+    const boom = new Error('QuotaExceededError');
+    const w = new CoalescedWriter(async () => {
+      throw boom;
+    }, () => {});
+    const res = await w.schedule();
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe(boom);
   });
 
   it('完成后不留陈旧队列（tail 已清理）', async () => {

@@ -6,7 +6,7 @@
  */
 import type { Chapter, MemoryAuditLog } from '../types/novel';
 import {
-  isDualReviewGreen,
+  isFinalGreen,
   isVerificationScoreGreen,
   MIN_GREEN_VERIFICATION_SCORE,
 } from '../services/aiEngine';
@@ -194,10 +194,8 @@ export async function runChapterPipeline(
     };
 
     // ── Green gate ──
-    // 第二道保险：error 级写后违规未被上游拦下时，这里兜底禁止绿通
-    const greenOk =
-      isDualReviewGreen(ruleScan, auditLog) &&
-      !postWriteViolations.some((v) => v.severity === 'error');
+    // 三重硬门 + 写后 error 兜底 + 审稿可信度（auditUnreliable 置位时禁止绿通）
+    const greenOk = isFinalGreen(ruleScan, auditLog, postWriteViolations);
     const score = auditLog.verificationScore ?? ruleScan.score ?? 0;
     const scoreFail = !isVerificationScoreGreen(score);
     const ruleScanPassed = ruleScan.passed;

@@ -1260,6 +1260,23 @@ export function isDualReviewGreen(
   return true;
 }
 
+/**
+ * 最终绿通闸门（engine/pipeline 使用）：三重硬门 + 写后 error 兜底 + 审稿可信度。
+ *
+ * auditUnreliable 由 auditorAgent 置位（硬伤审无可信结论，或综合分与机检分
+ * 背离 >25）。reviser 与 UI 都已尊重该标记；若闸门漏读，就会出现「审稿结论
+ * 自称不可信，却仍被自动定稿锁定为校验通过」。
+ */
+export function isFinalGreen(
+  ruleScan: RuleScanResult,
+  auditLog: MemoryAuditLog,
+  postWriteViolations: readonly { severity: string }[]
+): boolean {
+  if (auditLog.auditUnreliable) return false;
+  if (!isDualReviewGreen(ruleScan, auditLog)) return false;
+  return !postWriteViolations.some((v) => v.severity === 'error');
+}
+
 /** 综合分是否达到绿通门槛 */
 export function isVerificationScoreGreen(
   score: number | null | undefined

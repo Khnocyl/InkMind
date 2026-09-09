@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isDualReviewGreen,
+  isFinalGreen,
   isVerificationScoreGreen,
   isHardReviewApiBlock,
   needsConflictFix,
@@ -124,6 +125,36 @@ describe('isDualReviewGreen · 三重硬门', () => {
     const audit = makeAudit();
     delete audit.verificationScore;
     expect(isDualReviewGreen(makeRuleScan(), audit)).toBe(false);
+  });
+});
+
+describe('isFinalGreen · 最终绿通闸门', () => {
+  it('三重门全过且无写后 error → 绿通', () => {
+    expect(isFinalGreen(makeRuleScan(), makeAudit(), [])).toBe(true);
+  });
+
+  it('auditUnreliable（审稿自评不可信）→ 不绿通（不得自动定稿）', () => {
+    // 场景：硬伤审零问题、综合分与机检分背离 >25 —— auditorAgent 已置位该标记，
+    // 闸门若漏读会把「审稿结论不可信」的章自动锁定为校验通过。
+    expect(
+      isFinalGreen(makeRuleScan(), makeAudit({ auditUnreliable: true }), [])
+    ).toBe(false);
+  });
+
+  it('写后 error 级违规 → 不绿通', () => {
+    expect(
+      isFinalGreen(makeRuleScan(), makeAudit(), [
+        { severity: 'warning' },
+        { severity: 'error' },
+      ])
+    ).toBe(false);
+  });
+
+  it('三重硬门任一不过 → 不绿通', () => {
+    expect(isFinalGreen(makeRuleScan({ passed: false }), makeAudit(), [])).toBe(false);
+    expect(
+      isFinalGreen(makeRuleScan(), makeAudit({ verificationScore: 60 }), [])
+    ).toBe(false);
   });
 });
 
