@@ -124,16 +124,22 @@ let updatePhase = 'idle';
 let lastAvailable = null;
 let lastDownloadedVersion = '';
 
-/** GitHub provider 的 releaseNotes 可能是字符串或 [{ note }] 数组，统一拍平成文本 */
+/** GitHub provider 的 releaseNotes 可能是字符串或 [{ note }] 数组，统一拍平成文本并去除外层代码围栏 */
 function normalizeReleaseNotes(notes) {
-  if (typeof notes === 'string') return notes;
-  if (Array.isArray(notes)) {
-    return notes
+  let text = '';
+  if (typeof notes === 'string') text = notes;
+  else if (Array.isArray(notes)) {
+    text = notes
       .map((n) => (typeof n === 'string' ? n : (n && n.note) || ''))
       .filter(Boolean)
       .join('\n\n');
   }
-  return '';
+  if (!text) return '';
+  text = text.trim();
+  if (text.startsWith('```')) {
+    text = text.replace(/^```[a-zA-Z]*\r?\n/, '').replace(/\r?\n```$/, '').trim();
+  }
+  return text;
 }
 
 function sendUpdaterState(payload) {

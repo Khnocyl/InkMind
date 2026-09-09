@@ -15,6 +15,7 @@ import {
   type DesktopUpdaterEvent,
 } from '../../services/desktopUpdater';
 import { GITHUB_RELEASES_URL } from '../../services/appUpdate';
+import { ReleaseNotesViewer } from './ReleaseNotesViewer';
 
 type Phase =
   | 'idle'
@@ -235,9 +236,7 @@ export const DesktopUpdaterPanel: React.FC<DesktopUpdaterPanelProps> = ({ curren
           )}
 
           {state.releaseNotes && (
-            <div className="bg-white/80 border border-indigo-100 rounded-lg p-3 text-xs text-slate-700 max-h-40 overflow-y-auto whitespace-pre-wrap font-mono dark:bg-slate-900/90 dark:border-indigo-900/60 dark:text-slate-200">
-              {state.releaseNotes}
-            </div>
+            <ReleaseNotesViewer content={state.releaseNotes} />
           )}
         </div>
       )}

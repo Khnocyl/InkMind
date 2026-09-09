@@ -39,6 +39,7 @@ import {
   hasDesktopUpdater,
   probeDesktopUpdater,
 } from '../../services/desktopUpdater';
+import { ReleaseNotesViewer } from './ReleaseNotesViewer';
 import { DesktopUpdaterPanel } from './DesktopUpdaterPanel';
 
 import {
@@ -1084,9 +1085,7 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                       </a>
                     </div>
                     {updateCheckState.result.releaseNotes && (
-                      <div className="bg-white/80 border border-indigo-100 rounded-lg p-3 text-xs text-slate-700 max-h-40 overflow-y-auto whitespace-pre-wrap font-mono dark:bg-slate-900/90 dark:border-indigo-900/60 dark:text-slate-200">
-                        {updateCheckState.result.releaseNotes}
-                      </div>
+                      <ReleaseNotesViewer content={updateCheckState.result.releaseNotes} />
                     )}
                   </div>
                 )}
