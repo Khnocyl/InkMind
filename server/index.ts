@@ -33,7 +33,15 @@ if (process.env.INKMIND_PROXY) {
     process.env.HTTPS_PROXY = process.env.INKMIND_PROXY;
     process.env.NO_PROXY = process.env.NO_PROXY || '127.0.0.1,localhost';
     setGlobalDispatcher(new EnvHttpProxyAgent());
-    console.log(`🌐 [Proxy] 已加载本机专属代理: ${process.env.INKMIND_PROXY}`);
+    // 不打印完整代理 URL（可能含 user:pass 凭据），只留 protocol://host
+    let proxyLabel = '(已配置)';
+    try {
+      const u = new URL(process.env.INKMIND_PROXY);
+      proxyLabel = `${u.protocol}//${u.host}`;
+    } catch {
+      /* 非法 URL：不打印原文 */
+    }
+    console.log(`🌐 [Proxy] 已加载本机专属代理: ${proxyLabel}`);
   } catch (err) {
     console.warn('[Proxy] 专属代理加载失败:', err);
   }
@@ -548,8 +556,8 @@ app.post('/api/config/llm/models', rateLimitExpensive(), async (req, res) => {
   }
 });
 
-/** 使用已保存配置刷新模型列表 */
-app.get('/api/config/llm/models', async (_req, res) => {
+/** 使用已保存配置刷新模型列表（会带已存密钥打上游，与 POST 版同样限流） */
+app.get('/api/config/llm/models', rateLimitExpensive(), async (_req, res) => {
   try {
     const result = await listLLMModels();
     res.json({
