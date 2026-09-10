@@ -20,7 +20,7 @@ React 19 + Vite 前端 · Express 后端代理 LLM · 作品数据完全保存�
 
 可在 [Releases 页面](https://github.com/Khnocyl/InkMind/releases) 下载最新安装包：
 
-- **Windows**：下载 `InkMind-x.x.x-win-x64-Setup.exe` 安装程序。若 Windows Defender / SmartScreen 拦截提示“未知发布者”，点击**“更多信息” → “仍要运行”**（个人开源项目暂未购买高昂企业数字证书，所有代码完全开源，安全无害）。
+- **Windows**：下载 `InkMind-x.x.x-win-x64-Setup.exe` 安装程序。若 Windows Defender / SmartScreen 拦截提示“未知发布者”，点击“更多信息” → “仍要运行”（个人开源项目暂未购买高昂企业数字证书，所有代码完全开源，安全无害）。
 - **版本更新**：客户端内置更新检测功能。进入软件左侧「设置 → 常规与外观 → 关于 · 检查更新」，点击「立即检查更新」即可直连 GitHub 官方 Releases 检查最新版本与更新日志。
 
 ---
