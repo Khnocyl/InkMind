@@ -16,6 +16,7 @@ import { StyleAndEngineManager } from './components/StyleConfig/StyleAndEngineMa
 import { DesktopUpdateToast } from './components/StyleConfig/DesktopUpdateToast';
 import { ProjectWizard } from './components/ProjectWizard/ProjectWizard';
 import { ProjectSelectorModal } from './components/ProjectSelectorModal';
+import { DeconstructModal } from './components/BookDeconstruction/DeconstructModal';
 import {
   listProjects,
   saveProject,
@@ -72,6 +73,7 @@ export default function App() {
   // UI 模态窗控制
   const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
   const [isSelectorOpen, setIsSelectorOpen] = useState<boolean>(false);
+  const [isDeconstructOpen, setIsDeconstructOpen] = useState<boolean>(false);
   const [isReadingPreviewOpen, setIsReadingPreviewOpen] = useState(false);
   const [crossAuditBusy, setCrossAuditBusy] = useState(false);
   /** 全书待修 → 画布高亮 todo（消费后清空） */
@@ -960,6 +962,7 @@ export default function App() {
         onExportMarkdown={handleExportMarkdown}
         onExportEpub={handleExportEpub}
         onImportFile={handleImportFile}
+        onOpenDeconstruct={() => setIsDeconstructOpen(true)}
         busy={isGenerating || isAutoPiloting}
         onOpen={async () => {
           try {
@@ -967,6 +970,16 @@ export default function App() {
           } catch (err) {
             console.error('打开书库时刷新失败:', err);
           }
+        }}
+      />
+
+      {/* 拆书工作台：导入成品小说反推结构/设定/节奏（拆书功能入口在书库工具条） */}
+      <DeconstructModal
+        isOpen={isDeconstructOpen}
+        onClose={() => setIsDeconstructOpen(false)}
+        onFinished={(projectId) => {
+          setIsDeconstructOpen(false);
+          void handleSelectProject(projectId);
         }}
       />
 

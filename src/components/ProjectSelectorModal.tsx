@@ -29,6 +29,8 @@ interface ProjectSelectorModalProps {
   onExportEpub?: (approvedOnly?: boolean) => void;
   /** 从文件导入（JSON 备份） */
   onImportFile: (file: File) => Promise<void>;
+  /** 打开拆书工作台（可选入口；未传则不显示按钮） */
+  onOpenDeconstruct?: () => void;
   /** 生成中时禁用导入导出，避免竞态 */
   busy?: boolean;
   /** 打开时回调（用于刷新书库列表） */
@@ -47,6 +49,7 @@ export const ProjectSelectorModal: React.FC<ProjectSelectorModalProps> = ({
   onExportMarkdown,
   onExportEpub,
   onImportFile,
+  onOpenDeconstruct,
   busy = false,
   onOpen,
 }) => {
@@ -174,6 +177,18 @@ export const ProjectSelectorModal: React.FC<ProjectSelectorModalProps> = ({
             <Upload className="w-3.5 h-3.5" />
             {importing ? '导入中…' : '导入备份'}
           </button>
+          {onOpenDeconstruct && (
+            <button
+              type="button"
+              disabled={busy || importing}
+              onClick={onOpenDeconstruct}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="导入成品小说（TXT/URL）拆解为模板书：细纲/人物/设定/节奏报告"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              拆书
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"

@@ -5,6 +5,7 @@ import {
   formatStyleProfileForPrompt,
   getActiveStyleProfile,
   isStyleGenreMismatch,
+  resolveAllowEmDash,
 } from './styleImitate';
 import { mergeExtendedBlacklist } from './aiTasteScan';
 
@@ -1147,19 +1148,32 @@ export function buildStyleReviewPrompt(
   // 文风保护 + 收敛：激活档案时，润色不得破坏其节奏器官与指纹，且要把偏离语感的段落贴齐
   const activeProfile = getActiveStyleProfile(styleConfig);
   const styleGuardLines: string[] = [];
+  let guardNo = 8;
   if (activeProfile) {
     styleGuardLines.push(
-      `8. 保持文风档案「${activeProfile.name}」的节奏指纹：${activeProfile.authorStyle}`
+      `${guardNo++}. 保持文风档案「${activeProfile.name}」的节奏指纹：${activeProfile.authorStyle}`
     );
-    if (activeProfile.punctuationTolerance === 'ellipsis-emphatic') {
-      styleGuardLines.push(
-        '9. 本文风以省略号「……」与短句为节奏器官：不得删除或替换省略号，不得把短句合并成长句'
-      );
-    }
     const ref =
       activeProfile.sampleExcerpts?.[0]?.text || activeProfile.sampleExcerpt || '';
     styleGuardLines.push(
-      `10. 向档案语感收敛：把偏离档案节奏/用词/比喻风格的段落改写贴齐（长句拆短、文学腔比喻改生活化、抽象名词改具体物件）。\n【档案语感参照】\n${ref.slice(0, 350)}`
+      `${guardNo++}. 向档案语感收敛：把偏离档案节奏/用词/比喻风格的段落改写贴齐（长句拆短、文学腔比喻改生活化、抽象名词改具体物件）。\n【档案语感参照】\n${ref.slice(0, 350)}`
+    );
+  }
+  // 标点豁免：与确定性写后机检 resolveAllowEmDash 同口径（书级开关「允许破折号」OR 档案声明
+  // ellipsis-emphatic 任一路命中）。此前只认档案声明——开了书级开关的书，润色照样把 —— 当
+  // AI 味删掉：开关没穿透到 LLM 侧，机检放行而润色删除，行为自相矛盾。
+  const protectEllipsis =
+    activeProfile?.punctuationTolerance === 'ellipsis-emphatic';
+  const allowDash = resolveAllowEmDash(styleConfig);
+  const protectedMarks = [
+    protectEllipsis ? '省略号「……」' : '',
+    allowDash ? '破折号「——」' : '',
+  ].filter(Boolean);
+  if (protectedMarks.length) {
+    styleGuardLines.push(
+      `${guardNo++}. 标点豁免（本书已明许，不得当 AI 味清除）：${protectedMarks.join(
+        '与'
+      )}属于本书设定的风格标点，禁止以「去 AI 味 / 少用省略号破折号」为由删除、替换成逗号或把短句合并成长句；仅在同段明显滥用时收一收。`
     );
   }
   const styleGuard = styleGuardLines.length ? `\n${styleGuardLines.join('\n')}` : '';
@@ -1315,3 +1329,68 @@ export const buildDetailedBeatsPrompt = buildChapterBeatsPrompt;
 export const buildCriticVerifyPrompt = buildCriticAndVerifyPrompt;
 export { buildChapterRecapPrompt as buildRecapPrompt };
 
+
+// ─── 拆书（导入成品小说 → 反推结构/设定/写法）────────────────────────────
+
+/** 逐章拆解：把一章成品正文反推为细纲/分镜/人物/伏笔/钩子的结构化 JSON */
+export function buildDeconstructChapterPrompt(options: {
+  chapterNumber: number;
+  chapterTitle: string;
+  sourceText: string;
+  knownCharacters?: string[];
+}): { role: 'system' | 'user'; content: string }[] {
+  const known = (options.knownCharacters || []).slice(0, 30).join('、') || '无';
+  const systemPrompt = `你是资深网文拆书编辑。任务：把一章成品小说正文「逆向拆解」成创作大纲数据，供作者学习其章法结构与写法。你只做结构分析，不复述原文、不评价文笔优劣。严格只输出合法 JSON。`;
+
+  const userPrompt = `【第${options.chapterNumber}章 ${options.chapterTitle || '（无题）'}】正文如下：
+${options.sourceText}
+
+【已出场人物（供参考）】：${known}
+
+请反推本章的结构数据，严格输出 JSON，结构：
+{
+  "summary": "本章剧情梗概（80-160 字，按叙事顺序概括，不复述原文句子）",
+  "beats": [{"order": 1, "description": "场景级情节点（3-6 条，每条一句话，含视角/冲突推进）"}],
+  "characterNames": ["本章实际出场的角色名"],
+  "newSettings": ["本章新出现且影响后续的设定/概念/规则（无则空数组）"],
+  "foreshadowPlant": ["本章埋下、未在本章回收的伏笔（无则空数组）"],
+  "foreshadowPayoff": ["本章回收的前文伏笔（无则空数组）"],
+  "hookType": "章末钩子类型（悬念/危机/反转/期待/情感/无）",
+  "hookStrength": 0到10的整数（10=令人必须点开下一章）,
+  "payoffType": "本章提供的爽点/情绪点（打脸/升级/获宝/解谜/情感/无）"
+}
+要求：characterNames 只写正文里真实行动或说话的角色名；beats 按 3-6 条给出。`;
+
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+}
+
+/** 全书综合：把逐章拆解结果归并为人物卡/世界观/题材判断 */
+export function buildDeconstructSynthesisPrompt(options: {
+  bookTitle: string;
+  chapterDigests: string[];
+}): { role: 'system' | 'user'; content: string }[] {
+  const systemPrompt = `你是资深网文拆书编辑。任务：基于一本书的逐章拆解摘要，做全书级综合归并——去重合并人物与设定、判断题材。严格只输出合法 JSON。`;
+
+  const userPrompt = `【书名】：${options.bookTitle || '（未知）'}
+
+【逐章拆解摘要】（每行：章号｜梗概｜出场人物｜新设定）：
+${options.chapterDigests.join('\n')}
+
+请输出全书综合 JSON，结构：
+{
+  "suggestedTitle": "这本书的书名（原文有书名则照抄，无则根据内容拟一个）",
+  "genre": "题材判断（10-20 字，如「东方玄幻 · 升级流」）",
+  "synopsis": "全书一句话主线（60-120 字）",
+  "characters": [{"name": "角色名", "role": "主角|重要配角|反派|势力首领|神秘路人", "personality": "性格特征（30 字内）", "background": "背景/身份（60 字内）", "realmOrTitle": "境界或身份（无则空串）"}],
+  "settings": [{"category": "力量与境界体系|世界地理势力|功法神兵道具|天道禁忌与法则|核心历史伏笔", "name": "设定名", "description": "设定说明（80 字内）"}]
+}
+要求：人物合并同一角色的不同称呼（取最常用名）；characters 给 5-15 个最重要的；settings 给 5-15 条最核心的；role/category 必须严格使用给出的枚举值之一。`;
+
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+}

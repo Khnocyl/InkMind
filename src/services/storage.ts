@@ -21,6 +21,8 @@ export const STORE_PROJECTS_NAME = STORE_PROJECTS;
  * 级联清理，避免 storage 反向依赖 draftBackup/snapshots 造成循环导入。
  */
 export const DRAFT_META_PREFIX = 'draft:';
+/** 拆书任务索引的 meta 键前缀（同上：为让 deleteProject 级联清理而定义在此） */
+export const DECONSTRUCT_JOB_PREFIX = 'deconstruct-job:';
 /** 项目级快照上限的 meta 键 */
 export function snapshotCapMetaKey(projectId: string): string {
   return `snapshot-cap:${projectId}`;
@@ -98,6 +100,11 @@ export function initDB(): Promise<IDBDatabase> {
         db.close();
         cachedDb = null;
       };
+      // 连接被外部关闭（浏览器强制回收 / 数据库被 deleteDatabase）：必须让缓存失效，
+      // 否则 cachedDb 指向已关闭连接，后续 db.transaction(...) 抛 InvalidStateError。
+      db.onclose = () => {
+        if (cachedDb === db) cachedDb = null;
+      };
       cachedDb = db;
       resolve(db);
     };
@@ -156,6 +163,11 @@ export async function saveProject(
 
     const getReq = store.get(project.id);
     getReq.onerror = () => reject(getReq.error);
+    // 新 rev 先在闭包里算出，**只在事务提交成功后**才写回调用方活对象。
+    // 若在 put 前就改写 project.rev，事务 commit 失败（配额/abort）时内存 rev
+    // 已"前进"而磁盘未变——下次保存的冲突判定 existingRev > callerRev 会失效，
+    // 从而静默覆盖另一标签页的写入，ProjectConflictError 这道防线被绕过。
+    let nextRev = project.rev ?? 0;
     getReq.onsuccess = () => {
       const existing = getReq.result as BookProject | undefined;
       const existingRev = existing?.rev ?? 0;
@@ -167,20 +179,48 @@ export async function saveProject(
         reject(new ProjectConflictError(project.id));
         return;
       }
-      project.rev = existingRev + 1;
-      store.put(project);
+      nextRev = existingRev + 1;
+      store.put({ ...project, rev: nextRev });
     };
 
     // 以事务提交为准（而非 request.onsuccess）：commit 阶段失败（典型
     // QuotaExceededError）时必须让调用方知道「没落盘」——useProjectPersistence
     // 的不变量是 resolve 即已落盘。
     tx.oncomplete = () => {
+      project.rev = nextRev;
       invalidateProjectListCache();
-      resolve(project.rev ?? 0);
+      resolve(nextRev);
     };
     tx.onabort = () => reject(tx.error || new Error('saveProject 事务中止'));
     tx.onerror = () => reject(tx.error || new Error('saveProject 事务失败'));
   });
+}
+
+/**
+ * 本次会话内已确认过「迁移/降级保护快照」的项目+标签。
+ * 降级（isFuture）状态会一直存在到用户升级版本，若不记这一笔，每次打开这本书
+ * 都要全量列一次快照——等于给「打开书」平白加一次全库快照读取。
+ */
+const ensuredMigrationSnapshots = new Set<string>();
+
+/**
+ * 幂等建立「迁移/降级前」保护快照：同 (项目, 标签) 已存在则跳过。
+ *
+ * 必须幂等的原因：迁移结果落盘可能失败（跨页冲突 / 配额）。此时磁盘上仍是旧
+ * schema，下次加载会再次进入迁移分支——若无条件建快照，就会每次加载都新增一条
+ * pinned（永不裁剪）的整书 gzip 快照，IndexedDB 体积单调增长，最终触发
+ * QuotaExceededError，反过来让迁移落盘继续失败，形成死循环。
+ */
+async function ensureMigrationSnapshot(raw: BookProject, label: string): Promise<void> {
+  const key = `${raw.id}::${label}`;
+  if (ensuredMigrationSnapshots.has(key)) return;
+  // 动态 import 避开 storage↔snapshots 循环依赖
+  const { createSnapshot, listSnapshots } = await import('./snapshots');
+  const existing = await listSnapshots(raw.id);
+  if (!existing.some((m) => m.reason === 'migration' && m.label === label)) {
+    await createSnapshot(raw, { reason: 'migration', label });
+  }
+  ensuredMigrationSnapshots.add(key);
 }
 
 export async function loadProject(id: string): Promise<BookProject | null> {
@@ -195,22 +235,35 @@ export async function loadProject(id: string): Promise<BookProject | null> {
   });
   if (!raw) return null;
 
-  // 迁移前自动快照（可回滚）——必须在迁移函数执行之前：
+  // 迁移/降级前自动保护快照（可回滚）——必须在迁移函数执行之前：
   // migrateProjectToLatest 可能 throw（缺迁移函数/非法数据），快照保护
-  // 恰恰要覆盖这条最需要它的失败路径。动态 import 避开 storage↔snapshots 循环依赖。
+  // 恰恰要覆盖这条最需要它的失败路径。
+  //
+  // 预检与建快照解耦：peekMigration 在「缺迁移函数」时会抛错，若把建快照
+  // 放在它之后，最需要快照的场景反而拿不到快照。预检失败 → 保守建一份。
+  let preview: ReturnType<typeof peekMigration> | null = null;
   try {
-    const preview = peekMigration(raw);
-    if (preview.isFuture) {
+    preview = peekMigration(raw);
+  } catch (e) {
+    console.warn(`[migrations] ${id}: 迁移预检失败（可能缺迁移函数），仍先建保护快照`, e);
+  }
+  try {
+    if (preview?.isFuture) {
+      // 降级：数据由更新版本写入，旧代码读写新数据可能丢字段。先留一份
+      // 不可裁剪的保护快照，保证「不可逆损坏」至少可恢复。
+      await ensureMigrationSnapshot(
+        raw,
+        `降级保护备份 · schema v${preview.fromVersion}（当前代码仅支持 v${CURRENT_SCHEMA_VERSION}）`
+      );
       console.warn(
         `[migrations] ${id}: 数据 schema v${preview.fromVersion} 高于当前代码支持的 v${CURRENT_SCHEMA_VERSION}` +
-          '（可能从新版降级）。原样加载——旧代码读写新数据，请尽快升级版本。'
+          '（可能从新版降级）。已留保护快照并原样加载——旧代码读写新数据，请尽快升级版本。'
       );
-    } else if (preview.applied.length > 0) {
-      const { createSnapshot } = await import('./snapshots');
-      await createSnapshot(raw, {
-        reason: 'migration',
-        label: `迁移前备份 · schema v${preview.fromVersion} → v${preview.toVersion}`,
-      });
+    } else if (!preview || preview.applied.length > 0) {
+      const fromV =
+        preview?.fromVersion ?? (typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 0);
+      const toV = preview?.toVersion ?? CURRENT_SCHEMA_VERSION;
+      await ensureMigrationSnapshot(raw, `迁移前备份 · schema v${fromV} → v${toV}`);
     }
   } catch (e) {
     console.warn('[migrations] 迁移前快照失败（继续迁移）', e);
@@ -301,6 +354,7 @@ export async function getAllProjects(): Promise<BookProjectSummary[]> {
           totalChapters: targetTotal,
           completedChaptersCount,
           totalWords,
+          isDeconstruct: !!p.deconstructMeta,
         };
       });
       // Sort by lastModified descending
@@ -331,9 +385,10 @@ export async function deleteProject(id: string): Promise<void> {
       }
     };
 
-    // 级联清理该书遗留的 meta：流式草稿备份 + 项目级快照上限。
+    // 级联清理该书遗留的 meta：流式草稿备份 + 项目级快照上限 + 拆书任务索引。
     // 此前只删 projects/snapshots，导致被删项目的整章正文长期残留在 IndexedDB。
     metaStore.delete(snapshotCapMetaKey(id));
+    metaStore.delete(`${DECONSTRUCT_JOB_PREFIX}${id}`);
     const draftPrefix = `${DRAFT_META_PREFIX}${id}:`;
     const metaCursorReq = metaStore.openCursor();
     metaCursorReq.onsuccess = () => {
@@ -363,6 +418,7 @@ export async function deleteProject(id: string): Promise<void> {
       resolve();
     };
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('deleteProject 事务中止'));
   });
 }
 
@@ -383,15 +439,17 @@ export async function setActiveProjectId(id: string | null): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_META, 'readwrite');
     const store = tx.objectStore(STORE_META);
-    let request;
     if (id === null) {
-      request = store.delete('active_project_id');
+      store.delete('active_project_id');
     } else {
-      request = store.put({ key: 'active_project_id', value: id });
+      store.put({ key: 'active_project_id', value: id });
     }
 
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    // 以事务提交为准（同 saveProject）：commit 阶段失败（配额）时不能误报成功，
+    // 否则「活跃书」没落盘却以为成功，下次启动恢复的书不对。
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('setActiveProjectId 事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('setActiveProjectId 事务中止'));
   });
 }
 

@@ -409,6 +409,32 @@ export interface Chapter {
   memoryInjection?: MemoryInjectionSnapshot;
   /** 本章写后事实快照（账本抽取） */
   factSnapshot?: ChapterFactSnapshot;
+  /**
+   * 拆书分析结果（拆书模板书专属）：逐章 LLM 拆解中无法落入既有字段的
+   * 分析增量。拆解同时会写 summary / beats / involvedCharacterIds 等既有字段。
+   * 缺省 = 未拆解（断点续跑以此为标记）。
+   */
+  deconstruct?: ChapterDeconstruct;
+}
+
+/** 拆书逐章分析（只存既有字段装不下的部分） */
+export interface ChapterDeconstruct {
+  /** 章末钩子类型（如 悬念/危机/反转/期待） */
+  hookType?: string;
+  /** 章末钩子强度 0-10 */
+  hookStrength?: number;
+  /** 本章爽点/情绪点类型（无则空） */
+  payoffType?: string;
+  /** 本章埋下的伏笔 */
+  foreshadowPlant?: string[];
+  /** 本章回收的伏笔 */
+  foreshadowPayoff?: string[];
+  /** 本章新引入的设定/概念（综合阶段再归并为 WorldSetting） */
+  newSettings?: string[];
+  /** 本章出场人物名（综合阶段映射为角色 id 写入 involvedCharacterIds） */
+  characterNames?: string[];
+  /** 拆解时间 ISO */
+  analyzedAt?: string;
 }
 
 /** 章级待修条目 */
@@ -483,6 +509,30 @@ export interface StyleFingerprint {
 }
 
 /**
+ * 文风硬规（可统计核验的平台型纪律）：随档案激活生效，
+ * 由 validatePostWrite 做零-LLM 写后机检——违规并入审校冲突打回修改，
+ * error 级压分并拦截绿通。未声明的档案完全不受影响。
+ */
+export interface ProseHardRules {
+  /** 开篇第一句必须以台词/物理动词/突发事态切入，禁止环境铺陈开场 */
+  openingCutIn?: boolean;
+  /** 开篇前两段皆无对白无动作（或环境名词密集）判「环境堆砌」 */
+  forbidOpeningEnvStack?: boolean;
+  /** 对白字占比下限（0–1）：低于 → error */
+  dialogueRatioMin?: number;
+  /** 对白字占比上限（0–1）：高于 → warning */
+  dialogueRatioMax?: number;
+  /** 章末绝对禁哲思升华/口号誓言/议论总结（引号外叙述层检测） */
+  endingNoElevation?: boolean;
+  /** 禁止大段科普讲解：长段无对白无动作且含说明腔标记 → error */
+  noLectureParagraphs?: boolean;
+  /** 单机自言自语检测：多处对白归属同一人 → error */
+  forbidSoloMonologue?: boolean;
+  /** 叙述段长度上限（字）：超出记「段落超长」warning（移动端短段纪律） */
+  maxParagraphLen?: number;
+}
+
+/**
  * 文风仿写档案：指纹 + LLM 风格指南 + 样本摘录。
  * 激活后注入正文/扩写 Prompt。
  */
@@ -513,6 +563,11 @@ export interface StyleProfile {
    * 通用禁令（该类文风以省略号为节奏器官，通用去AI味规则会误伤）。
    */
   punctuationTolerance?: 'default' | 'ellipsis-emphatic';
+  /**
+   * 文风硬规：激活后写后确定性机检（见 ProseHardRules / validatePostWrite）。
+   * 平台型文风（番茄快节奏等）专用；缺省 = 不做附加机检。
+   */
+  hardRules?: ProseHardRules;
   /**
    * 题材适配标签（如 ['玄幻','修真','热血']）。缺省/空 = 题材通用。
    * 书的题材与标签全部不匹配时：结构层方法论不注入，正文层降级为
@@ -903,6 +958,19 @@ export interface BookProject {
    * 手改/流水线写章时按 delta 累计，供每日目标与热力参考。
    */
   dailyWordLog?: Record<string, number>;
+  /** 拆书模板书标记（拆书功能产出/进行中的书）；普通创建的书无此字段 */
+  deconstructMeta?: BookDeconstructMeta;
+}
+
+/** 拆书来源与进度元信息 */
+export interface BookDeconstructMeta {
+  /** 输入源：本地文件 或 URL 抓取 */
+  source: 'file' | 'url';
+  /** 源标识：文件名 或 起始 URL */
+  sourceName: string;
+  importedAt: string;
+  /** 全书综合（人物/设定归并）是否已完成 */
+  synthesisDone?: boolean;
 }
 
 /** 跨章连贯抽检条目 */
@@ -963,5 +1031,7 @@ export interface BookProjectSummary {
   totalChapters: number;
   completedChaptersCount: number;
   totalWords: number;
+  /** 拆书模板书标记（源项目带 deconstructMeta）；用于书库/拆书工作台区分模板书 */
+  isDeconstruct?: boolean;
 }
 
