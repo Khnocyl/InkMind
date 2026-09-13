@@ -614,8 +614,11 @@ export const AuditGroup: React.FC<AuditGroupProps> = ({
                 <div className="p-2.5 bg-white border border-slate-200 rounded-lg shadow-sm">
                   <div className="text-[11px] font-bold text-slate-900 mb-1.5 flex items-center justify-between">
                     <span>套话 / 模式命中列表</span>
+                    {/* 徽标 = 本列表条目数。removedClichesCount 是「套话数」口径
+                        （LLM 自报数与机检 blacklistHits 取 max），与本列表（含
+                        模式/情绪标签）天然对不齐，直接标会让人以为是列表长度 */}
                     <span className="bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded text-[10px]">
-                      {audit.removedClichesCount} 处
+                      {(audit.removedClichésList || []).length} 处
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
