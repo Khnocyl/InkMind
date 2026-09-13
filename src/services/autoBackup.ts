@@ -20,6 +20,9 @@ const DEFAULT_DELAY_MS = 15_000;
  */
 const KEEPALIVE_MAX_BYTES = 60 * 1024;
 
+/** 备份请求硬超时：防挂起请求把 sending 闸门永久占住（自动备份静默停摆） */
+const BACKUP_TIMEOUT_MS = 60_000;
+
 let timer: ReturnType<typeof setTimeout> | null = null;
 let getter: (() => BookProject | null) | null = null;
 /** 调度时所在的书 + 该书当时的快照（切书兜底） */
@@ -93,6 +96,11 @@ async function fire(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body,
       ...(keepalive ? { keepalive: true } : {}),
+      // 硬超时：请求若挂起（网络黑洞/服务端阻塞），await 永不 settle 会让 sending
+      // 恒为 true，此后所有 schedule/flush 只置 refireAfterSend 不再真正发送——
+      // 自动备份静默永久停摆。注意 keepalive 请求不能用 AbortSignal（浏览器限制），
+      // 故仅在非 keepalive 时挂超时。
+      ...(keepalive ? {} : { signal: AbortSignal.timeout(BACKUP_TIMEOUT_MS) }),
     });
     const data = await res.json();
     if (!data.success) {

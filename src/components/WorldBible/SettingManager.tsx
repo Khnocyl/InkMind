@@ -20,7 +20,8 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
     '核心历史伏笔',
   ];
 
-  const [formData, setFormData] = useState<Partial<WorldSetting>>({
+  /** 新建词条的空白表单。抽成函数：提交/重新打开时都要复位，否则会带出上次的内容 */
+  const emptyForm = (): Partial<WorldSetting> => ({
     name: '',
     category: '力量与境界体系',
     description: '',
@@ -28,6 +29,8 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
     tags: ['规则红线'],
     isActive: true,
   });
+
+  const [formData, setFormData] = useState<Partial<WorldSetting>>(emptyForm());
 
   const filteredSettings =
     selectedCategory === '全部'
@@ -50,6 +53,7 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
     };
     onAddSetting(newSet);
     setSelectedSetId(newSet.id);
+    setFormData(emptyForm()); // 复位：下次点「新建」是干净表单
     setIsCreating(false);
   };
 
@@ -59,7 +63,10 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
         <div className="p-4 border-b border-[#e5e5e5] flex items-center justify-between">
           <span className="font-bold text-sm text-black">设定与世界观词条 ({settings.length})</span>
           <button
-            onClick={() => setIsCreating(true)}
+            onClick={() => {
+              setFormData(emptyForm()); // 取消后重开也应是干净表单
+              setIsCreating(true);
+            }}
             className="flex items-center space-x-1 bg-black text-white px-2.5 py-1 rounded text-xs font-medium hover:bg-neutral-800 transition-all"
           >
             <Plus size={13} />
@@ -182,6 +189,7 @@ export const SettingManager: React.FC<SettingManagerProps> = ({ settings, onAddS
                 <textarea
                   rows={4}
                   placeholder="一行一条绝对无法违背的红线（例如：筑基期绝对无法单凭肉身御空飞行；进入幽冥废墟深处气血必定衰减三成……）"
+                  value={(formData.hardRules || []).join('\n')}
                   onChange={(e) =>
                     setFormData({ ...formData, hardRules: e.target.value.split('\n') })
                   }

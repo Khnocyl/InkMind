@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { proseWords } from '../../services/proseWords';
 import type { Character, StoryMemory } from '../../types/novel';
 import {
@@ -85,6 +85,14 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
   onPatchBible,
 }) => {
   const mem = useMemo(() => normalizeStoryMemory(memory || emptyStoryMemory()), [memory]);
+  /**
+   * 最新 memory 快照。异步 LLM 操作（补抽 / 纪元润色）在 await 期间，用户仍可
+   * 添加钉死事实、伏笔等（这些操作没有被 busy 闸门禁用）。若提交时基于 await 前
+   * 闭包里的旧 `mem` 构造结果并整体覆盖，期间的编辑会被静默丢弃。
+   * 提交一律用 ref 取最新值（同 WritingCanvas 的 chapterRef 范式）。
+   */
+  const memRef = useRef(mem);
+  memRef.current = mem;
   const counts = memorySummaryCounts(mem);
   const facts = listActiveFacts(mem);
   const threads = listActiveThreads(mem);
@@ -121,6 +129,12 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
   const [factInput, setFactInput] = useState('');
   const [threadInput, setThreadInput] = useState('');
   const [notes, setNotes] = useState(mem.authorNotes || '');
+  // 外部改动 authorNotes（重建账本 / 快照回滚 / 换书）时同步到本地输入框。
+  // 只在 props 值真的变化时触发：用户打字期间 props 不变（提交发生在失焦），
+  // 因此不会打断正在输入的内容；而提交回写后 effect 收到的是同一个值，是空操作。
+  useEffect(() => {
+    setNotes((cur) => (cur === (mem.authorNotes || '') ? cur : mem.authorNotes || ''));
+  }, [mem.authorNotes]);
   const [showSuperseded, setShowSuperseded] = useState(false);
   const [polishBusy, setPolishBusy] = useState(false);
   const [polishMsg, setPolishMsg] = useState<string | null>(null);
@@ -151,6 +165,18 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
     if (!withRecap.length) {
       setLedgerMsg('没有带 recap 的章节可建账本。请先完整闭环写几章。');
       return;
+    }
+    // 二次确认：重建会把 factLedger.assertions 清空，其中含**手动钉死**的
+    // 死亡/状态断言与 LLM 补抽结果——这两类不来自 recap，重建后无法找回。
+    // 此前无任何提示直接执行，属静默数据销毁。
+    const existing = (mem.factLedger?.assertions || []).length;
+    if (existing > 0) {
+      const ok = window.confirm(
+        `重建账本将先清空现有 ${existing} 条断言（含手动钉死的死亡/状态、以及 LLM 补抽结果），\n` +
+          `再按 ${withRecap.length} 章的 recap 重新抽取。\n\n` +
+          `手动钉死与 LLM 补抽的断言无法被重建，确定继续？`
+      );
+      if (!ok) return;
     }
     let next: StoryMemory = {
       ...mem,
@@ -206,7 +232,8 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
         recap: ch.recap,
         onProgress: (m) => setLedgerMsg(m),
       });
-      const next = mergeSnapshotIntoMemory(mem, snap);
+      // 基于最新账本合并：await 期间用户可能已新增钉死事实/伏笔
+      const next = mergeSnapshotIntoMemory(memRef.current, snap);
       onUpdateMemory(next);
       setLedgerMsg(
         `第${ch.number}章补抽完成 · 本章 ${snap.assertions.length} 条 · 账本活跃 ${factLedgerSummaryCounts(next.factLedger).active}`
@@ -289,7 +316,8 @@ export const MemoryManager: React.FC<MemoryManagerProps> = ({
     setPolishBusy(true);
     setPolishMsg(force ? '强制重跑纪元润色…' : 'LLM 润色纪元摘要…');
     try {
-      const result = await polishEpochDigestsWithLlm(mem, {
+      // 入参也用最新值：await 期间的新增内容应参与润色，而不是被旧快照覆盖
+      const result = await polishEpochDigestsWithLlm(memRef.current, {
         maxBlocks: 3,
         force,
         onProgress: (m) => setPolishMsg(m),

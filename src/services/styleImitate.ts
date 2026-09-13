@@ -7,6 +7,7 @@ import { proseWords } from './proseWords';
 import type {
   BookProject,
   FewShotExample,
+  ProseHardRules,
   StyleConfig,
   StyleFingerprint,
   StyleProfile,
@@ -37,6 +38,63 @@ export function resolveAllowEmDash(style?: StyleConfig | null): boolean {
   return (
     getActiveStyleProfile(style)?.punctuationTolerance === 'ellipsis-emphatic'
   );
+}
+
+/**
+ * 文风硬规解析：激活档案声明 hardRules 才生效（Auditor/Reviser 写后机检入口，
+ * 与 resolveAllowEmDash 同范式）。未声明 = null = 零行为变化。
+ */
+export function resolveStyleHardRules(
+  style?: StyleConfig | null
+): ProseHardRules | null {
+  return getActiveStyleProfile(style)?.hardRules ?? null;
+}
+
+/** 把硬规翻译成写作侧的逐条声明（写手先写对，比写后被机检打回省一全文成本） */
+export function formatHardRulesBlock(rules?: ProseHardRules | null): string {
+  if (!rules) return '';
+  const lines: string[] = [];
+  if (rules.openingCutIn) {
+    lines.push(
+      '全章第一句必须以台词、物理动作或突发事态切入；禁止天气、景物、地点、人物来历开场。'
+    );
+  }
+  if (rules.forbidOpeningEnvStack) {
+    lines.push('开篇前两段必须出现对白或动作；环境信息压进动作与台词，不许独立铺陈。');
+  }
+  if (rules.dialogueRatioMin !== undefined) {
+    const lo = Math.round(rules.dialogueRatioMin * 100);
+    const hi =
+      rules.dialogueRatioMax !== undefined
+        ? `–${Math.round(rules.dialogueRatioMax * 100)}%`
+        : '以上';
+    lines.push(
+      `对白与人物交互占比必须落在 ${lo}%${hi}（按引号内字数计）：信息、冲突、打脸全部装进对白；关键信息禁止靠主角内心独白推进。`
+    );
+  }
+  if (rules.forbidSoloMonologue) {
+    lines.push('对白必须双向：有人抛话、有人接招；全场台词只有一个人在说即失败写法。');
+  }
+  if (rules.endingNoElevation) {
+    lines.push(
+      '章末绝对禁止哲思升华、人生感悟、口号誓言与总结议论；结尾必须停在台词、动作、道具变化或新威胁上。'
+    );
+  }
+  if (rules.noLectureParagraphs) {
+    lines.push(
+      '禁止 130 字以上无对白无动作的科普/设定讲解段；世界观、规则、价格、等级全部由人物之口与当场动作带出。'
+    );
+  }
+  if (rules.maxParagraphLen !== undefined) {
+    lines.push(
+      `叙述段落不超过 ${rules.maxParagraphLen} 字，1-3 句一段，重点句单独成段。`
+    );
+  }
+  if (!lines.length) return '';
+  return [
+    '【机检硬规 · 写后零容忍复核】（下列条目写后有确定性机检，命中即打回重写，落笔前先满足）',
+    ...lines.map((l) => `- ${l}`),
+  ].join('\n');
 }
 
 /**
@@ -110,6 +168,7 @@ export function formatStyleProfileForPrompt(
   const fp = profile.fingerprint;
   const doL = (profile.doList || []).map((x, i) => `${i + 1}. ${x}`).join('\n');
   const dontL = (profile.dontList || []).map((x, i) => `${i + 1}. ${x}`).join('\n');
+  const hardBlock = formatHardRulesBlock(profile.hardRules);
   // 多场景范文：分场景锚语感（恐怖并置/对白立人/悬疑收尾…），比单段更贴
   const excerptBlocks = (profile.sampleExcerpts || []).slice(0, 3).map(
     (e) => `「场景：${e.label}」\n${e.text.slice(0, 400)}`
@@ -132,6 +191,8 @@ export function formatStyleProfileForPrompt(
     profile.styleGuide || '（无）',
     doL ? `\n【要做】\n${doL}` : '',
     dontL ? `\n【不要做】\n${dontL}` : '',
+    // 硬规是平台纪律（题材无关），降级模式下同样生效
+    hardBlock ? `\n${hardBlock}` : '',
     sample
       ? `\n【参考文气摘录（学语感、节奏与用词，勿照抄情节${
           demotion ? '；禁止把选段的题材场面（团战/升级/喊招式名等）带进本章' : ''

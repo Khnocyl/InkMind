@@ -142,12 +142,18 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
 
   const saveEdit = async () => {
     if (!editId) return;
-    await onUpdateStyleConfig((prev) =>
-      updateStyleProfile(prev, editId, { styleGuide: editGuide.trim() })
-    );
-    // R3 收尾·文风全局化：同步更新全局库（取更新后的档案）
-    const updated = profiles.find((p) => p.id === editId);
-    if (updated) upsertGlobalStyleProfiles([updated]);
+    const guide = editGuide.trim();
+    // 从更新结果里取「更新后的档案」，而不是从 props 的 profiles 里 find。
+    // `updateStyleProfile` 返回全新对象（不原地改），所以 props 里的档案仍是旧
+    // styleGuide——此前把它写进全局库，会造成「本书档案已是新指南、全局库还是旧的」。
+    let updatedProfile: StyleProfile | null = null;
+    await onUpdateStyleConfig((prev) => {
+      const nextCfg = updateStyleProfile(prev, editId, { styleGuide: guide });
+      updatedProfile = (nextCfg.styleProfiles || []).find((p) => p.id === editId) ?? null;
+      return nextCfg;
+    });
+    // R3 收尾·文风全局化：同步更新全局库
+    if (updatedProfile) upsertGlobalStyleProfiles([updatedProfile]);
     setEditId(null);
     setMsg('风格指南已保存');
   };
@@ -215,6 +221,14 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
             >
               <Sparkles size={12} />
               {preset.name}
+              {preset.hardRules && (
+                <span
+                  className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-bold"
+                  title="激活后写后机检：首句切入/对白占比/结尾禁升华/科普段/单机独白等硬规，违规打回"
+                >
+                  机检
+                </span>
+              )}
               {imported && <CheckCircle2 size={12} className="text-emerald-700" />}
             </button>
           );
@@ -367,6 +381,18 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
                       <strong className="text-slate-900">要诀：</strong>
                       {p.authorStyle}
                     </p>
+                    {p.hardRules && (
+                      <p className="mt-1.5 text-[10px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">
+                        平台硬规激活：首句事故化 · 对白{' '}
+                        {p.hardRules.dialogueRatioMin !== undefined
+                          ? `${Math.round(p.hardRules.dialogueRatioMin * 100)}%`
+                          : ''}
+                        {p.hardRules.dialogueRatioMax !== undefined
+                          ? `–${Math.round(p.hardRules.dialogueRatioMax * 100)}%`
+                          : ''}{' '}
+                        · 结尾禁升华 · 禁科普段 · 写后机检违规打回
+                      </p>
+                    )}
                     <pre className="mt-2 text-[10px] text-slate-500 font-mono whitespace-pre-wrap bg-slate-50 border border-slate-100 rounded-lg p-2 max-h-24 overflow-y-auto">
                       {formatFingerprintSummary(p.fingerprint)}
                     </pre>

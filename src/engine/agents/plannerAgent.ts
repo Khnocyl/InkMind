@@ -4,6 +4,7 @@
 import type { PlotBeat } from '../../types/novel';
 import { step1_GenerateBeats } from '../../services/aiEngine';
 import { formatStyleStructureForPrompt, getActiveStyleProfile } from '../../services/styleImitate';
+import { isGenerationAborted } from '../../services/llmResilience';
 import type { AgentContext } from '../types';
 import { PROSE_DISCIPLINE_ZH } from '../discipline';
 
@@ -68,6 +69,8 @@ export async function runPlannerAgent(ctx: AgentContext): Promise<PlannerOutput>
       )
     );
   } catch (err: any) {
+    // 用户主动停止：原样上抛，不吞进兜底分镜（否则 Writer 会再次失败才暴露中止）
+    if (isGenerationAborted(err)) throw err;
     report('plan', `[Planner] 分镜失败，使用梗概兜底：${err?.message || err}`);
     beats = [];
   }

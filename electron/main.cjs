@@ -3,7 +3,7 @@
  * - 单实例锁；
  * - 随机空闲端口 + 127.0.0.1 启动现有 Express server（build/electron/server.cjs，
  *   由 scripts/build-electron.mjs 用 esbuild 打包）；
- * - 数据目录 NOVEL_APP_ROOT = userData（%APPDATA%/inkmind/.novel-data/）；
+ * - 数据目录 NOVEL_APP_ROOT = userData（%APPDATA%/InkMind/.novel-data/）；
  * - 前端资源 NOVEL_DIST_DIR = 打包内的 dist/；
  * - BrowserWindow 加载 http://127.0.0.1:port（同源/token/回环安全模型原样保留）。
  */
@@ -12,9 +12,13 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
-const { semverCompare, shortUpdaterError } = require('./updaterErrors.cjs');
+const { semverCompare, shortUpdaterError, decideUpdaterErrorAction } = require('./updaterErrors.cjs');
 
 app.setName('InkMind');
+// Windows 任务栏/通知归属固定为产品 AppUserModelID，避免显示为 Electron 默认图标分组。
+if (process.platform === 'win32' && app.setAppUserModelId) {
+  app.setAppUserModelId('com.inkmind.desktop');
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -24,6 +28,22 @@ if (!gotLock) {
 
 let PORT = 0;
 let win = null;
+
+/**
+ * 全局兜底：server bundle 与 Electron 主进程跑在**同一个 Node 进程**里
+ * （见下方 require(serverBundle)）。启动之后的异步路径若抛未捕获异常，
+ * 会按 Node 默认行为直接终止整个应用——无提示、无日志。
+ * 这里记录日志并在窗口存活时提示，避免因单次异常导致「静默闪退」。
+ */
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err);
+  if (win && !win.isDestroyed()) {
+    dialog.showErrorBox('InkMind — 发生未捕获错误', String((err && err.message) || err));
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason);
+});
 
 /** 找一个从 start 起的空闲端口（探测后即释放，存在极小竞态，可接受）。
  *  最多尝试 maxTries 次：否则端口段被防火墙/其他程序占满时会无限递归。 */
@@ -46,11 +66,19 @@ function findFreePort(start, maxTries = 50) {
   });
 }
 
-/** 轮询 /api/health 直到 server 就绪 */
-function waitForServer(url, tries = 80) {
+/**
+ * 轮询 /api/health 直到 server 就绪。
+ *
+ * 必须有**请求级**超时：仅靠重试次数不够——若 TCP 已连上但服务端永不回响应
+ * （事件循环被阻塞、socket 被中间层吞掉），回调永不触发、probe 不再递归，
+ * waitForServer 永不 settle → 无窗口、无错误提示、进程常驻，用户只能杀进程。
+ */
+function waitForServer(url, tries = 80, timeoutMs = 2000) {
   return new Promise((resolve) => {
     const probe = (n) => {
+      let settled = false;
       const req = http.get(url, (res) => {
+        settled = true;
         res.resume();
         if (res.statusCode === 200) {
           resolve(true);
@@ -61,23 +89,47 @@ function waitForServer(url, tries = 80) {
           setTimeout(() => probe(n - 1), 250);
         }
       });
-      req.on('error', () => {
+      // 超时与错误都触发重试；settled 保证同一次请求不会重复推进
+      const retry = () => {
+        if (settled) return;
+        settled = true;
         if (n <= 0) resolve(false);
         else setTimeout(() => probe(n - 1), 250);
+      };
+      req.setTimeout(timeoutMs, () => {
+        req.destroy();
+        retry();
       });
+      req.on('error', retry);
     };
     probe(tries);
   });
 }
 
+/**
+ * 校验 IPC 来自**本窗口的顶层主 frame**，并回传窗口实例。
+ *
+ * 当前无 iframe/webview、页面仅来自本地同源，实际风险低；但一旦未来引入内嵌
+ * 内容，任意子 frame 都能调用窗口控制与更新通道。防御性收口，成本几乎为零。
+ */
+function windowFromTrustedSender(event) {
+  if (!event.senderFrame || event.senderFrame.top !== event.senderFrame) return null;
+  return BrowserWindow.fromWebContents(event.sender);
+}
+
+/** 与 windowFromTrustedSender 同源判定：更新通道同样只接受顶层主 frame 的调用 */
+function isTrusted(event) {
+  return !!event?.senderFrame && event.senderFrame.top === event.senderFrame;
+}
+
 // ─── 桌面端无边框窗口控制 IPC ─────────────────────────────────────
 ipcMain.on('window-minimize', (event) => {
-  const targetWin = BrowserWindow.fromWebContents(event.sender);
+  const targetWin = windowFromTrustedSender(event);
   targetWin?.minimize();
 });
 
 ipcMain.on('window-maximize-toggle', (event) => {
-  const targetWin = BrowserWindow.fromWebContents(event.sender);
+  const targetWin = windowFromTrustedSender(event);
   if (!targetWin) return;
   if (targetWin.isMaximized()) {
     targetWin.unmaximize();
@@ -87,12 +139,12 @@ ipcMain.on('window-maximize-toggle', (event) => {
 });
 
 ipcMain.on('window-close', (event) => {
-  const targetWin = BrowserWindow.fromWebContents(event.sender);
+  const targetWin = windowFromTrustedSender(event);
   targetWin?.close();
 });
 
 ipcMain.handle('window-is-maximized', (event) => {
-  const targetWin = BrowserWindow.fromWebContents(event.sender);
+  const targetWin = windowFromTrustedSender(event);
   return targetWin?.isMaximized() ?? false;
 });
 
@@ -101,6 +153,7 @@ ipcMain.handle('window-is-maximized', (event) => {
 // 强制重绘一帧。沙盒 preload 无法直接调 webContents，经 IPC 转交。
 ipcMain.on('window-request-repaint', (event) => {
   try {
+    if (!event.senderFrame || event.senderFrame.top !== event.senderFrame) return;
     if (!event.sender.isDestroyed()) event.sender.invalidate();
   } catch {
     /* ignore */
@@ -182,6 +235,10 @@ function initAutoUpdater() {
     });
     updater.on('update-not-available', (info) => {
       lastAvailable = null;
+      // 必须同时把 updatePhase 归位：此前只清了快照而 phase 可能仍是 'available'，
+      // 于是 probe 会返回「phase=available 但 available=null」的矛盾状态，
+      // 且点「下载更新」能通过 phase 校验后必然失败。
+      updatePhase = 'idle';
       sendUpdaterState({ type: 'not-available', version: info.version });
     });
     updater.on('download-progress', (p) => {
@@ -201,11 +258,12 @@ function initAutoUpdater() {
     updater.on('error', (err) => {
       // 检查过程中的失败由 updater:check 的返回值统一汇报（含“缺 latest.yml 视为已是最新版”等
       // 判定），这里只广播下载等其他阶段出现的错误。
-      if (checkingActive > 0) return;
+      // 决策逻辑抽到 updaterErrors.decideUpdaterErrorAction（纯函数，有单测）——
+      // 抑制必须以「阶段」为界，不能只看跨阶段共享的 checkingActive 计数器。
+      const decision = decideUpdaterErrorAction({ checkingActive, updatePhase });
+      if (decision.suppress) return;
       console.warn('[updater] 更新出错:', (err && err.stack) || err);
-      // 下载阶段失败 → 回退到 available 允许重试；其余情况视为回到初始态
-      if (updatePhase === 'downloading') updatePhase = 'available';
-      else if (updatePhase !== 'downloaded') updatePhase = 'idle';
+      if (decision.nextPhase) updatePhase = decision.nextPhase;
       sendUpdaterState({ type: 'error', message: shortUpdaterError(err).text });
     });
     autoUpdater = updater;
@@ -214,16 +272,20 @@ function initAutoUpdater() {
   }
 }
 
-ipcMain.handle('updater:probe', () => ({
-  supported: Boolean(autoUpdater),
-  currentVersion: app.getVersion(),
-  // 供渲染层在页面刷新后恢复面板状态（事件广播不会重放）
-  phase: updatePhase,
-  available: lastAvailable,
-  downloadedVersion: lastDownloadedVersion,
-}));
+ipcMain.handle('updater:probe', (event) => {
+  if (!isTrusted(event)) return { supported: false, phase: 'idle' };
+  return {
+    supported: Boolean(autoUpdater),
+    currentVersion: app.getVersion(),
+    // 供渲染层在页面刷新后恢复面板状态（事件广播不会重放）
+    phase: updatePhase,
+    available: lastAvailable,
+    downloadedVersion: lastDownloadedVersion,
+  };
+});
 
-ipcMain.handle('updater:check', async () => {
+ipcMain.handle('updater:check', async (event) => {
+  if (!isTrusted(event)) return { ok: false, message: '不受信任的调用来源' };
   if (!autoUpdater) return { ok: false, message: '当前运行形态不支持应用内更新' };
   checkingActive += 1;
   try {
@@ -254,7 +316,8 @@ ipcMain.handle('updater:check', async () => {
   }
 });
 
-ipcMain.on('updater:download', () => {
+ipcMain.on('updater:download', (event) => {
+  if (!isTrusted(event)) return;
   if (!autoUpdater) return;
   // 仅在「已发现新版本且未在下载中」时接受；乱序/重复请求直接忽略，
   // 避免 electron-updater 二次 downloadUpdate 抛错或状态错乱。
@@ -287,7 +350,8 @@ function scheduleSilentUpdateCheck() {
   }, 8000);
 }
 
-ipcMain.on('updater:install', () => {
+ipcMain.on('updater:install', (event) => {
+  if (!isTrusted(event)) return;
   if (!autoUpdater) return;
   // 未下载完成就 quitAndInstall 可能直接退出应用，必须守住 downloaded 状态
   if (updatePhase !== 'downloaded') {
@@ -352,6 +416,13 @@ function createWindow() {
       event.preventDefault();
     }
   });
+  // will-navigate 不覆盖服务端 3xx；同样拦截重定向，防止本地服务被诱导返回
+  // 外部 Location 后窗口离开本地可信页面。
+  win.webContents.on('will-redirect', (event, url) => {
+    if (url !== ownOrigin && !url.startsWith(`${ownOrigin}/`)) {
+      event.preventDefault();
+    }
+  });
 
   // 外部链接一律调用系统默认浏览器打开；仅放行本项目相关域名的 https 链接，
   // 防止页面内被注入的任意 URL 借系统浏览器打开。
@@ -370,7 +441,11 @@ function createWindow() {
     try {
       const parsed = new URL(url);
       if (parsed.protocol === 'https:' && allowedExternalHosts.has(parsed.hostname)) {
-        shell.openExternal(url);
+        // openExternal 返回 Promise：系统无默认关联时会 reject，未处理则产生
+        // 未处理的 Promise 拒绝，且外链静默打不开（用户点了没反应）
+        shell.openExternal(url).catch((e) => {
+          console.warn('[main] 打开外部链接失败:', e);
+        });
       }
     } catch {
       // 非法 URL 直接忽略
@@ -386,7 +461,33 @@ function createWindow() {
     win?.webContents.send('window-maximize-change', false);
   });
 
-  win.loadURL(`http://127.0.0.1:${PORT}`);
+  // 加载失败兜底：此前 loadURL 的 rejection 无人处理、也未监听 did-fail-load，
+  // 健康检查通过后若 server 崩了/端口被回收，就是白屏无提示。
+  win
+    .loadURL(`http://127.0.0.1:${PORT}`)
+    .catch((err) => {
+      console.error('[main] 窗口加载失败:', err);
+      dialog.showErrorBox(
+        'InkMind',
+        `无法加载界面（${err?.message || err}）。\n\n请重试；若持续出现，可删除 %APPDATA%\\InkMind 后重启。`
+      );
+    });
+  win.webContents.on('did-fail-load', (_e, code, desc, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    console.error('[main] did-fail-load:', code, desc, validatedURL);
+    dialog.showErrorBox(
+      'InkMind',
+      `界面加载失败（${code} ${desc}）。\n\n请检查本地服务是否正常，然后重启应用。`
+    );
+  });
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (win?.isDestroyed()) return;
+    console.error('[main] render-process-gone:', details);
+    dialog.showErrorBox(
+      'InkMind',
+      `界面进程已退出（${details.reason || '未知原因'}）。\n\n请重新加载或重启应用。`
+    );
+  });
   win.on('closed', () => {
     win = null;
   });
@@ -445,6 +546,18 @@ app.whenReady().then(async () => {
       dialog.showErrorBox(
         'InkMind — 缺少服务端产物',
         '未找到 build/electron/server.cjs。\n请先运行：npm run build && node scripts/build-electron.mjs'
+      );
+      app.quit();
+      return;
+    }
+    // 前端产物同样必须校验：健康检查（/api/health）无静态托管也会返回 200，
+    // 因此只校验 server bundle 时，没跑前端构建会得到「检查通过 → 开窗 → 404 白屏」
+    // 且无任何提示（electron:dev 脚本本身不包含前端构建）。
+    const distIndex = path.join(process.env.NOVEL_DIST_DIR, 'index.html');
+    if (!fs.existsSync(distIndex)) {
+      dialog.showErrorBox(
+        'InkMind — 缺少前端产物',
+        `未找到 ${distIndex}\n\n请先运行：npm run build`
       );
       app.quit();
       return;

@@ -132,9 +132,27 @@ export async function cleanupStaleDrafts(
 
 // ── 流式去抖：onStreamProse 高频触发，合并为周期落盘 ──
 const DEBOUNCE_MS = 800;
+/** 写失败后的重试退避上限：配额满时避免高频空转 */
+const MAX_RETRY_DELAY_MS = 30_000;
 let pending: SaveDraftInput | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let saving = false;
+/** 连续写失败次数：用于退避，成功后归零 */
+let failureStreak = 0;
+
+/** 失败重试延迟：800ms → 1.6s → 3.2s … 封顶 30s */
+function retryDelayMs(): number {
+  return Math.min(DEBOUNCE_MS * 2 ** Math.min(failureStreak, 5), MAX_RETRY_DELAY_MS);
+}
+
+/** 保留最新 job 并重新挂上定时器（失败/写入中两条路径共用） */
+function reschedulePending(): void {
+  if (timer) return;
+  timer = setTimeout(() => {
+    timer = null;
+    void flushDraftBackup();
+  }, retryDelayMs());
+}
 
 /** 去抖调度：只保留最新一次，DEBOUNCE_MS 后写入 */
 export function scheduleDraftBackup(input: SaveDraftInput): void {
@@ -160,21 +178,21 @@ export async function flushDraftBackup(): Promise<void> {
     // 此前只保留 pending 不再调度，若之后没有新的 schedule 调用，
     // 这份最后的流式草稿会一直躺在内存里直到 pagehide。
     pending = job;
-    if (!timer) {
-      timer = setTimeout(() => {
-        timer = null;
-        void flushDraftBackup();
-      }, DEBOUNCE_MS);
-    }
+    reschedulePending();
     return;
   }
   saving = true;
   try {
     await saveDraftBackup(job);
+    failureStreak = 0;
   } catch (e) {
     console.warn('流式草稿备份失败:', e);
-    // 失败保留，下次调度重试
+    // 失败保留并**重新挂上定时器**（带退避）：否则配额满/事务失败后，
+    // 这段最后的流式正文会一直躺在内存里，直到下次 schedule 或 pagehide——
+    // 期间崩溃/关页即永久丢失（本模块存在的意义所在）。
     if (!pending) pending = job;
+    failureStreak += 1;
+    reschedulePending();
   } finally {
     saving = false;
   }

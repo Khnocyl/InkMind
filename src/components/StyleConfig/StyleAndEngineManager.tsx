@@ -301,11 +301,20 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
 
   const STATUS_KEY = 'novel-engine-status-v1';
 
-  /** 页内横幅 + 顶栏 Toast + App 状态条；写入 session，防止热重载丢结果 */
-  /** 设置面板提示闸门：仅允许 Doctor 诊断相关的提示出现，其他设置操作保持静默无打扰 */
+  /**
+   * 设置面板提示闸门。
+   *
+   * 策略：常规保存类**成功**提示保持静默（此前用户反馈「繁琐」）；
+   * 但两类必须可见，否则等于没反应：
+   *  - **失败**（❌/失败/错误）——此前连「❌ 保存失败」都被一并吞掉，
+   *    用户会以为 API Key 已保存成功，属于危险的信息缺失；
+   *  - **用户显式点击的测试/诊断**（Doctor 诊断、Embedding 连通测试）。
+   */
   const pushStatus = (msg: string) => {
-    // 严格过滤：除 Doctor 诊断提示外，其他一律不展示弹窗与横幅
-    if (!/doctor/i.test(msg)) {
+    const isDoctor = /doctor/i.test(msg);
+    const isFailure = msg.includes('❌') || msg.includes('失败') || msg.includes('错误');
+    const isExplicitProbe = /embedding|向量/i.test(msg);
+    if (!isDoctor && !isFailure && !isExplicitProbe) {
       return;
     }
     setSaveStatusMsg(msg);

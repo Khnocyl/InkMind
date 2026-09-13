@@ -44,15 +44,39 @@ export function writeProjectBackup(input: {
     throw new Error(`备份过大（${(byteSize / 1048576).toFixed(1)}MB > 9MB），已跳过`);
   }
 
+  const dirExisted = fs.existsSync(BACKUP_DIR);
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  hardenFilePermissions(BACKUP_DIR, true);
+  // 只在**首次创建**时加固：目录权限是幂等的，而 Windows 上 icacls 要 spawn 一个
+  // 进程（~150ms/次），此前每次写备份都重复加固，纯属浪费（测试里 44 次写入就要 9 秒）。
+  // 安全性不打折：目录已存在时其 ACL 早已设好；即便缺失，父目录 .novel-data 已被
+  // ensureDirectories 以 (OI)(CI) 加固，新建子目录会自动继承该保护。
+  if (!dirExisted) hardenFilePermissions(BACKUP_DIR, true);
   const prefix = `${projectId}-`;
-  // 秒级时间戳可能撞名（章末去抖备份与手动触发同秒）：冲突则追加序号，避免静默覆盖
-  let file = path.join(BACKUP_DIR, `${prefix}${timestampName()}.novel.json`);
+  // 秒级时间戳可能撞名（章末去抖备份与手动触发同秒）：冲突则追加序号，避免静默覆盖。
+  // 时间戳只取一次——此前在循环体内每次重算，若循环期间跨过秒边界，候选名会变，
+  // 碰撞检测与实际写入的名字对不上。
+  const stamp = timestampName();
+  let file = path.join(BACKUP_DIR, `${prefix}${stamp}.novel.json`);
   for (let i = 1; fs.existsSync(file); i++) {
-    file = path.join(BACKUP_DIR, `${prefix}${timestampName()}-${i}.novel.json`);
+    file = path.join(BACKUP_DIR, `${prefix}${stamp}-${i}.novel.json`);
   }
-  fs.writeFileSync(file, body, 'utf-8');
+  // 原子写入：先写 .tmp 再 rename。
+  // 直接 writeFileSync 目标文件时，进程被杀/断电/磁盘写满会留下**截断的半个 JSON**，
+  // 而备份是 IndexedDB 之外的最后一道恢复手段——坏备份比没备份更危险：
+  // 它能被 listProjectBackups 列出、体积看着正常，用户真去恢复时才发现解析失败。
+  // rename 在同一文件系统内是原子的，读者只可能看到完整文件。
+  const tmpFile = `${file}.tmp`;
+  try {
+    fs.writeFileSync(tmpFile, body, 'utf-8');
+    fs.renameSync(tmpFile, file);
+  } catch (err) {
+    try {
+      fs.rmSync(tmpFile, { force: true });
+    } catch {
+      // 清理临时文件失败不掩盖原始错误
+    }
+    throw err;
+  }
 
   // 修剪：每书只保留最近 KEEP_PER_PROJECT 份
   const all = fs

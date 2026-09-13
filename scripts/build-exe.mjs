@@ -2,14 +2,14 @@
  * 单文件可执行打包（Node SEA）：
  *   node scripts/build-exe.mjs
  *
- * 产物：release/novel-studio.exe + release/dist/（前端静态资源）+ 使用说明.txt
+ * 产物：release/inkmind.exe + release/dist/（前端静态资源）+ 使用说明.txt
  * 双击 exe 即可运行，无需安装 Node；数据落在 exe 旁的 .novel-data/。
  *
  * 前置：先 npm run build 生成 dist/（脚本会检查）。
  * 原理：esbuild 把 server 打成单 CJS → node --experimental-sea-config 生成
  * blob → postject 注入 node.exe 副本 → 拷贝 dist。
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { build } from 'esbuild';
@@ -31,6 +31,8 @@ if (!fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
 
 fs.rmSync(BUILD_DIR, { recursive: true, force: true });
 fs.mkdirSync(BUILD_DIR, { recursive: true });
+// release/dist 必须是本次构建的纯净快照，不能让已删除的旧 hash 资源残留。
+fs.rmSync(path.join(RELEASE_DIR, 'dist'), { recursive: true, force: true });
 fs.mkdirSync(RELEASE_DIR, { recursive: true });
 
 // 1. esbuild 打包 server → 单 CJS 文件
@@ -70,17 +72,22 @@ fs.writeFileSync(
   'utf-8'
 );
 log('node --experimental-sea-config ...');
-execSync(`node --experimental-sea-config "${seaConfigFile}"`, { stdio: 'inherit' });
+execFileSync(process.execPath, ['--experimental-sea-config', seaConfigFile], {
+  stdio: 'inherit',
+});
 
 // 3. 复制 node.exe 并注入 blob
 const exePath = path.join(RELEASE_DIR, EXE_NAME);
 log('复制 node.exe 并注入 SEA blob ...');
 fs.copyFileSync(process.execPath, exePath);
-execSync(
-  `npx postject "${exePath}" NODE_SEA_BLOB "${path.join(BUILD_DIR, 'sea-prep.blob')}"` +
-    ' --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
-  { stdio: 'inherit' }
-);
+execFileSync(process.execPath, [
+  path.join(ROOT, 'node_modules', 'postject', 'dist', 'cli.js'),
+  exePath,
+  'NODE_SEA_BLOB',
+  path.join(BUILD_DIR, 'sea-prep.blob'),
+  '--sentinel-fuse',
+  'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+], { stdio: 'inherit' });
 
 // 4. 拷贝前端产物
 log('拷贝 dist/ ...');

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { semverCompare, shortUpdaterError } from '../electron/updaterErrors.cjs';
+import {
+  decideUpdaterErrorAction,
+  semverCompare,
+  shortUpdaterError,
+} from '../electron/updaterErrors.cjs';
 
 /** 线上 v1.0.1 Release 缺 latest.yml 时 electron-updater 抛出的真实报错（含 headers 全文） */
 const REAL_404_MESSAGE =
@@ -54,5 +58,57 @@ describe('updaterErrors · electron-updater 报错分类', () => {
     expect(semverCompare('v1.0.1', '1.0.1')).toBe(0);
     expect(semverCompare('1.0.2', '1.0.1')).toBeGreaterThan(0);
     expect(semverCompare('1.0.1', '1.2.0')).toBeLessThan(0);
+  });
+});
+
+describe('updaterErrors · 更新 error 处置决策', () => {
+  it('检查期（有检查在途、非下载阶段）→ 抑制广播', () => {
+    expect(decideUpdaterErrorAction({ checkingActive: 1, updatePhase: 'idle' })).toEqual({
+      suppress: true,
+      nextPhase: null,
+    });
+    expect(decideUpdaterErrorAction({ checkingActive: 1, updatePhase: 'available' })).toEqual({
+      suppress: true,
+      nextPhase: null,
+    });
+  });
+
+  it('下载中并发一次检查 → 绝不抑制，且回退到 available 允许重试', () => {
+    // 这是此前的真实缺陷：checkingActive>0 把下载失败的 error 一并吞掉，
+    // updatePhase 永远停在 downloading，面板一直「下载中」、安装按钮永不启用
+    expect(decideUpdaterErrorAction({ checkingActive: 1, updatePhase: 'downloading' })).toEqual({
+      suppress: false,
+      nextPhase: 'available',
+    });
+  });
+
+  it('下载阶段无并发检查 → 同样回退到 available', () => {
+    expect(decideUpdaterErrorAction({ checkingActive: 0, updatePhase: 'downloading' })).toEqual({
+      suppress: false,
+      nextPhase: 'available',
+    });
+  });
+
+  it('检查已结束且非下载阶段 → 广播并回到 idle', () => {
+    expect(decideUpdaterErrorAction({ checkingActive: 0, updatePhase: 'idle' })).toEqual({
+      suppress: false,
+      nextPhase: 'idle',
+    });
+    expect(decideUpdaterErrorAction({ checkingActive: 0, updatePhase: 'available' })).toEqual({
+      suppress: false,
+      nextPhase: 'idle',
+    });
+  });
+
+  it('已下载完成时出错 → 广播但不回退（用户仍可安装已下载的包）', () => {
+    expect(decideUpdaterErrorAction({ checkingActive: 0, updatePhase: 'downloaded' })).toEqual({
+      suppress: false,
+      nextPhase: null,
+    });
+  });
+
+  it('缺省入参按 idle / 无检查处理，不抛错', () => {
+    expect(decideUpdaterErrorAction(undefined)).toEqual({ suppress: false, nextPhase: 'idle' });
+    expect(decideUpdaterErrorAction({})).toEqual({ suppress: false, nextPhase: 'idle' });
   });
 });

@@ -44,4 +44,31 @@ function shortUpdaterError(err) {
   return { kind: 'error', text: sanitized };
 }
 
-module.exports = { semverCompare, shortUpdaterError };
+/**
+ * 更新 error 事件的处置决策：该不该广播、状态机该回退到哪。
+ *
+ * 单独抽成纯函数的理由：这段判断有两个容易错的耦合点——
+ *  1. 检查期抑制用的 `checkingActive` 是**跨阶段共享**的计数器，不能只看它决定是否吞错误；
+ *  2. 回退目标取决于当前阶段（downloading→available 可重试；其余→idle；downloaded 不动）。
+ * 此前内联在主进程里无法单测，并因此漏掉了这条路径：
+ * 「下载进行中用户又点一次『检查更新』→ checkingActive>0 → 下载失败被吞 →
+ *  updatePhase 永远停在 downloading → 面板一直显示『下载中』、安装按钮永不启用」。
+ *
+ * @param {{ checkingActive?: number, updatePhase?: string }} state
+ * @returns {{ suppress: boolean, nextPhase: string | null }}
+ */
+function decideUpdaterErrorAction(state) {
+  const checkingActive = Number((state && state.checkingActive) || 0);
+  const updatePhase = String((state && state.updatePhase) || 'idle');
+  const isDownloadPhase = updatePhase === 'downloading';
+  // 检查阶段的失败由 updater:check 的返回值统一汇报 → 抑制事件广播
+  if (checkingActive > 0 && !isDownloadPhase) {
+    return { suppress: true, nextPhase: null };
+  }
+  if (isDownloadPhase) return { suppress: false, nextPhase: 'available' };
+  // 已下载完成时出错不动状态（用户仍可安装已下载的包）
+  if (updatePhase !== 'downloaded') return { suppress: false, nextPhase: 'idle' };
+  return { suppress: false, nextPhase: null };
+}
+
+module.exports = { semverCompare, shortUpdaterError, decideUpdaterErrorAction };

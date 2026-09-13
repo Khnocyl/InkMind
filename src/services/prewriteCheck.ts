@@ -346,11 +346,14 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
   styleBits.push(`黑名单 ${bl} 条`);
 
   if (activeStyleProfile) {
+    const hr = activeStyleProfile.hardRules;
     push({
       id: 'style_imitate',
       label: '文风仿写',
       severity: 'ok',
-      summary: `已激活「${activeStyleProfile.name}」· 均句长 ${activeStyleProfile.fingerprint.avgSentenceLen} · 对白约 ${Math.round(activeStyleProfile.fingerprint.dialogueRatio * 100)}%`,
+      summary: `已激活「${activeStyleProfile.name}」· 均句长 ${activeStyleProfile.fingerprint.avgSentenceLen} · 对白约 ${Math.round(activeStyleProfile.fingerprint.dialogueRatio * 100)}%${
+        hr?.dialogueRatioMin !== undefined ? ` · 硬规对白≥${Math.round((hr?.dialogueRatioMin ?? 0) * 100)}%` : ''
+      }${hr ? ' · 平台硬规机检 开' : ''}`,
       detail: activeStyleProfile.authorStyle,
     });
   }

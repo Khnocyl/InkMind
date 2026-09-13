@@ -18,6 +18,14 @@ import { lookup } from 'node:dns/promises';
 const alwaysBlockList = new net.BlockList();
 alwaysBlockList.addSubnet('169.254.0.0', 16, 'ipv4');
 alwaysBlockList.addSubnet('fe80::', 10, 'ipv6');
+// 云元数据与保留段（不属链路本地但同样危险，此前全部漏网）：
+// - 100.64/10（CGNAT 保留段）覆盖阿里云/腾讯云元数据 100.100.100.200；
+// - fd00:ec2::254 为 AWS IMDSv6；
+// - 0.0.0.0/8 与 :: 作为请求目标常被系统解析为「本机」，是经典 SSRF 绕过手法。
+alwaysBlockList.addSubnet('100.64.0.0', 10, 'ipv4');
+alwaysBlockList.addAddress('fd00:ec2::254', 'ipv6');
+alwaysBlockList.addSubnet('0.0.0.0', 8, 'ipv4');
+alwaysBlockList.addAddress('::', 'ipv6');
 
 /** 回环 + 私网段：默认放行，BLOCK_PRIVATE_LLM_BASE=1 时收紧阻断。 */
 const privateBlockList = new net.BlockList();
@@ -200,9 +208,13 @@ export async function assertSafeBaseUrlResolved(
  * 最终 URL 可能偏离初始校验过的 baseURL（如公网地址 302 到链路本地）。
  * 响应使用前对最终 URL 复检；跨源重定向时 fetch 规范已剥离 Authorization，
  * 残余风险仅为盲请求，故校验失败直接抛错（调用方不得对其重试）。
+ *
+ * 必须用**解析版**（异步）而非同步字面量版：同步版对域名一律放行，
+ * 于是「302 到 http://metadata.google.internal/」或「302 到 DNS 重新指向内网的
+ * 攻击者域名」这类域名型重定向目标完全漏检——而重定向目标恰恰是攻击者可控的。
  */
-export function assertSafeUrl(url: string): void {
-  const r = checkBaseUrlSafety(url);
+export async function assertSafeUrl(url: string, resolve?: HostResolver): Promise<void> {
+  const r = await checkBaseUrlSafetyResolved(url, resolve);
   if (!r.ok) {
     throw new Error(`上游地址校验失败（${r.reason}）: ${url.slice(0, 120)}`);
   }
@@ -367,4 +379,79 @@ export function buildSafeHeaders(
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * 拆书 URL 导入的**收紧版**地址校验（与 LLM Base URL 的区别）：
+ * LLM 地址默认放行回环/私网（本机 Ollama 场景），而文章抓取面向公网网页，
+ * 私网/回环默认一律阻断——防止恶意页面诱导本地服务抓取内网资源（SSRF）。
+ * 链路本地/云元数据始终阻断；`ARTICLE_FETCH_ALLOW_PRIVATE=1` 可显式放开
+ * （仅供对本地静态服务做联调测试）。
+ */
+export function checkArticleUrlSafety(
+  url: string,
+  options?: { allowPrivate?: boolean }
+): BaseUrlCheckResult {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return { ok: false, reason: 'URL 为空' };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, reason: 'URL 无法解析' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, reason: 'URL 仅支持 http/https 协议' };
+  }
+  const allowPrivate =
+    options?.allowPrivate ?? process.env.ARTICLE_FETCH_ALLOW_PRIVATE === '1';
+  const hostname = normalizeHostname(parsed.hostname);
+  const ipFamily = net.isIP(hostname);
+  const judge = (ip: string): BaseUrlCheckResult | null => {
+    if (alwaysBlockList.check(ip, net.isIP(ip) === 6 ? 'ipv6' : 'ipv4')) {
+      return { ok: false, reason: `URL 指向链路本地或云元数据地址（${ip}），已阻断` };
+    }
+    if (!allowPrivate && privateBlockList.check(ip, net.isIP(ip) === 6 ? 'ipv6' : 'ipv4')) {
+      return { ok: false, reason: `URL 指向回环/私网地址（${ip}），已阻断（防 SSRF；联调可设 ARTICLE_FETCH_ALLOW_PRIVATE=1）` };
+    }
+    return null;
+  };
+  if (ipFamily === 4) return judge(hostname) ?? { ok: true };
+  if (ipFamily === 6) {
+    const mapped = ipv4MappedAddress(hostname);
+    if (mapped) return judge(mapped) ?? { ok: true };
+    return judge(hostname) ?? { ok: true };
+  }
+  // 域名：同步检查只看字面量，解析后复检交给 checkArticleUrlSafetyResolved
+  return { ok: true };
+}
+
+/** 域名解析后对每个 IP 复检（文章抓取版，私网默认阻断）。 */
+export async function checkArticleUrlSafetyResolved(
+  url: string,
+  resolve: HostResolver = defaultHostResolver,
+  options?: { allowPrivate?: boolean }
+): Promise<BaseUrlCheckResult> {
+  const sync = checkArticleUrlSafety(url, options);
+  if (!sync.ok) return sync;
+  const hostname = normalizeHostname(new URL(url.trim()).hostname);
+  if (net.isIP(hostname)) return { ok: true };
+  let addresses: string[];
+  try {
+    addresses = await resolve(hostname);
+  } catch {
+    if (process.env.INKMIND_PROXY) return { ok: true };
+    return { ok: false, reason: `URL 主机名无法解析：${hostname}` };
+  }
+  if (!addresses.length) {
+    return { ok: false, reason: `URL 主机名无法解析：${hostname}` };
+  }
+  for (const address of addresses) {
+    const r = checkArticleUrlSafety(
+      `http://${net.isIP(address) === 6 ? `[${address}]` : address}`,
+      options
+    );
+    if (!r.ok) return r;
+  }
+  return { ok: true };
 }

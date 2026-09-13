@@ -22,7 +22,7 @@ const pkgVersion = JSON.parse(
 function readApiToken(): string {
   try {
     return fs
-      .readFileSync(path.join(process.cwd(), '.novel-data', 'api-token'), 'utf-8')
+      .readFileSync(path.join(__dirname, '.novel-data', 'api-token'), 'utf-8')
       .trim()
   } catch {
     return ''

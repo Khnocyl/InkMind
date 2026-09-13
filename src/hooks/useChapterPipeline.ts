@@ -36,6 +36,7 @@ import {
   unlockChapterForRewrite,
 } from '../services/chapterLock';
 import { formatStoryMemoryForPrompt, mergeRecapIntoMemory } from '../services/storyMemory';
+import { applyPipelineResult } from '../services/chapterRewriteMerge';
 import { detectRecapConflicts } from '../services/memoryConsistency';
 import {
   applyHardIssuesAsRevisionTodos,
@@ -832,7 +833,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
 
         const chaptersAfter = (
           projectRef.current?.chapters || liveProject.chapters
-        ).map((c) => (c.id === chapterId ? finalChapter : c));
+        ).map((c) => (c.id === chapterId ? applyPipelineResult(c, finalChapter) : c));
         const apAutoResolve =
           isAutoPilotingRef.current && pipelineApCfg.autoResolveHooks;
         const consolidatedMemory = consolidateMemoryAfterChapter(
@@ -852,7 +853,7 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
           const delta = newW - pipelineStartWords;
           return {
             chapters: prev.chapters.map((c) =>
-              c.id === chapterId ? finalChapter : c
+              c.id === chapterId ? applyPipelineResult(c, finalChapter) : c
             ),
             characters: charsAfterLedger,
             memory: consolidatedMemory,

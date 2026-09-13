@@ -1,4 +1,4 @@
-import React, { useEffect, useReducer, useState } from 'react';
+import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Trash2, Copy, Check, ChevronDown, ChevronRight } from 'lucide-react';
 import {
@@ -33,6 +33,15 @@ export const LlmTraceModal: React.FC<{ onClose: () => void }> = ({
   const [, force] = useReducer((x: number) => x + 1, 0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  /** 「已复制」提示的计时器：卸载时必须清掉 */
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    },
+    []
+  );
 
   useEffect(() => subscribeLlmTrace(force), [force]);
 
@@ -56,7 +65,13 @@ export const LlmTraceModal: React.FC<{ onClose: () => void }> = ({
       ?.writeText(payload)
       .then(() => {
         setCopiedId(entry.id);
-        setTimeout(() => setCopiedId((cur) => (cur === entry.id ? null : cur)), 1500);
+        // 计时器句柄留存并在卸载时清理：此前裸 setTimeout 会在组件关闭后仍持有引用
+        // （回调对已卸载组件 setState，虽在 React 18+ 是空操作，但属无谓泄漏）
+        if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = window.setTimeout(
+          () => setCopiedId((cur) => (cur === entry.id ? null : cur)),
+          1500
+        );
       })
       .catch(() => {});
   };

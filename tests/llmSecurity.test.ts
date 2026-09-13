@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertSafeUrl,
   buildSafeHeaders,
+  checkArticleUrlSafety,
+  checkArticleUrlSafetyResolved,
   checkBaseUrlSafety,
   checkBaseUrlSafetyResolved,
   isSameOriginClient,
@@ -70,6 +72,20 @@ describe('llmSecurity · checkBaseUrlSafety · 链路本地 / 云元数据（始
 
   it('拒绝 IPv4 链路本地段的 IPv4-mapped IPv6 形态', () => {
     expect(checkBaseUrlSafety('http://[::ffff:169.254.169.254]').ok).toBe(false);
+  });
+
+  it('拒绝云厂商元数据的 CGNAT 地址 100.100.100.200（阿里云/腾讯云）', () => {
+    // 100.64/10 不属链路本地，此前漏网——即使 BLOCK_PRIVATE_LLM_BASE=1 也不阻断
+    expect(checkBaseUrlSafety('http://100.100.100.200').ok).toBe(false);
+  });
+
+  it('拒绝 AWS IMDSv6 地址 fd00:ec2::254', () => {
+    expect(checkBaseUrlSafety('http://[fd00:ec2::254]').ok).toBe(false);
+  });
+
+  it('拒绝「本机」语义的保留地址 0.0.0.0 与 ::', () => {
+    expect(checkBaseUrlSafety('http://0.0.0.0').ok).toBe(false);
+    expect(checkBaseUrlSafety('http://[::]').ok).toBe(false);
   });
 });
 
@@ -353,19 +369,44 @@ describe('llmSecurity · isSameOriginClient（P2-1 收紧）', () => {
 });
 
 describe('llmSecurity · assertSafeUrl（P3-2 重定向复检）', () => {
-  it('公网 https → 放行', () => {
-    expect(() => assertSafeUrl('https://api.deepseek.com/v1/models')).not.toThrow();
+  const publicDns = async () => ['93.184.216.34'];
+
+  it('公网 https → 放行', async () => {
+    await expect(
+      assertSafeUrl('https://api.deepseek.com/v1/models', publicDns)
+    ).resolves.toBeUndefined();
   });
 
-  it('链路本地 / 非法 scheme → 抛错', () => {
-    expect(() => assertSafeUrl('http://169.254.169.254/latest/meta-data')).toThrow(
+  it('链路本地 / 非法 scheme → 抛错', async () => {
+    await expect(assertSafeUrl('http://169.254.169.254/latest/meta-data')).rejects.toThrow(
       /链路本地/
     );
-    expect(() => assertSafeUrl('ftp://example.com/x')).toThrow(/http\/https/);
+    await expect(assertSafeUrl('ftp://example.com/x')).rejects.toThrow(/http\/https/);
   });
 
-  it('回环地址默认放行（本地 Ollama 场景）', () => {
-    expect(() => assertSafeUrl('http://127.0.0.1:11434/v1/models')).not.toThrow();
+  it('回环地址默认放行（本地 Ollama 场景）', async () => {
+    await expect(assertSafeUrl('http://127.0.0.1:11434/v1/models')).resolves.toBeUndefined();
+  });
+
+  it('域名型重定向目标解析到元数据地址 → 阻断（同步版曾完全漏检）', async () => {
+    // 攻击者把 baseURL 302 到 http://metadata.google.internal/ 这类域名：
+    // 同步字面量校验对域名一律放行，必须靠解析后校验拦住
+    await expect(
+      assertSafeUrl('https://metadata.google.internal/computeMetadata/v1', async () => [
+        '169.254.169.254',
+      ])
+    ).rejects.toThrow(/链路本地|元数据/);
+  });
+
+  it('域名型重定向目标解析失败 → fail-closed 阻断', async () => {
+    // 开发机常已配置 INKMIND_PROXY（代理侧 DNS 解析失败会放行），
+    // 本用例测的是默认直连路径，需显式清掉才成立
+    delete process.env.INKMIND_PROXY;
+    await expect(
+      assertSafeUrl('https://evil.example/x', async () => {
+        throw new Error('ENOTFOUND');
+      })
+    ).rejects.toThrow(/无法解析/);
   });
 });
 
@@ -477,5 +518,62 @@ describe('llmSecurity · resolveEmbeddingKeyFallback（密钥不回退异源）'
         llmBaseURL: LLM_URL,
       })
     ).toBe(LLM_KEY);
+  });
+});
+
+describe('llmSecurity · checkArticleUrlSafety（拆书 URL 导入 · 收紧版）', () => {
+  it('公网 https URL 放行', () => {
+    expect(checkArticleUrlSafety('https://example.com/chapter/1').ok).toBe(true);
+  });
+
+  it('非 http(s) 协议拒绝', () => {
+    expect(checkArticleUrlSafety('ftp://example.com/a').ok).toBe(false);
+    expect(checkArticleUrlSafety('file:///etc/passwd').ok).toBe(false);
+  });
+
+  it('回环/私网默认阻断（与 LLM Base URL 的默认放行不同——防 SSRF）', () => {
+    expect(checkArticleUrlSafety('http://127.0.0.1:8080/x').ok).toBe(false);
+    expect(checkArticleUrlSafety('http://192.168.1.1/x').ok).toBe(false);
+    expect(checkArticleUrlSafety('http://10.0.0.5/x').ok).toBe(false);
+  });
+
+  it('显式 allowPrivate 时放行本地联调地址', () => {
+    expect(
+      checkArticleUrlSafety('http://127.0.0.1:8080/x', { allowPrivate: true }).ok
+    ).toBe(true);
+  });
+
+  it('链路本地/云元数据始终阻断（allowPrivate 也救不了）', () => {
+    expect(
+      checkArticleUrlSafety('http://169.254.169.254/latest/meta-data', { allowPrivate: true }).ok
+    ).toBe(false);
+    expect(
+      checkArticleUrlSafety('http://[::ffff:169.254.169.254]/x', { allowPrivate: true }).ok
+    ).toBe(false);
+  });
+
+  it('解析后复检：域名解析到私网 IP → 阻断（直连路径）', async () => {
+    delete process.env.INKMIND_PROXY;
+    const r = await checkArticleUrlSafetyResolved('https://evil.example/x', async () => [
+      '10.0.0.9',
+    ]);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('私网');
+  });
+
+  it('解析后复检：公网地址放行', async () => {
+    delete process.env.INKMIND_PROXY;
+    const r = await checkArticleUrlSafetyResolved('https://good.example/x', async () => [
+      '93.184.216.34',
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('解析失败 → fail-closed（未配置代理时）', async () => {
+    delete process.env.INKMIND_PROXY;
+    const r = await checkArticleUrlSafetyResolved('https://dead.example/x', async () => {
+      throw new Error('ENOTFOUND');
+    });
+    expect(r.ok).toBe(false);
   });
 });

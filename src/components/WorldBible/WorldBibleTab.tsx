@@ -13,6 +13,8 @@ import { MemoryManager } from './MemoryManager';
 export type WorldSubTab = 'characters' | 'settings' | 'memory';
 
 export interface WorldBibleTabProps {
+  /** 当前项目 id：作为 MemoryManager 的 key，切书时强制重挂载、防止旧书草稿态串写 */
+  projectId: string;
   characters: Character[];
   settings: WorldSetting[];
   chapters: Chapter[];
@@ -35,6 +37,7 @@ export interface WorldBibleTabProps {
  * 内部管理子页签头部（角色/设定/记忆），内容透传给对应管理器。
  */
 export const WorldBibleTab: React.FC<WorldBibleTabProps> = ({
+  projectId,
   characters,
   settings,
   chapters,
@@ -105,6 +108,7 @@ export const WorldBibleTab: React.FC<WorldBibleTabProps> = ({
           <SettingManager settings={settings} onAddSetting={onAddSetting} />
         ) : (
           <MemoryManager
+            key={projectId}
             memory={memory}
             characters={characters}
             currentChapterNumber={currentChapterNumber}

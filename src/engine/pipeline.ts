@@ -193,6 +193,20 @@ export async function runChapterPipeline(
       recapQualitySummary: settled.recapSummary,
     };
 
+    // 符号规范化（出口兜底）：上面 Writer 出口洗过一次，但 Auditor 润色、
+    // Reviser 定点修复、补写都是「再调一次 LLM」，会重新吐出「」/半角引号。
+    // 全链路只此两处收口，落盘/预览前必须是干净正文。
+    const finalSymbolFix = normalizeProseSymbols(prose);
+    if (finalSymbolFix.changed) {
+      prose = finalSymbolFix.text;
+      report(
+        'done',
+        `🧹 [Pipeline] 出口符号复检：${finalSymbolFix.findings
+          .map((f) => `${f.message}×${f.count}`)
+          .join('、')}`
+      );
+    }
+
     // ── Green gate ──
     // 三重硬门 + 写后 error 兜底 + 审稿可信度（auditUnreliable 置位时禁止绿通）
     const greenOk = isFinalGreen(ruleScan, auditLog, postWriteViolations);
@@ -250,12 +264,15 @@ export async function runChapterPipeline(
       conservative,
     };
   } catch (err: any) {
+    // report('error') 会把闭包 stageReached 覆写为 'error'——先快照真实到达阶段，
+    // 否则失败/中止结果的 stageReached 恒为 'error'，丢失「挂在哪个阶段」的诊断
+    const failedAtStage: EngineStage = stageReached;
     if (isGenerationAborted(err)) {
       // 用户停止：不算失败也不算完成——调用方会保留已流式产出的草稿
       report('error', `⏹ 第${chapterNumber}章已停止生成（已产出部分保留为草稿）`);
       return {
         ok: false,
-        stageReached,
+        stageReached: failedAtStage,
         chapterNumber,
         chapterId,
         beats: [],
@@ -275,7 +292,7 @@ export async function runChapterPipeline(
     report('error', `[Pipeline] 失败：${msg}`);
     return {
       ok: false,
-      stageReached,
+      stageReached: failedAtStage,
       chapterNumber,
       chapterId,
       beats: [],

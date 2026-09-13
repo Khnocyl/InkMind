@@ -110,7 +110,7 @@ export async function runDoctor(options?: {
   const maskedKeyHint = hasKey
     ? `已配置（长度 ${decrypted.length}，脱敏展示 sk-****）`
     : hasEncrypted
-      ? '有密文但无法解密（.secret 可能被替换）'
+      ? '有密文但无法解密（密文来自其他机器拷贝，或本机指纹/用户名已变化）'
       : '未配置';
 
   // 1) 配置字段
@@ -149,9 +149,10 @@ export async function runDoctor(options?: {
         name: 'API Key 配置',
         status: 'fail',
         message: '密钥密文存在但解密失败',
-        detail: '通常是 server/data/.secret 被删除或更换，导致旧密文无法解开。请重新输入 API Key 并保存。',
+        detail:
+          '密钥由「本机指纹 + 当前用户名」派生加密：.novel-data 从其他机器拷来、或系统重装/换用户后指纹变化，旧密文即无法解开。请重新输入 API Key 并保存。',
       });
-      suggestions.push('删除无效密钥后重新输入 API Key 保存；勿单独替换 .secret 文件。');
+      suggestions.push('在配置页重新输入 API Key 并保存（密钥与本机绑定，换机/重装后需重填）。');
     } else {
       checks.push({
         id: 'api_key',

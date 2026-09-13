@@ -2,13 +2,75 @@
 
 > 状态图例：✅ 已修复 · 🔧 进行中 · ⏳ 计划中 · 📌 暂缓（需设计/需用户确认）
 
+## ⚠️ 文档准确性声明（2026-09-11 全量代码审查）
+
+本文件是**历史修复日志**，部分条目与当前代码不符。**改动代码前请以实际源码为准**，
+不要把本文描述当作既有实现。已核实的偏差：
+
+| 本文声称 | 实际情况 |
+|---|---|
+| R3-B「成本控制」✅ 已完成，含 `src/services/costControl.ts`、`UsageBadge.tsx`、`tests/costControl.test.ts`（21 例）、`StyleConfig.llmBudgetEnabled` | ❌ **全库 grep 零引用，两个文件均不存在**，无预算闸门与用量看板（README:94 的对应宣传已于 2026-09-11 修正） |
+| R1 App.tsx 3262 → 802 行 | 实际 **992 行**（拆分成果仍在，数字已过时） |
+| 测试数 237 / lint 基线 12 warnings | 实际 **650 个测试 / 58 文件** / **19 warnings** |
+
+权威基线（实测）：
+
+```bash
+npx tsc -b        # 0 错误
+npx vitest run    # 650 通过 / 58 文件
+npx oxlint        # 0 errors / 19 warnings
+```
+
+另：本文档成文时 `.git` 曾处于损坏状态（refs/ 与 pack 数据文件缺失），
+2026-09-11 已从 GitHub 远端恢复至 `bab6494`，此前的 4 个未推送本地提交
+（番茄文风档案、INKMIND_PROXY 逃生舱、引号规范化、破折号开关穿透）
+以未提交变更形式保留在工作区。
+
+## 全仓库审查修复批次（2026-09-11 · ✅）
+
+> 全仓库代码审查（server / electron / scripts / src / tests 全覆盖）后的修复记录。
+> 验证门禁：tsc 0 错误 · vitest 650/650（58 文件）· oxlint 0 errors / 19 warnings · build 绿。
+
+### 高优先级
+- [x] `applyLocalPatches` 替换模式注入（`after` 含 `$&`/`$'`/`$1` 被特殊解释损坏正文）→ 改函数形式替换；顺带修复文件尾 `}import` 粘连事故（`src/services/textDiff.ts`）
+- [x] 对白标签正则 `[说道]` 字符类 → 整词 `(?:说道|…)`（「知道/道理」的单字虚高 dialogueTags、[E]对话标签过密 误报）（`src/services/aiTasteScan.ts`）
+- [x] MemoryManager 切书数据污染：`<MemoryManager key={projectId}>` 强制重挂载，旧书作者备忘不再串写新书（`src/components/WorldBible/WorldBibleTab.tsx` + `src/App.tsx`）
+
+### 中优先级
+- [x] 管线失败/中止路径 `stageReached` 先快照再上报，保留「挂在哪个阶段」诊断（`src/engine/pipeline.ts`）
+- [x] plannerAgent 中止错误原样上抛，不再吞进兜底分镜（对齐 writerAgent 口径）（`src/engine/agents/plannerAgent.ts`）
+- [x] `hardBlocked: x || true` 恒真写法 ×2 → `hardBlocked: true`（`src/engine/agents/auditorAgent.ts`）
+- [x] `getLLMConfig` 不再吞错返回硬编码默认配置，改为如实上抛（`src/services/llmClient.ts`；唯一调用方已有 catch）
+- [x] streamOnce 流末冲刷帧补齐「已产出则保留部分」保护，与循环内错误帧同口径（`src/services/llmClient.ts`）
+- [x] `envNounCount` 长词优先去重，修「月光+月」重复计数导致的开篇环境堆砌误判（`src/engine/discipline.ts`）
+- [x] 本章/全书 AI 味扫描入口补 `aiTasteScanBusy` 守卫，防连点并发（`src/hooks/useChapterActions.ts`）
+- [x] doctor 解密失败文案从已废弃的 `server/data/.secret` 更新为机器绑定派生的真实原因与修复指引（`server/doctor.ts`）
+
+### 清理与测试（+6：644 → 650）
+- [x] 死代码删除：memoryRetrieval 从未读取的 `merged` Map；factLedger 冗余外层 if 与注释明写「不报」的空分支
+- [x] 回归测试：textDiff `$` 模式按字面插入、[E] 门整词匹配判别用例、`envNounCount` 去重 4 例（新增 `tests/disciplineEnvNouns.test.ts`）
+- [x] `llmSecurity.test.ts` fail-closed 用例固定 `INKMIND_PROXY` 环境（开发机配置本机代理时代理解析失败会合法放行，用例未固定导致环境相关失败）
+
+### 文档一致性
+- [x] README：六阶段 Validator / Taste Cleaner 表述改为与代码一致的五 Agent 描述；删除不存在的「月度预算硬阻断 / 费用看板」宣传，改为真实的「AI 调用记录 + 故障降级」能力
+- [x] ENGINE.md / engine/index.ts：管线图修正为 Auditor 内含写后确定性校验（进度条显示 [Validator]）
+- [x] 本文件基线数字更新（650 测试 / 58 文件）
+
+### 评估后暂缓（需设计/产品决策）
+- [ ] deslop 收口（canon / notIsComparison / normalizeProsePunctuation 约 530 行零引用；四处手抄规则单一来源化）
+- [ ] 确定性闸门误杀面（ELEVATION_ABSTRACTS 常用词、长台词计入叙述层）与 antiEcho `sharedPhrases>=3` 阈值
+- [ ] server/index.ts 鉴权层 HTTP 集成测试（supertest）；server/doctor、backupService 零测试
+- [ ] crossTabLock 单键锁按书分键；重复实现收敛（similarEnough / escapeReg / isFactValidAt 等）
+- [ ] 长篇性能三处 O(全书)（getAllProjects 全量反序列化、rebuildSpanDigests 全量重建、semanticSearch 全语料重算）
+- [ ] StyleAndEngineManager（2638 行 / 35 state）按板块拆分与 props drilling 收敛
+
 ## 总览
 
 | # | 风险点 | 影响 | 优先级 | 状态 |
 |---|--------|------|--------|------|
-| R1 | App.tsx 上帝组件（3262→802 行） | 改动易白屏、状态错乱 | P0 | ✅ |
+| R1 | App.tsx 上帝组件（3262→992 行） | 改动易白屏、状态错乱 | P0 | ✅ |
 | R2 | 持久化竞态与草稿丢失 | 刷新/崩溃丢草稿、全量写性能 | P0 | ✅ |
-| R3 | LLM 强依赖与成本 | API 故障时闭环不可用、费用不可控 | P1 | ✅ |
+| R3 | LLM 强依赖与成本 | API 故障时闭环不可用、费用不可控 | P1 | ✅（A 韧性已做；**B 成本控制未实现**，见上方声明） |
 | R4 | 数据模型演进无迁移框架 | 改 schema 时旧库缺字段出错 | P1 | ✅ |
 | R5 | 多标签页并发无保护 | 两页同写一书互相覆盖 | P1 | ✅ |
 | R6 | 本地文本精确替换脆弱 | 补丁静默失败/错位 | P2 | ✅ |
@@ -48,7 +110,11 @@
   2. **llmClient 接入**：`generateJSON`/`generateText`/`generateStream` 全部带默认超时（120s）+ 重试（默认 2 次）；流式「0 字节失败整体重连、已有产出保留部分内容不重复生成」+ 流读取空闲超时（防僵死连接）。
   3. **降级链 · 正文**：`writerAgent` 执笔失败 → `buildConservativeProse`（`src/services/conservativeProse.ts` 纯函数本地模板稿，含 beats/角色/设定/前情/收束，确定性输出）→ 标记 `conservative`，pipeline 强制不自动锁章，`Chapter.conservativeDraft` 存盘，UI 提示重跑正式稿。
   4. **降级链 · 审校**（复用既有机制）：`runHardReview` API 失败 → fallback（防幻觉不绿通）+ 本地断言 `runLocalFactGuard` 仍执行；`ruleScan`/`aiTasteScan` 纯本地机检照跑——闭环产出可用稿、不静默绿通。
-- **R3-B 成本控制（✅）**：
+- **R3-B 成本控制（❌ 未实现——本节为设计稿，代码中不存在）**：
+  > 2026-09-11 审查确认：`src/services/costControl.ts`、`src/components/UsageBadge.tsx`、
+  > `tests/costControl.test.ts` 均不存在，`llmBudgetEnabled` / `llmMonthlyBudgetCny` /
+  > `setBudgetConfig` / `checkBudgetBeforeCall` / `estimateCostCny` 全库零引用。
+  > 以下条目仅为当初的设计记录，**请勿当成已有能力**。若确需成本控制，需按本节重新实现。
   1. **估算与记录** `src/services/costControl.ts`：`estimateTokens`（CJK≈1 token/字，拉丁≈0.25，宁高勿低）+ `estimateCostCny`（deepseek/kimi/glm/gpt/claude 价目表，未知模型默认档）+ 用量记录持久化（localStorage，上限 5000 条）+ `getUsageSummary` 今日/本月聚合。
   2. **预算闸门**：`checkBudgetBeforeCall` 在 llmClient 三个 generate 前置——超限抛 `BudgetExceededError`（不重试），调用方降级（writerAgent 提示「本月 LLM 预算已超限，已降级本地保守稿」）。
   3. **用量归属**：显式 `options.usage` 优先；引擎级活动上下文 `setActiveUsageContext`（pipeline report 随阶段推进，finally 清理，防污染管线外调用）；成功/失败各记一条。
@@ -165,7 +231,7 @@
 - [x] **产品化第二批（安全收尾 + 单文件分发）**：
   - **主密钥机器绑定**（`server/llmService.ts`）：不再生成/读取 `.secret` 明文文件，密钥改由机器指纹（Windows MachineGuid / macOS IOPlatformUUID / Linux machine-id）+ 用户名派生；启动时一次性迁移（旧钥解密 → 机器钥重加密 → 删除 .secret），迁移失败则运行时旧钥兜底不中断；已在真实数据上验证（密文重加密 ✓、.secret 删除 ✓、二次启动纯机器钥解密 ✓）。**.novel-data 整目录被拷走也无法在别处解密**
   - **旧密文残留清理**：`server/data/` 迁移完成后连同旧 config.json/.secret 一并删除（此前只复制不删，密钥副本永久残留）
-  - **单文件可执行打包（Node SEA）**：`npm run build:exe` → `release/novel-studio.exe` + `dist/` + 使用说明；esbuild 打包 server → SEA blob 注入 node.exe 副本；**免装 Node、双击即用**，exe 态自动开浏览器（NOVEL_OPEN=0 关 / =1 强制）、端口占用给出人话提示、数据自动落 exe 旁 `.novel-data/`
+  - **单文件可执行打包（Node SEA）**：`npm run build:exe` → `release/inkmind.exe` + `dist/` + 使用说明；esbuild 打包 server → SEA blob 注入 node.exe 副本；**免装 Node、双击即用**，exe 态自动开浏览器（NOVEL_OPEN=0 关 / =1 强制）、端口占用给出人话提示、数据自动落 exe 旁 `.novel-data/`
   - **单进程鉴权修复（重要）**：静态托管形态下前端请求不带 token（token 注入原是 Vite 代理做的）→ 全部 401。新增同源豁免：`Sec-Fetch-Site: same-origin/none` 或 Origin 同源或本机非浏览器调用放行；跨源（恶意网页）仍强制 token。实测矩阵：本机无头 200 / 跨站无 token 401 / 跨站带 token 200
   - 验证：174/174 测试；tsc -b --force 0 错误；oxlint 12 既有 warning；exe 实测从任意目录启动、静态页/鉴权/数据落位全过
   - 残留：server 端无 vitest 覆盖（llmService 会读写真实 .novel-data，需先做 DATA_DIR 环境变量隔离——收益中等暂缓）；exe 未签名（SmartScreen 可能提示"未知发布者"，属 Windows 常态）；打包脚本仅 Windows（exe 名固定 .exe；mac/linux 需按平台复制对应 node 二进制）

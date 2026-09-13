@@ -9,18 +9,32 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const MIGRATE_MODE = { kind: 'ok' as 'ok' | 'throw' | 'stale-rev' };
+const MIGRATE_MODE = { kind: 'ok' as 'ok' | 'throw' | 'stale-rev' | 'peek-throw' };
 
 vi.mock('../src/services/migrations', () => ({
   CURRENT_SCHEMA_VERSION: 1,
-  peekMigration: () => ({
-    fromVersion: 0,
-    toVersion: 1,
-    applied: ['stamp-schema-version-v1'],
-    isFuture: false,
-  }),
-  migrateProjectToLatest: (project: { rev?: number }) => {
+  // 贴近真实实现：schemaVersion 缺省=0 需迁移；>=1 视为已最新；>1 为降级（future）。
+  // peek-throw 模拟「缺少迁移函数」——真实 peekMigration 在这条路径上会抛错。
+  peekMigration: (project: { schemaVersion?: number }) => {
+    if (MIGRATE_MODE.kind === 'peek-throw') throw new Error('缺少迁移函数');
+    const from = project?.schemaVersion ?? 0;
+    if (from >= 1) {
+      return { fromVersion: from, toVersion: from, applied: [], isFuture: from > 1 };
+    }
+    return {
+      fromVersion: 0,
+      toVersion: 1,
+      applied: ['stamp-schema-version-v1'],
+      isFuture: false,
+    };
+  },
+  migrateProjectToLatest: (project: { rev?: number; schemaVersion?: number }) => {
     if (MIGRATE_MODE.kind === 'throw') throw new Error('缺少迁移函数');
+    const from = project?.schemaVersion ?? 0;
+    // 降级：不迁移、原样返回
+    if (from >= 1) {
+      return { project, fromVersion: from, toVersion: from, applied: [] };
+    }
     return {
       project: {
         ...project,
@@ -37,7 +51,9 @@ vi.mock('../src/services/migrations', () => ({
 
 import {
   deleteProject,
+  getAllProjects,
   initDB,
+  invalidateProjectListCache,
   loadProject,
   saveProject,
   setActiveProjectId,
@@ -142,6 +158,28 @@ describe('pruneSnapshots · 上限与安全快照保护', () => {
   });
 });
 
+describe('saveProject · rev 提交语义', () => {
+  it('成功保存后 rev 自增，且返回值与内存对象一致', async () => {
+    const p = makeProject('p-rev-ok');
+    expect(await saveProject(p)).toBe(1);
+    expect(p.rev).toBe(1);
+    expect(await saveProject(p)).toBe(2);
+    expect(p.rev).toBe(2);
+  });
+
+  it('提交失败时不得推进内存 rev（否则下次冲突判定失效 → 静默覆盖他人写入）', async () => {
+    const p = makeProject('p-rev-fail');
+    await saveProject(p);
+    const revBefore = p.rev;
+    // 注入不可结构化克隆的字段 → put 抛 DataCloneError（模拟 commit 阶段失败）。
+    // 旧实现先 `project.rev = existingRev + 1` 再 put，失败后内存 rev 已前进、
+    // 磁盘未变，下次保存的 existingRev > callerRev 判定会失效。
+    (p as unknown as { bad?: unknown }).bad = () => {};
+    await expect(saveProject(p)).rejects.toBeTruthy();
+    expect(p.rev).toBe(revBefore);
+  });
+});
+
 describe('loadProject · 韧性', () => {
   it('迁移函数抛错 → 原数据仍可加载（不再整书打不开）', async () => {
     const p = makeProject('p-migrate-throw');
@@ -163,5 +201,85 @@ describe('loadProject · 韧性', () => {
     const loaded = await loadProject(p.id);
     expect(loaded).not.toBeNull();
     expect(loaded?.schemaVersion).toBe(1);
+  });
+});
+
+describe('getAllProjects · 书库摘要', () => {
+  it('拆书模板书（带 deconstructMeta）在摘要里标记 isDeconstruct', async () => {
+    await saveProject(
+      makeProject('p-normal', { title: '普通书' })
+    );
+    await saveProject(
+      makeProject('p-decon', {
+        title: '模板书',
+        deconstructMeta: {
+          source: 'file',
+          sourceName: '源.txt',
+          importedAt: '2026-09-13T00:00:00.000Z',
+          synthesisDone: true,
+        },
+      })
+    );
+    invalidateProjectListCache();
+
+    const list = await getAllProjects();
+    const byId = new Map(list.map((p) => [p.id, p]));
+    expect(byId.get('p-decon')?.isDeconstruct).toBe(true);
+    expect(byId.get('p-normal')?.isDeconstruct).toBe(false);
+  });
+});
+
+describe('迁移/降级保护快照 · 幂等', () => {
+  /** 模拟「另一次会话」：清掉模块级「已建快照」记忆，强制走磁盘去重判定 */
+  async function loadInFreshSession(id: string) {
+    vi.resetModules();
+    const storage = await import('../src/services/storage');
+    return storage.loadProject(id);
+  }
+
+  it('迁移落盘持续失败 → 每次加载不重复建迁移快照（防体积死循环增长）', async () => {
+    const p = makeProject('p-mig-dedup');
+    await saveProject(p);
+    // 库中 rev 抬到 5：迁移回写永远冲突，磁盘始终停留在旧 schema，
+    // 于是每次加载都会重新进入迁移分支——这正是体积爆炸的触发条件。
+    await rawPut({ ...p, rev: 5 });
+    MIGRATE_MODE.kind = 'stale-rev';
+
+    for (let i = 0; i < 3; i += 1) {
+      await loadInFreshSession(p.id);
+    }
+
+    const rows = await listSnapshots(p.id);
+    expect(rows.filter((r) => r.reason === 'migration')).toHaveLength(1);
+  });
+
+  it('缺少迁移函数（预检抛错）→ 仍建立保护快照', async () => {
+    const p = makeProject('p-mig-peekthrow');
+    await saveProject(p);
+    MIGRATE_MODE.kind = 'peek-throw';
+
+    await loadInFreshSession(p.id);
+
+    const rows = await listSnapshots(p.id);
+    expect(rows.filter((r) => r.reason === 'migration')).toHaveLength(1);
+  });
+
+  it('降级（schema 超前）→ 建立保护快照且不重复创建', async () => {
+    const p = makeProject('p-mig-future');
+    // schemaVersion=99 高于代码支持的 v1 → isFuture，loadProject 不迁移
+    await rawPut({ ...p, schemaVersion: 99, rev: 1 });
+    MIGRATE_MODE.kind = 'ok';
+
+    await loadInFreshSession(p.id);
+    await loadInFreshSession(p.id);
+
+    const rows = await listSnapshots(p.id);
+    expect(rows.filter((r) => r.reason === 'migration')).toHaveLength(1);
+    // 降级保护快照必须 pinned（永不裁剪）：塞满普通快照后它仍应在
+    for (let i = 0; i < 35; i += 1) {
+      await createSnapshot(makeProject(p.id), { reason: 'manual', label: `填充 ${i}` });
+    }
+    const after = await listSnapshots(p.id);
+    expect(after.some((r) => r.reason === 'migration')).toBe(true);
   });
 });

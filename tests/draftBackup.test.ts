@@ -10,6 +10,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const memStore = new Map<string, unknown>();
 /** 测试用闸门：非 null 时下一次 put 延迟到它 resolve 后才落盘（模拟慢写） */
 let putGate: Promise<void> | null = null;
+/** 剩余需要失败的 put 次数（模拟配额满 / 事务 abort） */
+let putFailures = 0;
 
 function makeReq(compute: (req: { result?: unknown }) => void) {
   const req: {
@@ -44,11 +46,18 @@ vi.mock('../src/services/storage', () => ({
         oncomplete: null as (() => void) | null,
         onerror: null as (() => void) | null,
         onabort: null as (() => void) | null,
+        error: null as Error | null,
         _fire: () => queueMicrotask(() => tx.oncomplete?.()),
         objectStore: () => ({
           put: (rec: { key: string; value: unknown }) =>
             makeReq(() => {
               const apply = () => {
+                if (putFailures > 0) {
+                  putFailures -= 1;
+                  tx.error = new Error('QuotaExceededError');
+                  queueMicrotask(() => tx.onerror?.());
+                  return;
+                }
                 memStore.set(rec.key, rec.value);
                 tx._fire();
               };
@@ -268,6 +277,8 @@ describe('cleanupStaleDrafts', () => {
 describe('scheduleDraftBackup / flushDraftBackup（去抖）', () => {
   beforeEach(() => {
     memStore.clear();
+    putFailures = 0;
+    putGate = null;
     vi.useFakeTimers();
   });
 
@@ -338,5 +349,26 @@ describe('scheduleDraftBackup / flushDraftBackup（去抖）', () => {
     const all = await m.listDraftBackups();
     expect(all).toHaveLength(1);
     expect(all[0].content).toBe('最终版');
+  });
+
+  it('写失败后自动重挂定时器重试，最后的草稿不丢（防配额满时崩溃丢稿）', async () => {
+    const m = await freshModule();
+    putFailures = 1; // 第一次写失败（模拟 QuotaExceededError）
+    m.scheduleDraftBackup({
+      projectId: 'p1',
+      chapterId: 'c1',
+      chapterNumber: 1,
+      chapterTitle: '一',
+      content: '崩溃前的最后一段正文',
+    });
+    // 第一次尝试（800ms 去抖）→ 失败
+    await vi.advanceTimersByTimeAsync(800);
+    expect(memStore.size).toBe(0);
+    // 失败后必须重新挂上定时器（退避 1.6s）；若只保留 pending 不调度，
+    // 这段草稿会一直躺在内存里直到 pagehide —— 期间崩溃即永久丢失
+    await vi.advanceTimersByTimeAsync(1600);
+    const all = await m.listDraftBackups();
+    expect(all).toHaveLength(1);
+    expect(all[0].content).toBe('崩溃前的最后一段正文');
   });
 });

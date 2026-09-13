@@ -775,10 +775,8 @@ export function reconcileProseAgainstLedger(input: {
   // 4) 地点硬跳：上章在 A，本章无过渡词却在 B（弱 warn）
   for (const a of active) {
     if (a.kind !== 'character_location' || !a.value) continue;
-    if (a.sourceChapterNumber >= chN - 0) {
-      // 只用更早章的位置
-      if (a.sourceChapterNumber >= chN) continue;
-    }
+    // 只用更早章的位置
+    if (a.sourceChapterNumber >= chN) continue;
     // 仅当上一断言章距离 ≤5
     if (chN - a.sourceChapterNumber > 5) continue;
     const name = a.subject;
@@ -837,15 +835,7 @@ export function reconcileProseAgainstLedger(input: {
   const thisDelta = parseStoryDayDelta(prose.slice(0, 280) + prose.slice(-120));
   if (prevAnchor?.storyDay != null && thisDelta) {
     // 粗检：上章故事日很大，本章写「当日」且出现「多年前/当年」以外的矛盾较少；
-    // 主要抓：本章宣称 Δ≥3，但与上章标签同为「次日」连跳无交代——弱
-    if (
-      thisDelta.delta === 0 &&
-      prevAnchor.dayDelta != null &&
-      prevAnchor.dayDelta >= 3 &&
-      !/(回忆|闪回|曾几何时|多年前|当初|那时)/.test(prose.slice(0, 200))
-    ) {
-      // 不报：当日接「三日后」是正常的
-    }
+    // 「当日接三日前章」属正常叙事节奏，此处刻意不报（曾有空分支实现，已删）。
     // 抓倒流：正文写「故事第N天」且 N < prevDay（极弱）
     const dayNum = prose.match(/故事第\s*(\d+)\s*天/);
     if (dayNum) {

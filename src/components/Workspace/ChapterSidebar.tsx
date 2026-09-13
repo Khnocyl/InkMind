@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Chapter, Volume } from '../../types/novel';
 import {
   Plus,
@@ -52,6 +52,26 @@ export const ChapterSidebar: React.FC<ChapterSidebarProps> = ({
   // 增量渲染（性能）：长书 500+ 章全量 .map 会卡——首屏 200 条，「显示更多」步进
   const [renderCap, setRenderCap] = useState(200);
   const bumpRenderCap = () => setRenderCap((c) => c + 200);
+  /**
+   * 切换书籍时重置侧栏视图状态。
+   * 本组件无 key、跨书复用，而 expandedVolIds / renderCap / searchTerm 只在挂载时
+   * 初始化一次——换书后新书的卷 id 不在旧集合里，整栏分卷全部折叠（且搜索词会带过去，
+   * 看着像「书是空的」）。以「卷 id 集合」作为换书判据：同书内增删章不触发。
+   */
+  const volumeIdsKey = volumes.map((v) => v.id).join(',');
+  const prevVolumeIdsRef = useRef(volumeIdsKey);
+  useEffect(() => {
+    if (prevVolumeIdsRef.current === volumeIdsKey) return;
+    prevVolumeIdsRef.current = volumeIdsKey;
+    const newIds = volumeIdsKey ? volumeIdsKey.split(',') : [];
+    setExpandedVolIds((prev) => {
+      const stillThere = prev.filter((id) => newIds.includes(id));
+      // 旧展开项全部失效 = 换了书 → 展开新书全部卷，而不是留个全折叠的侧栏
+      return stillThere.length > 0 ? stillThere : newIds.concat('default-vol');
+    });
+    setRenderCap(200);
+    setSearchTerm('');
+  }, [volumeIdsKey]);
   const totalOpenTodos = useMemo(
     () => chapters.reduce((s, c) => s + openTodoCount(c), 0),
     [chapters]

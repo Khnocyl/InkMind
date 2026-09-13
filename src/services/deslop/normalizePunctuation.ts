@@ -92,7 +92,7 @@ export function normalizeProseSymbols(input: string): NormalizeSymbolsResult {
     });
   }
 
-  // 3. 引号统一：直角 → 中文双引号（对白规范）；开闭按字符直接映射
+  // 3. 引号统一：直角/半角 → 中文双引号（对白规范）；开闭按字符直接映射
   const cornerOpen = countRe(/[「『]/g, text);
   const cornerClose = countRe(/[」』]/g, text);
   if (cornerOpen > 0 || cornerClose > 0) {
@@ -105,6 +105,24 @@ export function normalizeProseSymbols(input: string): NormalizeSymbolsResult {
       type: 'quote-style',
       message: '直角引号「」统一为双引号“”',
       count: cornerOpen + cornerClose,
+    });
+  }
+
+  // 3b. 半角直引号 → 中文双引号（成对交替开闭）。
+  // 中文正文里半角 " 只会是对白定界符（模型照抄 few-shot/模板里的半角引号时会带出来），
+  // 落到正文即不合规范；按出现顺序交替映射为 “ 与 ”，保证成对可读。
+  const asciiQuotes = countRe(/"/g, text);
+  if (asciiQuotes > 0) {
+    let open = true;
+    text = text.replace(/"/g, () => {
+      const ch = open ? '\u201C' : '\u201D';
+      open = !open;
+      return ch;
+    });
+    findings.push({
+      type: 'quote-style',
+      message: '半角引号 " 统一为中文双引号“”',
+      count: asciiQuotes,
     });
   }
 

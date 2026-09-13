@@ -30,13 +30,16 @@ export interface MigrationResult {
   applied: MigrationLogEntry[];
 }
 
-/**
- * 迁移注册表：key = 起始版本，value = 迁移到 key+1 的纯函数。
- * 注意：迁移函数必须只依赖入参 project，不得访问外部状态（可测试、可重放）。
- */
 type MigrationFn = (project: BookProject) => BookProject;
 
-const MIGRATIONS: Record<number, { name: string; fn: MigrationFn }> = {
+/**
+ * 迁移注册表：key = 起始版本，value = 迁移到 key+1 的纯函数。
+ * 注意：迁移函数必须只依赖入参 project，不得访问外部状态（可测试、可重放），
+ * 并且**必须自行把 `schemaVersion` 推进到 key+1**（框架会校验，见 migrateProjectToLatest）。
+ *
+ * 导出仅为测试与检查用；生产代码不要直接调用其中的函数。
+ */
+export const MIGRATIONS: Record<number, { name: string; fn: MigrationFn }> = {
   // v0 → v1：存量数据（无 schemaVersion）打上版本标记。
   // 历史字段兼容已由读取层 normalize 承担（settings/memory/chapters 等兜底），
   // 这里只补版本号，不做字段级改动——避免与 normalize 重复逻辑。
@@ -116,6 +119,18 @@ export function migrateProjectToLatest(
       );
     }
     cur = entry.fn(cur);
+    // 守卫：迁移函数必须自行把 schemaVersion 推进到 v+1。
+    // 漏了它，项目会带着旧版本号落盘 → **每次加载都重跑同一条迁移**；
+    // 若该迁移非幂等（字段重命名/拆分合并类），就会逐次累积损坏用户数据。
+    // 与其静默损坏，不如在这里响亮失败（调用方已先行打过快照，原数据可回滚）。
+    const afterVersion = currentVersionOf(cur);
+    if (afterVersion !== v + 1) {
+      throw new Error(
+        `迁移「${entry.name}」（v${v}→v${v + 1}）未把 schemaVersion 推进到 ${v + 1}` +
+          `（实际为 ${afterVersion}）。迁移函数必须自行设置 schemaVersion，` +
+          '否则每次加载都会重跑该迁移。'
+      );
+    }
     applied.push({
       from: v,
       to: v + 1,

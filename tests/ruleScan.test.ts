@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { ruleScanProse } from '../src/services/ruleScan';
+import {
+  ruleScanProse,
+  ruleScanHitPhrases,
+  ruleScanClichéPhrases,
+} from '../src/services/ruleScan';
 import type { StyleConfig } from '../src/types/novel';
 
 const baseStyle: StyleConfig = {
@@ -64,5 +68,37 @@ describe('ruleScanProse', () => {
     const echo = r.hits.filter((h) => h.kind === 'echo');
     expect(echo.length).toBeGreaterThan(0);
     expect(echo[0].severity).toBe('error');
+  });
+});
+
+describe('ruleScanClichéPhrases · 套话列表排除结构性诊断', () => {
+  it('剔除「字数不足N/M」与「开篇同质N」，保留黑名单命中', () => {
+    const prev =
+      '夜雨敲窗，烛火摇曳。他坐在桌前，指节发白，目光落在半卷残页上。窗外隐约传来更夫的梆子声，一下，又一下。';
+    const curr =
+      '夜雨敲窗，烛火摇曳。他坐在桌前，指节发白，那一刻倒吸一口凉气。窗外隐约传来更夫的梆子声，一下，又一下。';
+    const r = ruleScanProse(curr, baseStyle, {
+      previousProse: prev,
+      targetWordCount: 5000,
+    });
+
+    // 前提：本次扫描确实同时产生了三类命中
+    const kinds = new Set(r.hits.map((h) => h.kind));
+    expect(kinds.has('blacklist')).toBe(true);
+    expect(kinds.has('echo')).toBe(true);
+    expect(kinds.has('length')).toBe(true);
+
+    const cliche = ruleScanClichéPhrases(r);
+    const all = ruleScanHitPhrases(r);
+
+    // 套话列表：不含字数/开篇同质（它们是结构性诊断，不是被拦下的表达）
+    expect(cliche.some((p) => p.includes('字数不足'))).toBe(false);
+    expect(cliche.some((p) => p.includes('开篇同质') || p.includes('开篇偏近'))).toBe(false);
+    // 但保留真正的套话命中
+    expect(cliche.some((p) => p.includes('那一刻'))).toBe(true);
+
+    // 不过滤的版本确实会带上它们 —— 锁住两者的区别（此前管线误用了这个）
+    expect(all.some((p) => p.includes('字数不足'))).toBe(true);
+    expect(cliche.length).toBeLessThan(all.length);
   });
 });

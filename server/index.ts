@@ -21,30 +21,33 @@ import {
   LLM_PROVIDERS,
 } from './llmService';
 import { isSameOriginClient } from './llmSecurity';
+import { resolveSafeRedirects, ARTICLE_FETCH_MAX_REDIRECTS } from './articleFetch';
 import { hardenFilePermissions } from './llmService';
 import { runDoctor } from './doctor';
 import { writeProjectBackup, listProjectBackups, deleteProjectBackups } from './backupService';
 
 // 仅在本机显式配置 INKMIND_PROXY 时静默启用代理，对其他所有用户 100% 默认直连零干扰
 if (process.env.INKMIND_PROXY) {
-  try {
-    const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
-    process.env.HTTP_PROXY = process.env.INKMIND_PROXY;
-    process.env.HTTPS_PROXY = process.env.INKMIND_PROXY;
-    process.env.NO_PROXY = process.env.NO_PROXY || '127.0.0.1,localhost';
-    setGlobalDispatcher(new EnvHttpProxyAgent());
-    // 不打印完整代理 URL（可能含 user:pass 凭据），只留 protocol://host
-    let proxyLabel = '(已配置)';
-    try {
-      const u = new URL(process.env.INKMIND_PROXY);
-      proxyLabel = `${u.protocol}//${u.host}`;
-    } catch {
-      /* 非法 URL：不打印原文 */
-    }
-    console.log(`🌐 [Proxy] 已加载本机专属代理: ${proxyLabel}`);
-  } catch (err) {
-    console.warn('[Proxy] 专属代理加载失败:', err);
-  }
+  // ESM/CJS 双兼容：仅在配置了代理时动态加载 undici，避免 top-level await 阻塞 CJS 打包
+  void import('undici')
+    .then(({ EnvHttpProxyAgent, setGlobalDispatcher }) => {
+      process.env.HTTP_PROXY = process.env.INKMIND_PROXY;
+      process.env.HTTPS_PROXY = process.env.INKMIND_PROXY;
+      process.env.NO_PROXY = process.env.NO_PROXY || '127.0.0.1,localhost';
+      setGlobalDispatcher(new EnvHttpProxyAgent());
+      // 不打印完整代理 URL（可能含 user:pass 凭据），只留 protocol://host
+      let proxyLabel = '(已配置)';
+      try {
+        const u = new URL(process.env.INKMIND_PROXY!);
+        proxyLabel = `${u.protocol}//${u.host}`;
+      } catch {
+        /* 非法 URL：不打印原文 */
+      }
+      console.log(`🌐 [Proxy] 已加载本机专属代理: ${proxyLabel}`);
+    })
+    .catch((err) => {
+      console.warn('[Proxy] 专属代理加载失败:', err);
+    });
 }
 
 const app = express();
@@ -185,6 +188,40 @@ app.use(
     },
   })
 );
+/**
+ * API Token 鉴权 —— 必须注册在 `express.json` **之前**。
+ *
+ * 原因：CORS 只拦「读取响应」不拦「发出请求」。任意网页/脚本仍可对
+ * `/api/llm/generate` 反复 POST 10MB JSON；若鉴权在 json 之后，body-parser 会
+ * 在鉴权前就把 10MB 完整缓冲进内存（未鉴权的内存/CPU 放大 DoS）。鉴权只读请求头、
+ * 不依赖 body，前置无副作用。401/503 响应仍需带 CORS 头供前端读错误——上面的
+ * `cors()` 中间件已先注册，不受影响。
+ *
+ * 说明：依赖的 `ALLOW_NO_AUTH` / `API_TOKEN` 是模块级 const（定义于上方），
+ * 各判定函数为函数声明（提升）；中间件体在请求期执行，届时均已初始化。
+ */
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next(); // 健康检查无副作用，开放探活
+  // 显式禁用鉴权（临时局域网/内网调试场景）：优先级最高，token 文件存在与否均生效
+  if (ALLOW_NO_AUTH) return next();
+  if (!API_TOKEN) {
+    // fail-closed（安全加固 F2）：token 不可用且未显式 ALLOW_NO_AUTH → 拒绝全部 /api/*
+    return res.status(503).json({
+      success: false,
+      error:
+        '鉴权不可用（API Token 无法读取/生成）。请修复 .novel-data 目录权限或设置 API_TOKEN；' +
+        '如需无鉴权运行请设置 ALLOW_NO_AUTH=1。',
+    });
+  }
+  if (isSameOriginOrLocalClient(req)) return next(); // 同源前端 / 本机非浏览器调用
+  const provided = extractToken(req);
+  if (provided && safeEqual(provided, API_TOKEN)) return next();
+  console.warn(
+    `[Auth] 拒绝未授权请求: ${req.method} ${req.path} (来源 ${req.headers.origin || req.ip})`
+  );
+  res.status(401).json({ success: false, error: '未授权：缺少或错误的 API Token' });
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 /**
@@ -240,29 +277,6 @@ function isSameOriginOrLocalClient(req: express.Request): boolean {
     isTrustedHostname,
   });
 }
-
-// API Token 鉴权：放在 CORS / json 之后，确保 401/503 响应也带 CORS 头（前端可读错误）
-app.use('/api', (req, res, next) => {
-  if (req.path === '/health') return next(); // 健康检查无副作用，开放探活
-  // 显式禁用鉴权（临时局域网/内网调试场景）：优先级最高，token 文件存在与否均生效
-  if (ALLOW_NO_AUTH) return next();
-  if (!API_TOKEN) {
-    // fail-closed（安全加固 F2）：token 不可用且未显式 ALLOW_NO_AUTH → 拒绝全部 /api/*
-    return res.status(503).json({
-      success: false,
-      error:
-        '鉴权不可用（API Token 无法读取/生成）。请修复 .novel-data 目录权限或设置 API_TOKEN；' +
-        '如需无鉴权运行请设置 ALLOW_NO_AUTH=1。',
-    });
-  }
-  if (isSameOriginOrLocalClient(req)) return next(); // 同源前端 / 本机非浏览器调用
-  const provided = extractToken(req);
-  if (provided && safeEqual(provided, API_TOKEN)) return next();
-  console.warn(
-    `[Auth] 拒绝未授权请求: ${req.method} ${req.path} (来源 ${req.headers.origin || req.ip})`
-  );
-  res.status(401).json({ success: false, error: '未授权：缺少或错误的 API Token' });
-});
 
 // ─── 服务端限流（安全加固 P1：防本机恶意进程 / 局域网调用者刷爆 LLM 额度）───
 // 零依赖内存实现：按来源 IP 的滑动窗口 QPS + 全局并发上限。
@@ -610,6 +624,78 @@ app.delete('/api/backup', (req, res) => {
     res.json({ success: true, data });
   } catch (err) {
     res.status(400).json({ success: false, error: errMessage(err) || '备份删除失败' });
+  }
+});
+
+// 拆书 URL 导入：抓取一个公网网页的 HTML 交回前端做正文提取。
+// 站点无关的中性能力（同 calibre 自定义配方）：不内置任何站点适配、
+// 不做验证码/付费墙绕过。安全：收紧版 SSRF 校验（私网/回环默认阻断）、
+// **逐跳解析版**重定向复检（见 articleFetch.ts）、30s 超时、2MB 体积上限、
+// 仅文本类 content-type。
+const ARTICLE_FETCH_MAX_BYTES = 2 * 1024 * 1024;
+const ARTICLE_FETCH_TIMEOUT_MS = 30_000;
+
+app.post('/api/fetch-article', rateLimitExpensive(), async (req, res) => {
+  const rawUrl = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+  if (!rawUrl) {
+    return res.status(400).json({ success: false, error: '缺少 url 参数' });
+  }
+
+  try {
+    // 逐跳跟随重定向：起始 URL 与**每一跳**都做解析版安全复检
+    // （见 articleFetch.ts 注释——此前这里用的是同步字面量版，
+    //  域名型重定向目标可绕过 → DNS 型 SSRF）。
+    // 起始 URL 的校验也由它内部完成，故此处不再重复校验（避免多一次 DNS 查询）。
+    const followed = await resolveSafeRedirects(rawUrl, {
+      maxRedirects: ARTICLE_FETCH_MAX_REDIRECTS,
+      signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
+    });
+    if (!followed.ok) {
+      return res.status(400).json({ success: false, error: followed.error });
+    }
+    const { url: finalUrl, response } = followed;
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return res.status(502).json({
+        success: false,
+        error: `抓取失败 [${response.status}]: ${text.slice(0, 200)}`,
+      });
+    }
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (!/text\/html|application\/xhtml\+xml|text\/plain/.test(contentType)) {
+      return res.status(400).json({
+        success: false,
+        error: `不支持的内容类型：${contentType || '未知'}（仅支持 HTML/纯文本页面）`,
+      });
+    }
+    // 流式读取并限量：防止超大响应撑爆内存
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return res.status(502).json({ success: false, error: '上游无响应体' });
+    }
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    let truncated = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value?.byteLength || 0;
+      if (received > ARTICLE_FETCH_MAX_BYTES) {
+        truncated = true;
+        void reader.cancel().catch(() => {});
+        break;
+      }
+      chunks.push(value);
+    }
+    const html = Buffer.concat(chunks).toString('utf-8');
+    return res.json({
+      success: true,
+      data: { html, finalUrl, bytes: received, truncated },
+    });
+  } catch (err) {
+    console.error('Fetch article error:', err);
+    const msg = errMessage(err) || '抓取失败';
+    return res.status(502).json({ success: false, error: `抓取失败：${msg.slice(0, 200)}` });
   }
 });
 

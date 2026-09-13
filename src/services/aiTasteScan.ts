@@ -80,7 +80,7 @@ export const EXTENDED_CLICHE_PHRASES: string[] = [
 /** Gate G：解释腔 / 上帝感 */
 const EXPOSITION_PATTERNS: { re: RegExp; phrase: string; suggestion: string }[] = [
   {
-    re: /她?他?不知道的是/g,
+    re: /(?:[他她])?不知道的是/g,
     phrase: '她/他不知道的是',
     suggestion: '删上帝剧透，用角色当下动作呈现。',
   },
@@ -275,8 +275,10 @@ export function scanAiTastePatterns(
 
   // 对话
   const dialogueLines = (text.match(/[「“"].*?[」”"]/gs) || []).length;
+  // 注意「说道」必须整词匹配：写成字符类 [说道] 会把「知道/道理」里的单个
+  // 说/道 字也计入对白标签，dialogueTagRatio 严重虚高、[E]对话标签过密 误报
   const dialogueTags = countMatches(
-    /([说道]|问道|笑道|怒道|冷道|喝道|喊道|答道|叹道)/g,
+    /(?:说道|问道|笑道|怒道|冷道|喝道|喊道|答道|叹道)/g,
     text
   ).count;
   const dialogueTagRatio =

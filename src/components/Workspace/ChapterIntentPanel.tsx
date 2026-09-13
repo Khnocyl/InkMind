@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Chapter, ChapterIntent } from '../../types/novel';
 import {
   confirmIntent,
@@ -44,6 +44,8 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
   const [mustAvoidText, setMustAvoidText] = useState(intent.mustAvoid.join('\n'));
   const [hook, setHook] = useState(intent.endingHook);
   const [beatsText, setBeatsText] = useState((intent.emotionalBeats || []).join('\n'));
+  /** 最近一次由 props 同步下来的表单值（未编辑基线），用于失焦时判断是否真的改过 */
+  const pristineRef = useRef({ mustDoText: '', mustAvoidText: '', hook: '', beatsText: '' });
 
   // 切换章节时同步表单
   useEffect(() => {
@@ -52,6 +54,13 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
     setMustAvoidText(i.mustAvoid.join('\n'));
     setHook(i.endingHook);
     setBeatsText((i.emotionalBeats || []).join('\n'));
+    // 记录「未被用户编辑过」的原始表单值，供失焦时判断是否需要落盘
+    pristineRef.current = {
+      mustDoText: i.mustDo.join('\n'),
+      mustAvoidText: i.mustAvoid.join('\n'),
+      hook: i.endingHook,
+      beatsText: (i.emotionalBeats || []).join('\n'),
+    };
   }, [chapter.id, chapter.intent]);
 
   const lines = (s: string) =>
@@ -76,6 +85,18 @@ export const ChapterIntentPanel: React.FC<ChapterIntentPanelProps> = ({
   };
 
   const persistEdit = () => {
+    // 失焦即触发：若与上次同步的基线一致（即用户没真的改过），直接跳过。
+    // 否则「点进输入框再点空白」这种零改动操作也会把已确认状态清成未确认，
+    // 导致开写前二次确认弹窗、且写章 prompt 降级为「草稿未确认，仅作参考」。
+    const p = pristineRef.current;
+    if (
+      p.mustDoText === mustDoText &&
+      p.mustAvoidText === mustAvoidText &&
+      p.hook === hook &&
+      p.beatsText === beatsText
+    ) {
+      return;
+    }
     onSaveIntent(buildFromForm(false));
   };
 

@@ -37,7 +37,12 @@ import {
   buildNextChapterPlanPrompt,
 } from './prompts';
 import type { PreviousContextPack } from './contextPack';
-import { ruleScanProse, ruleScanHitPhrases, type RuleScanResult } from './ruleScan';
+import {
+  ruleScanProse,
+  ruleScanHitPhrases,
+  ruleScanClichéPhrases,
+  type RuleScanResult,
+} from './ruleScan';
 import type {
   RuleScanAudit,
   StoryMemory,
@@ -390,7 +395,7 @@ export async function step2_ExpandProse(
   }
 }
 
-function mergeRuleScanIntoAudit(
+export function mergeRuleScanIntoAudit(
   auditLog: MemoryAuditLog,
   styleConfig: StyleConfig,
   polishedProse: string,
@@ -404,8 +409,11 @@ function mergeRuleScanIntoAudit(
   });
   const audit = toRuleScanAudit(ruleScan);
 
-  // 机检命中并入「套话列表」，以机检为准（可复现）
-  const machinePhrases = ruleScanHitPhrases(ruleScan);
+  // 机检命中并入「套话列表」，以机检为准（可复现）。
+  // 用 ruleScanClichéPhrases（排除字数/开篇同质这类结构性诊断）——该列表在 UI 上是
+  // 「套话 / 模式命中列表」且条目带删除线，语义是「被拦下的表达」；
+  // 此前用不过滤的 ruleScanHitPhrases，会把「字数不足1234/2000」也列进去。
+  const machinePhrases = ruleScanClichéPhrases(ruleScan);
   const llmList = auditLog.removedClichésList || [];
   const mergedList = [...new Set([...machinePhrases, ...llmList])];
   const taste = 'aiTaste' in ruleScan ? ruleScan.aiTaste : undefined;
@@ -835,7 +843,7 @@ export async function runStyleReview(
   }
 }
 
-function hardIssuesToConflicts(
+export function hardIssuesToConflicts(
   issues: HardReviewIssue[]
 ): MemoryAuditLog['logicConflicts'] {
   return issues.map((i) => ({
@@ -843,6 +851,22 @@ function hardIssuesToConflicts(
     description: i.description,
     suggestion: i.suggestion,
     lane: 'hard' as const,
+  }));
+}
+
+/**
+ * 文笔建议 → style 软线索 conflicts（不阻断定稿）。
+ * 抽为导出函数：auditorAgent 的「重跑本审」路径此前有一份逐字相同的私有副本，
+ * 任一侧调整文案/截断长度就会造成「同一正文、两条审校路径结论不一致」。
+ */
+export function styleSuggestionsToConflicts(
+  suggestions: string[]
+): MemoryAuditLog['logicConflicts'] {
+  return (suggestions || []).slice(0, 4).map((s) => ({
+    type: '行文套路' as const,
+    description: `[文笔建议] ${s}`,
+    suggestion: '可在画布划线精修或接受润色稿；不阻断定稿',
+    lane: 'style' as const,
   }));
 }
 
@@ -1156,14 +1180,7 @@ export async function step3_CriticVerify(
       );
     }
   }
-  const styleSoftConflicts: MemoryAuditLog['logicConflicts'] = (style.suggestions || [])
-    .slice(0, 4)
-    .map((s) => ({
-      type: '行文套路' as const,
-      description: `[文笔建议] ${s}`,
-      suggestion: '可在画布划线精修或接受润色稿；不阻断定稿',
-      lane: 'style' as const,
-    }));
+  const styleSoftConflicts = styleSuggestionsToConflicts(style.suggestions);
 
   let auditLog: MemoryAuditLog = {
     injectedCharacters: characters.map((c) => c.name),

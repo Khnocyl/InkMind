@@ -26,6 +26,7 @@ import {
   scanChapterAiTasteOnly,
 } from '../services/aiTasteActions';
 import { runCrossChapterAudit } from '../services/crossChapterAudit';
+import { mergeRewriteIntoLatest } from '../services/chapterRewriteMerge';
 import {
   applyCrossAuditToChapters,
   crossAuditFailed,
@@ -720,10 +721,17 @@ export function useChapterActions({
         return;
       }
 
-      // 函数式更新：await 数分钟的 LLM 任务期间用户可能已编辑其他章，
-      // 必须合并进最新 prev，不能拿 pre-await 快照整表覆盖
+      // 合并进最新 prev：await 数分钟的 LLM 任务期间用户可能已编辑本章。
+      // 正文若被改动 → 局部改写前提失效，放弃写入并提示（绝不覆盖用户改动）。
+      const latest = projectRef.current?.chapters.find((c) => c.id === ch.id) ?? ch;
+      const mergedChapter = mergeRewriteIntoLatest(latest, r.chapter, ch).chapter;
+      if (!mergedChapter) {
+        setAiTasteScanMessage('正文已变更，本次 AI 修结果未写入');
+        setStatusMessage('⚠️ 正文在 AI 修期间已被你改动，本次结果未写入，请重试');
+        return;
+      }
       await handleUpdateAndPersistProject((prev) => ({
-        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? mergedChapter : c)),
       }));
       if (r.focusSnippet) setFocusProseSnippet(r.focusSnippet);
       setFocusRevisionTodo({ chapterId: ch.id, todoId: todo.id });
@@ -763,6 +771,15 @@ export function useChapterActions({
     if (!proj) return;
     if (generatingLockRef.current) {
       setStatusMessage('⚠️ 生成进行中，无法一键修全部。');
+      return;
+    }
+    // 同步互斥闸门（防双击并发）：aiTasteScanBusy / fixAllRunning 都是 state，
+    // 同一事件循环内的第二次调用会读到旧值而双双通过；第二次还会把
+    // fixAllAbortRef.current 覆盖成新 controller，使第一个循环的 controller
+    // 失去引用——既无法被「停止」中断，finally 里的活动信号比对也不成立，
+    // 变成停止不了、又不清理的孤儿任务（两条循环并发写盘）。
+    if (fixAllAbortRef.current) {
+      setStatusMessage('⚠️ 一键修全部已在运行中，请先停止或等待完成。');
       return;
     }
     if (aiTasteScanBusy) {
@@ -840,10 +857,16 @@ export function useChapterActions({
             failures.push(`第${ch.number}章：${(r.message || '未替换').slice(0, 80)}`);
             continue;
           }
-          // 函数式更新：await 数分钟 LLM 任务期间用户可能已编辑其他章，
-          // 必须合并进最新 prev，不能拿 pre-await 快照整表覆盖
+          // 合并进最新 prev（同单条 AI 修）：正文被手动改动则放弃该条，计入失败
+          const latestCh = projectRef.current?.chapters.find((c) => c.id === ch.id) ?? ch;
+          const mergedChapter = mergeRewriteIntoLatest(latestCh, r.chapter, ch).chapter;
+          if (!mergedChapter) {
+            failed += 1;
+            failures.push(`第${ch.number}章：正文已被手动改动，本次结果未写入`);
+            continue;
+          }
           await handleUpdateAndPersistProject((prev) => ({
-            chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+            chapters: prev.chapters.map((c) => (c.id === ch.id ? mergedChapter : c)),
           }));
           success += 1;
         } catch (e: unknown) {
@@ -1113,6 +1136,10 @@ export function useChapterActions({
       setStatusMessage('⚠️ 生成进行中，请稍后再扫。');
       return;
     }
+    if (aiTasteScanBusy) {
+      setStatusMessage('⚠️ 已有扫描/去味任务进行中。');
+      return;
+    }
     const ch = proj.chapters.find((c) => c.id === activeChapterId);
     if (!ch) return;
     if (proseWords(ch.content) < 40) {
@@ -1123,9 +1150,13 @@ export function useChapterActions({
     setAiTasteScanMessage('正在扫描本章 AI 味…');
     try {
       const r = scanChapterAiTasteOnly(ch, proj.styleConfig, { writeTodos: true });
-      await handleUpdateAndPersistProject((prev) => ({
-        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
-      }));
+      const latest = projectRef.current?.chapters.find((c) => c.id === ch.id) ?? ch;
+      const mergedChapter = mergeRewriteIntoLatest(latest, r.chapter, ch).chapter;
+      if (mergedChapter) {
+        await handleUpdateAndPersistProject((prev) => ({
+          chapters: prev.chapters.map((c) => (c.id === ch.id ? mergedChapter : c)),
+        }));
+      }
       const msg = `本章 AI味 ${r.row.tier} · ${r.row.score}分 · ${r.row.summary}${
         r.todosAdded ? ` · 待修+${r.todosAdded}` : ''
       }`;
@@ -1149,6 +1180,10 @@ export function useChapterActions({
     if (!proj) return false;
     if (generatingLockRef.current) {
       setStatusMessage('⚠️ 生成进行中，请稍后再扫。');
+      return false;
+    }
+    if (aiTasteScanBusy) {
+      setStatusMessage('⚠️ 已有扫描/去味任务进行中。');
       return false;
     }
     if (!opts?.skipConfirm) {
@@ -1213,9 +1248,16 @@ export function useChapterActions({
         maxHits: n,
         onProgress: (m) => setAiTasteScanMessage(m),
       });
-      // 函数式更新：批量去味期间用户可能已编辑其他章，按 id 合并进最新 prev
+      // 合并进最新 prev：批量去味可能跑数分钟，正文被手动改动则放弃写入
+      const latest = projectRef.current?.chapters.find((c) => c.id === ch.id) ?? ch;
+      const mergedChapter = mergeRewriteIntoLatest(latest, r.chapter, ch).chapter;
+      if (!mergedChapter) {
+        setAiTasteScanMessage('正文已变更，本次去味结果未写入');
+        setStatusMessage('⚠️ 正文在去味期间已被你改动，本次结果未写入，请重试');
+        return;
+      }
       await handleUpdateAndPersistProject((prev) => ({
-        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? mergedChapter : c)),
       }));
       const errHint = r.errors.length ? ` · 失败 ${r.errors.length}` : '';
       const msg = `本章去味完成 · 成功 ${r.replaced}/${r.attempted} · ${r.tierBefore}→${r.tierAfter}${errHint}`;
@@ -1272,17 +1314,29 @@ export function useChapterActions({
         onProgress: (m) => setAiTasteScanMessage(m),
       });
 
-      // 函数式更新：全书去味耗时最长（可达 20 章×多次调用），
-      // 期间的用户编辑必须保留——按 id 把结果章合并进最新 prev，锁定章不动
+      // 全书去味耗时最长（可达 20 章×多次调用）：按 id 把结果章合并进最新 prev，
+      // 锁定章不动；某章正文若被手动改动过则跳过该章，绝不覆盖用户改动。
       const byId = new Map(r.chapters.map((c) => [c.id, c]));
+      const startedById = new Map(workChapters.map((c) => [c.id, c]));
+      let skippedChapters = 0;
       await handleUpdateAndPersistProject((prev) => ({
-        chapters: prev.chapters.map((c) =>
-          lockedIds.has(c.id) ? c : byId.get(c.id) || c
-        ),
+        chapters: prev.chapters.map((c) => {
+          if (lockedIds.has(c.id)) return c;
+          const rewritten = byId.get(c.id);
+          const startedFrom = startedById.get(c.id);
+          if (!rewritten || !startedFrom) return c;
+          const merged = mergeRewriteIntoLatest(c, rewritten, startedFrom).chapter;
+          if (!merged) {
+            skippedChapters += 1;
+            return c;
+          }
+          return merged;
+        }),
       }));
       const errHint = r.errors.length ? ` · 失败 ${r.errors.length}` : '';
       const skipLock = lockedIds.size ? ` · 跳过锁${lockedIds.size}` : '';
-      const msg = `全书去味 · 动 ${r.chaptersTouched} 章 · 替换 ${r.totalReplaced} 处${skipLock}${errHint}`;
+      const skipEdit = skippedChapters ? ` · 跳过已改动 ${skippedChapters}` : '';
+      const msg = `全书去味 · 动 ${r.chaptersTouched} 章 · 替换 ${r.totalReplaced} 处${skipLock}${skipEdit}${errHint}`;
       setAiTasteScanMessage(msg);
       setStatusMessage(`✨ ${msg}`);
     } catch (e: unknown) {
@@ -1354,9 +1408,16 @@ export function useChapterActions({
         setStatusMessage('未替换：正文未命中片段或改写无实质变化');
         return;
       }
-      // 函数式更新：合并进最新 prev，避免覆盖任务期间的用户编辑
+      // 合并进最新 prev：正文被手动改动则放弃写入，避免覆盖用户改动
+      const latest = projectRef.current?.chapters.find((c) => c.id === ch.id) ?? ch;
+      const mergedChapter = mergeRewriteIntoLatest(latest, r.chapter, ch).chapter;
+      if (!mergedChapter) {
+        setAiTasteScanMessage('正文已变更，本次去味结果未写入');
+        setStatusMessage('⚠️ 正文在去味期间已被你改动，本次结果未写入，请重试');
+        return;
+      }
       await handleUpdateAndPersistProject((prev) => ({
-        chapters: prev.chapters.map((c) => (c.id === ch.id ? r.chapter : c)),
+        chapters: prev.chapters.map((c) => (c.id === ch.id ? mergedChapter : c)),
       }));
       setFocusProseSnippet(r.after.slice(0, 40));
       setStatusMessage(

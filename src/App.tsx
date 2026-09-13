@@ -843,6 +843,7 @@ export default function App() {
 
         {activeTab === 'world' && (
           <WorldBibleTab
+            projectId={currentProject.id}
             characters={characters}
             settings={settings}
             chapters={chapters}

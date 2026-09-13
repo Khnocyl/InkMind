@@ -44,6 +44,18 @@ export const TitleReviewStep: React.FC<TitleReviewStepProps> = ({
   const [hooks, setHooks] = useState<string[]>(data.hooks || []);
   const [newHook, setNewHook] = useState('');
 
+  // 父级 AI 重生成后同步 props：否则本地 state 仍是旧值，点「下一步」会把旧值
+  // 回传给 handleGenerateCharacters 并整体落盘 → 刚生成的 AI 成果被静默覆盖。
+  // 只同步这 4 个来自 project 的字段：hooks / coreConflict 是父级传入的常量
+  // （hooks 恒为 []），同步它们反而会清空用户手动添加的钩子。
+  // 草稿自动落盘走 queueDraft（只写 localStorage、不改 project），故不会与本 effect 互触。
+  useEffect(() => {
+    setTitle((cur) => (cur === data.title ? cur : data.title));
+    setSubtitle((cur) => (cur === data.subtitle ? cur : data.subtitle));
+    setGenre((cur) => (cur === data.genre ? cur : data.genre));
+    setSynopsis((cur) => (cur === data.synopsis ? cur : data.synopsis));
+  }, [data.title, data.subtitle, data.genre, data.synopsis]);
+
   // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
   const draftMountedRef = useRef(false);
   useEffect(() => {

@@ -172,7 +172,18 @@ function machineFingerprint(): string {
       fp = fs.readFileSync('/etc/machine-id', 'utf-8').trim();
     }
   } catch {
-    // 指纹不可得时降级为 hostname（弱一些但稳定，保证功能可用）
+    // 指纹不可得时降级为 hostname（弱一些但稳定，保证功能可用）——见下方醒目告警
+  }
+  if (!fp) {
+    // 必须醒目告警：hostname / username 都是低熵可猜测信息，此时
+    // 「拷贝 .novel-data 到别处无法解密」的安全承诺不再成立，可被离线暴力枚举。
+    // 不直接 fail-closed 是因为受限沙箱/容器下会让应用完全不可用，代价过大；
+    // 但绝不能像此前那样静默降级。
+    console.warn(
+      '⚠️ [安全] 无法读取机器指纹（Windows MachineGuid / macOS IOPlatformUUID / Linux machine-id），' +
+        '已降级为 hostname 派生密钥。加密强度显著下降：hostname 与用户名均为低熵可猜测信息，' +
+        '.novel-data 目录被拷走后可能被离线暴力破解。请检查系统权限或容器/沙箱环境。'
+    );
   }
   cachedFingerprint = fp || os.hostname() || 'unknown-host';
   return cachedFingerprint;
@@ -902,7 +913,7 @@ export async function createEmbeddings(
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(LLM_UPSTREAM_TIMEOUT_MS),
   });
-  assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
+  await assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Embedding 失败 [${response.status}]: ${text.slice(0, 400)}`);
@@ -1046,7 +1057,7 @@ export async function listLLMModels(options?: {
         headers,
         signal: AbortSignal.timeout(30_000),
       });
-      assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
+      await assertSafeUrl(response.url || endpoint); // 重定向复检（P3-2）
       const text = await response.text();
       if (!response.ok) {
         lastError = `[${response.status}] ${text.slice(0, 400)}`;
@@ -1251,6 +1262,11 @@ export async function callLLMService(options: {
     } catch (err: any) {
       // 客户端主动断开：直接上抛；其余网络异常按可重试处理
       if (options.signal?.aborted) throw err;
+      // 上游硬超时（AbortSignal.timeout → name='TimeoutError'）**不重试**：
+      // 单次尝试预算就是 LLM_UPSTREAM_TIMEOUT_MS（默认 10 分钟），重试 4 次意味着
+      // 一个挂死上游可占用并发槽约 40 分钟，而全局并发上限默认仅 4——客户端早已
+      // 放弃，后端仍在持续烧上游（且前端已无机会收到结果）。超时不是「稍后重试可解」。
+      if ((err as { name?: string } | null)?.name === 'TimeoutError') throw err;
       if (attempt >= maxAttempts) throw err;
       const delay = [2000, 8000, 20000][attempt - 1] ?? 8000;
       console.warn(
@@ -1260,7 +1276,7 @@ export async function callLLMService(options: {
       continue;
     }
     // 重定向复检（P3-2）：在重试环外抛出，安全违规绝不重试盲打
-    assertSafeUrl(response.url || endpoint);
+    await assertSafeUrl(response.url || endpoint);
 
     if (response.ok) break;
 

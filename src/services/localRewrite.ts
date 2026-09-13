@@ -6,6 +6,7 @@ import {
   formatStyleConstraintsForRewrite,
   getActiveStyleProfile,
 } from './styleImitate';
+import { normalizeProseSymbols } from './deslop/normalizePunctuation';
 
 export type LocalRewriteAction =
   | 'remove_cliche'
@@ -160,6 +161,9 @@ ${selected}`;
     if (lines[lines.length - 1]?.startsWith('```')) lines.pop();
     text = lines.join('\n').trim();
   }
+
+  // 符号收口：LLM 改写常吐直角引号「」/半角引号，与落盘正文规范不一致
+  text = normalizeProseSymbols(text).text;
 
   return { text, mutates };
 }

@@ -46,6 +46,16 @@ export const CharactersReviewStep: React.FC<CharactersReviewStepProps> = ({
   const [characters, setCharacters] = useState<Character[]>(initialChars);
   const [activeCharId, setActiveCharId] = useState<string>(initialChars[0]?.id || '');
 
+  // 父级 AI 重新推导全员后同步 props（否则本地仍是旧数组，点「下一步」会把旧数组
+  // 回传给 handleGenerateWorld 并整体落盘 → AI 成果被静默覆盖）。
+  // 引用未变则不 setState，避免无谓重渲染；选中角色若已不在新数组中则回落到首个。
+  useEffect(() => {
+    setCharacters((cur) => (cur === initialChars ? cur : initialChars));
+    setActiveCharId((cur) =>
+      initialChars.some((c) => c.id === cur) ? cur : initialChars[0]?.id || ''
+    );
+  }, [initialChars]);
+
   // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
   const draftMountedRef = useRef(false);
   useEffect(() => {

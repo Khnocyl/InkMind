@@ -446,9 +446,6 @@ export function retrieveMemoryForChapter(input: MemoryQueryInput): MemoryRetriev
       .filter((x) => x.score > 0.2)
       .sort((a, b) => b.score - a.score);
     if (boosted.length) {
-      const merged = new Map<string, StorySpanDigest>();
-      for (const d of digests) merged.set(d.id, d);
-      for (const b of boosted.slice(0, maxDigests)) merged.set(b.d.id, b.d);
       // 保持 selectRelevant 的分层配额优先，语义只补充
       digests = [
         ...digests,

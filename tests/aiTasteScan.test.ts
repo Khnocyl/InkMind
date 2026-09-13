@@ -147,6 +147,17 @@ describe('scanAiTastePatterns Gate E 对话标签', () => {
     const e = r.hits.find((h) => h.phrase.startsWith('[E]'));
     expect(e).toBeDefined();
   });
+
+  it('「说道」整词匹配：「知道/道理/说破」中的单字不计入对白标签', () => {
+    // 4 行对白、零个真实「X道/X说」式标签；若 [说道] 仍按字符类匹配，
+    // 「不知道/道理/说破」里的 3 个单字会把 ratio 抬到 0.75 误触 [E]
+    const prose =
+      '“先吃饭。”他放下筷子。\n“不去。”她背过身。\n“理由？”他不知道的是门外的脚步声，也没说破。\n“没理由。”道理讲完了。';
+    const r = scanAiTastePatterns(prose);
+    expect(r.metrics.dialogueLines).toBeGreaterThanOrEqual(4);
+    const e = r.hits.find((h) => h.phrase.startsWith('[E]'));
+    expect(e).toBeUndefined();
+  });
 });
 
 describe('scanAiTastePatterns Gate F 碎句连发', () => {

@@ -74,6 +74,15 @@ describe('llmResilience · 基础判定', () => {
     expect(isRetryableError(new Error('AI 生成请求失败'))).toBe(false);
   });
 
+  it('TimeoutError 可带自定义文案，且仍判定为可重试（流式空闲超时依赖此点）', () => {
+    const e = new TimeoutError(1000, '流式响应空闲超时（连接中断）');
+    expect(e.message).toBe('流式响应空闲超时（连接中断）');
+    expect(e.timeoutMs).toBe(1000);
+    // 普通 Error 的中文文案匹配不上重试正则，所以空闲超时必须用 TimeoutError 承载
+    expect(isRetryableError(e)).toBe(true);
+    expect(isRetryableError(new Error('流式响应空闲超时（连接中断）'))).toBe(false);
+  });
+
   it('退避单调递增且 ≥ 1ms', () => {
     const d1 = backoffDelayMs(600, 1);
     const d2 = backoffDelayMs(600, 2);
@@ -335,6 +344,27 @@ describe('llmClient · generateStream 中断恢复', () => {
     // 已产出「甲乙」→ 返回全部已有内容，不重试
     expect(text).toBe('甲乙');
     expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('上游错误帧（已有产出）→ 返回部分内容且不重试（防正文重复 + 重复计费）', async () => {
+    const mock = vi.fn(async () =>
+      sseResponse([
+        'data: {"chunk":"甲"}\n\ndata: {"chunk":"乙"}\n\ndata: {"error":"上游 503 unavailable"}\n\n',
+      ])
+    );
+    vi.stubGlobal('fetch', mock);
+    const chunks: string[] = [];
+    const text = await generateStream(
+      [{ role: 'user', content: 'hi' }],
+      0.7,
+      (c) => chunks.push(c),
+      undefined,
+      { retryDelayMs: 1 }
+    );
+    expect(text).toBe('甲乙');
+    // 关键：不重跑 streamOnce（否则 onChunk 二次推送 → 正文重复段落 + 上游二次计费）
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(chunks.join('')).toBe('甲乙');
   });
 });
 

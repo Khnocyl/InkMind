@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   CURRENT_SCHEMA_VERSION,
+  MIGRATIONS,
   migrateProjectToLatest,
 } from '../src/services/migrations';
 import type { BookProject } from '../src/types/novel';
@@ -73,5 +74,30 @@ describe('migrateProjectToLatest', () => {
     expect(r.project.title).toBe('保持书名');
     expect(r.project.chapters).toHaveLength(1);
     expect(r.project.id).toBe('p-mig');
+  });
+});
+
+describe('migrateProjectToLatest · 迁移必须推进 schemaVersion（防重复迁移）', () => {
+  const originalV0 = MIGRATIONS[0];
+  afterEach(() => {
+    MIGRATIONS[0] = originalV0;
+  });
+
+  it('迁移函数忘记推进 schemaVersion → 抛错而不是静默返回', () => {
+    // 危险场景：迁移只改字段、漏写 schemaVersion。若不拦，项目会带旧版本号落盘，
+    // 于是每次加载都重跑这条迁移；非幂等的迁移（重命名/拆分合并）会逐次累积损坏数据。
+    MIGRATIONS[0] = {
+      name: 'bad-no-version-bump',
+      fn: (p) => ({ ...p, title: '被改过' }),
+    };
+    expect(() => migrateProjectToLatest(makeProject())).toThrow(/未把 schemaVersion 推进/);
+  });
+
+  it('迁移把版本号推进过头（跳过一级）同样抛错', () => {
+    MIGRATIONS[0] = {
+      name: 'bad-overshoot',
+      fn: (p) => ({ ...p, schemaVersion: CURRENT_SCHEMA_VERSION + 5 }),
+    };
+    expect(() => migrateProjectToLatest(makeProject())).toThrow(/未把 schemaVersion 推进/);
   });
 });

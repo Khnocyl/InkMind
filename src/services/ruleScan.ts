@@ -392,7 +392,25 @@ export function ruleScanProse(
   };
 }
 
-/** 将机检结果压成 audit 友好的短语列表 */
+const formatHitPhrase = (h: RuleHit): string =>
+  h.count > 1 ? `${h.phrase}×${h.count}` : h.phrase;
+
+/** 将机检结果压成 audit 友好的短语列表（全部命中，含字数/开篇同质等结构性诊断） */
 export function ruleScanHitPhrases(result: RuleScanResult): string[] {
-  return result.hits.map((h) => (h.count > 1 ? `${h.phrase}×${h.count}` : h.phrase));
+  return result.hits.map(formatHitPhrase);
+}
+
+/**
+ * 「套话 / 模式命中」短语——供 UI 的「套话 / 模式命中列表」使用。
+ *
+ * 排除 `length`（字数不足 N/M）与 `echo`（开篇同质 N）：这两类是**结构性诊断**，
+ * 短语里还带数字，不是被拦下的表达。此前 `mergeRuleScanIntoAudit` 直接用了
+ * `ruleScanHitPhrases`（不过滤），于是用户会在带删除线的套话列表里看到
+ * 「字数不足1234/2000」「开篇同质35」这类条目。
+ * 保留 blacklist（套话）/ sublimation（章末升华）/ tell（情绪标签）/ pattern（句式节奏）。
+ */
+export function ruleScanClichéPhrases(result: RuleScanResult): string[] {
+  return result.hits
+    .filter((h) => h.kind !== 'length' && h.kind !== 'echo')
+    .map(formatHitPhrase);
 }

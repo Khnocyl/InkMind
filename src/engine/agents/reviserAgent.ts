@@ -15,8 +15,8 @@ import {
 import type { ConflictFixLoopResult } from '../../services/aiEngine';
 import type { RuleScanResult } from '../../services/ruleScan';
 import type { AgentContext } from '../types';
-import { validatePostWrite, type EngineViolation } from '../discipline';
-import { resolveAllowEmDash } from '../../services/styleImitate';
+import { validatePostWrite, collectSpeakerNames, type EngineViolation } from '../discipline';
+import { resolveAllowEmDash, resolveStyleHardRules } from '../../services/styleImitate';
 
 export interface ReviserOutput {
   prose: string;
@@ -108,6 +108,10 @@ export async function runReviserAgent(
 
   // 文风豁免：与 Auditor 同口径（档案以省略号/破折号为节奏器官时放松禁令）
   const allowEmDash = resolveAllowEmDash(styleConfig);
+  // 文风硬规：与 Auditor 同口径（激活档案声明才生效）
+  const hardRules = resolveStyleHardRules(styleConfig);
+  const speakerNames = collectSpeakerNames(characters, chapter.involvedCharacterIds);
+  const pwOpts = { allowEmDash, hardRules, speakerNames };
 
   // ── 能力②安全阀：审稿结论不可信 → 冻结全部自动修稿，原文原结论直通绿通判定 ──
   if (auditLogIn.auditUnreliable) {
@@ -116,7 +120,7 @@ export async function runReviserAgent(
       prose: proseIn,
       auditLog: auditLogIn,
       ruleScan: ruleScanIn,
-      postWriteViolations: validatePostWrite(proseIn, { allowEmDash }),
+      postWriteViolations: validatePostWrite(proseIn, pwOpts),
       reviseRounds: 0,
     };
   }
@@ -131,7 +135,7 @@ export async function runReviserAgent(
       prose,
       auditLog,
       ruleScan,
-      postWriteViolations: validatePostWrite(prose, { allowEmDash }),
+      postWriteViolations: validatePostWrite(prose, pwOpts),
       reviseRounds: 0,
     };
   }
@@ -307,7 +311,7 @@ export async function runReviserAgent(
     };
   }
 
-  const postWriteViolations = validatePostWrite(prose, { allowEmDash });
+  const postWriteViolations = validatePostWrite(prose, pwOpts);
   // 确定性写后校验是最终裁决：LLM 硬伤复检不认识这些纪律规则（禁止句式/破折号等），
   // 若复检把 auditor 设的 hardBlocked 清掉了而违规仍在 → 在此重新设卡并压分，与 auditor 同口径
   if (postWriteViolations.some((v) => v.severity === 'error')) {

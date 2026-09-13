@@ -53,6 +53,15 @@ describe('applyLocalPatches', () => {
     expect(r.failed).toBe(0);
     expect(r.text).toBe('正文');
   });
+
+  it('after 含 $ 替换模式序列（$&/$1 等）时按字面插入，不解释', () => {
+    const prose = '他从口袋里掏出一些东西放在桌上。';
+    const r = applyLocalPatches(prose, [
+      { before: '掏出一些东西', after: '掏出 $100 美金和 $& 符号' },
+    ]);
+    expect(r.applied).toBe(1);
+    expect(r.text).toBe('他从口袋里掏出 $100 美金和 $& 符号放在桌上。');
+  });
 });
 
 describe('diffProseBlocks', () => {

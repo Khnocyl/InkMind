@@ -68,11 +68,15 @@ export function invalidateEmbeddingConfigCache(): void {
 
 // ─── Embedding API 调用 ────────────────────────────────────────────────
 
+/** Embedding 请求超时：后端挂死时不能无限等待（检索有本地 TF-IDF 降级兜底） */
+const EMBED_TIMEOUT_MS = 30_000;
+
 async function embedTexts(texts: string[]): Promise<number[][]> {
   const res = await fetch('/api/embedding/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ texts }),
+    signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error || 'Embedding 调用失败');
@@ -99,6 +103,24 @@ const memCaches = new Map<string, ProjectVecCache>();
 /** 同项目并发的检索请求共享执行，防止重复 embed */
 const inFlight = new Map<string, Promise<SemanticBoostResult>>();
 
+/**
+ * 内存向量缓存条目上限（按 项目:模型:维度 计）。
+ * 每个条目持有该书全部文档的 Float32Array；此前只 set 不淘汰，
+ * 多书/多模型切换后进程内存单调上涨（事实上的内存泄漏）。
+ */
+const MEM_CACHE_MAX = 6;
+
+/** 写入内存缓存并维护 LRU：触碰即置为最近使用，超限淘汰最久未用者 */
+function setMemCache(key: string, cache: ProjectVecCache): void {
+  memCaches.delete(key);
+  memCaches.set(key, cache);
+  while (memCaches.size > MEM_CACHE_MAX) {
+    const oldest = memCaches.keys().next().value;
+    if (oldest === undefined) break;
+    memCaches.delete(oldest);
+  }
+}
+
 function hashText(text: string): number {
   let h = 5381;
   for (let i = 0; i < text.length; i++) {
@@ -120,7 +142,10 @@ async function loadVecCache(
 ): Promise<ProjectVecCache> {
   const key = cacheKey(projectId, model, dims);
   const mem = memCaches.get(key);
-  if (mem) return mem;
+  if (mem) {
+    setMemCache(key, mem); // 触碰即置为最近使用（LRU）
+    return mem;
+  }
   try {
     const db = await initDB();
     const value = await new Promise<unknown>((resolve, reject) => {
@@ -131,14 +156,14 @@ async function loadVecCache(
     });
     const parsed = value as ProjectVecCache | null;
     if (parsed && parsed.model === model && parsed.entries) {
-      memCaches.set(key, parsed);
+      setMemCache(key, parsed);
       return parsed;
     }
   } catch {
     // 缓存读失败不致命：退化为全量 embed
   }
   const fresh: ProjectVecCache = { model, entries: {} };
-  memCaches.set(key, fresh);
+  setMemCache(key, fresh);
   return fresh;
 }
 
@@ -148,7 +173,7 @@ async function saveVecCache(
   dims?: number | null
 ): Promise<void> {
   const key = cacheKey(projectId, cache.model, dims);
-  memCaches.set(key, cache);
+  setMemCache(key, cache);
   try {
     const db = await initDB();
     await new Promise<void>((resolve, reject) => {

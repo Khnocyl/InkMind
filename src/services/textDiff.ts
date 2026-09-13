@@ -3,6 +3,9 @@
  * 不做 Myers 全量 diff，优先可读性与体积。
  */
 
+import { proseWords } from './proseWords';
+
+
 export interface DiffHunk {
   /** 变更类型 */
   kind: 'equal' | 'remove' | 'add' | 'replace';
@@ -175,10 +178,11 @@ export function applyLocalPatches(
       failedDetails.push({ before: before.slice(0, 60), reason: 'not_found' });
       continue;
     }
-    // 只替换首次出现，避免误伤
-    text = text.replace(before, after);
+    // 只替换首次出现，避免误伤。
+    // after 必须经函数返回：字符串形式的替换模式里 `$&`/`` $` ``/`$'`/`$1` 会被
+    // 特殊解释（模型改写含「他掏出$100」这类文本时会直接损坏正文）
+    text = text.replace(before, () => after);
     applied++;
   }
   return { text, applied, failed, failedDetails };
-}import { proseWords } from './proseWords';
-
+}

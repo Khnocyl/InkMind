@@ -6,6 +6,7 @@ import {
   GenerationAbortedError,
   isGenerationAborted,
   SchemaMismatchError,
+  TimeoutError,
   type RetryOptions,
 } from './llmResilience';
 import { salvageJsonParse } from './jsonRepair';
@@ -59,25 +60,19 @@ export interface EmbeddingConfigPublic {
 }
 
 export async function getLLMConfig(): Promise<BackendLLMConfig> {
+  // 后端失败 / 非 JSON / 业务错误一律如实上抛。此前 catch 后静默返回一套硬编码
+  // deepseek 默认配置，设置页会把「后端不可用」误显示成一套不存在的当前配置
+  const res = await fetch('/api/config/llm');
+  let data: { success?: boolean; error?: string; data?: BackendLLMConfig };
   try {
-    const res = await fetch('/api/config/llm');
-    const data = await res.json();
-    if (data.success) {
-      return data.data;
-    }
-    throw new Error(data.error || '获取 LLM 配置失败');
-  } catch (err: any) {
-    console.error('Failed to get LLM config:', err);
-    return {
-      provider: 'deepseek',
-      baseURL: 'https://api.deepseek.com',
-      modelName: 'deepseek-chat',
-      temperature: 0.7,
-      hasKey: false,
-      maskedKey: '',
-      profiles: [],
-    };
+    data = await res.json();
+  } catch {
+    throw new Error(`获取 LLM 配置失败：响应非 JSON（HTTP ${res.status}）`);
   }
+  if (!data?.success || !data.data) {
+    throw new Error(data?.error || `获取 LLM 配置失败（HTTP ${res.status}）`);
+  }
+  return data.data;
 }
 
 export async function saveLLMConfig(config: {
@@ -400,7 +395,10 @@ export async function generateJSON<T>(
           }),
         },
         timeoutMs,
-        signal
+        signal,
+        // 非流式：响应头到达后的 body 读取阶段同样给一个超时预算，
+        // 防服务端在 headers 后卡住导致前端无限挂起（流式调用不传）
+        timeoutMs
       );
 
       try {
@@ -510,7 +508,10 @@ export async function generateText(
           }),
         },
         timeoutMs,
-        signal
+        signal,
+        // 非流式：响应头到达后的 body 读取阶段同样给一个超时预算，
+        // 防服务端在 headers 后卡住导致前端无限挂起（流式调用不传）
+        timeoutMs
       );
 
       try {
@@ -763,12 +764,46 @@ async function streamOnce(
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      for (const line of lines) await consumeLine(line);
+      for (const line of lines) {
+        try {
+          await consumeLine(line);
+        } catch (err) {
+          // 用户主动停止：原样上抛
+          if (isGenerationAborted(err)) throw err;
+          await releaseReader();
+          // 上游错误帧（consumeLine 内已 releaseReader）：已产出则保留部分并收尾。
+          // 此前直接 throw → withRetry 重跑 streamOnce 会二次 onChunk，造成正文
+          // 重复段落，同时上游被第二次完整调用（重复计费）。未产出才抛错重试。
+          if (bytesProduced > 0) {
+            if (onProgress) {
+              onProgress(`⚠️ 上游返回错误，已保留已生成部分（${fullContent.length} 字）`);
+            }
+            return { text: fullContent, bytesProduced };
+          }
+          throw err;
+        }
+      }
     }
 
     // 流末冲刷：取出 TextDecoder 残留的半个多字节字符 + 处理 buffer 里最后一条无换行结尾的行
     buffer += decoder.decode();
-    if (buffer) await consumeLine(buffer);
+    if (buffer) {
+      try {
+        await consumeLine(buffer);
+      } catch (err) {
+        // 与循环内错误帧同口径：中止原样上抛；已产出内容不整体重试
+        //（withRetry 重跑 streamOnce 会二次 onChunk 造成正文重复），保留部分收尾
+        if (isGenerationAborted(err)) throw err;
+        await releaseReader();
+        if (bytesProduced > 0) {
+          if (onProgress) {
+            onProgress(`⚠️ 上游返回错误，已保留已生成部分（${fullContent.length} 字）`);
+          }
+          return { text: fullContent, bytesProduced };
+        }
+        throw err;
+      }
+    }
 
     return { text: fullContent, bytesProduced };
   } finally {
@@ -791,7 +826,9 @@ async function readWithIdleTimeout(
   let onAbort: (() => void) | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error('流式响应空闲超时（连接中断）'));
+      // 抛 TimeoutError（而非普通 Error）：isRetryableError 显式判真它，
+      // 而普通 Error 的中文 message 匹配不上重试正则 →「0 字节失败可重连」形同虚设。
+      reject(new TimeoutError(idleTimeoutMs, '流式响应空闲超时（连接中断）'));
     }, idleTimeoutMs);
   });
   let abortPromise: Promise<never> | null = null;

@@ -6,7 +6,6 @@ import type {
   Chapter,
   Character,
   ChapterIntent,
-  HardReviewIssue,
   MemoryAuditLog,
   PlotBeat,
   ProgressionReviewResult,
@@ -19,23 +18,21 @@ import {
   countProseWords,
 } from '../../services/wordCount';
 import {
+  hardIssuesToConflicts,
   isHardReviewApiBlock,
+  mergeRuleScanIntoAudit,
   runHardReview,
   runProgressionReview,
   runStyleReview,
   step3_CriticVerify,
+  styleSuggestionsToConflicts,
   summarizePolishDiff,
-  toRuleScanAudit,
 } from '../../services/aiEngine';
-import {
-  ruleScanHitPhrases,
-  ruleScanProse,
-  type RuleScanResult,
-} from '../../services/ruleScan';
+import type { RuleScanResult } from '../../services/ruleScan';
 import type { PreviousContextPack } from '../../services/contextPack';
 import type { AgentContext } from '../types';
-import { validatePostWrite, type EngineViolation } from '../discipline';
-import { resolveAllowEmDash } from '../../services/styleImitate';
+import { validatePostWrite, collectSpeakerNames, type EngineViolation } from '../discipline';
+import { resolveAllowEmDash, resolveStyleHardRules } from '../../services/styleImitate';
 
 export interface AuditorOutput {
   prose: string;
@@ -54,6 +51,9 @@ export async function runAuditorAgent(
 
   // 文风豁免：档案声明省略号/破折号为风格器官时，放松对应确定性禁令
   const allowEmDash = resolveAllowEmDash(styleConfig);
+  // 文风硬规（如番茄平台纪律）：激活档案声明才生效，与 allowEmDash 同范式
+  const hardRules = resolveStyleHardRules(styleConfig);
+  const speakerNames = collectSpeakerNames(characters, chapter.involvedCharacterIds);
 
   report('audit', `第${chapter.number}章 · [Auditor] 双阶段审校…`);
 
@@ -158,7 +158,11 @@ export async function runAuditorAgent(
   }
 
   report('post_validate', `[Validator] 确定性写后校验…`);
-  const postWriteViolations = validatePostWrite(prose, { allowEmDash });
+  const postWriteViolations = validatePostWrite(prose, {
+    allowEmDash,
+    hardRules,
+    speakerNames,
+  });
   if (postWriteViolations.length) {
     // 并入 audit 逻辑冲突，供 reviser 消费
     const extra = postWriteViolations.map((v) => ({
@@ -175,7 +179,8 @@ export async function runAuditorAgent(
       auditLog = {
         ...auditLog,
         verificationScore: Math.min(auditLog.verificationScore ?? 100, 70),
-        hardBlocked: auditLog.hardBlocked || true,
+        // error 级写后违规：确定性置为硬阻断（原写法 `x || true` 恒为 true，左操作数无意义）
+        hardBlocked: true,
       };
     }
     report(
@@ -224,30 +229,6 @@ export interface AuditExistingProseResult {
   auditLog: MemoryAuditLog;
   ruleScan: RuleScanResult;
   postWriteViolations: EngineViolation[];
-}
-
-/** 硬伤 issue → logicConflicts（与 aiEngine.hardIssuesToConflicts 同构，此处私有实现） */
-function toHardConflicts(
-  issues: HardReviewIssue[]
-): MemoryAuditLog['logicConflicts'] {
-  return issues.map((i) => ({
-    type: i.type as MemoryAuditLog['logicConflicts'][0]['type'],
-    description: i.description,
-    suggestion: i.suggestion,
-    lane: 'hard' as const,
-  }));
-}
-
-/** 文笔建议 → style 软线索 conflicts（与 aiEngine 的 styleSoftConflicts 同构） */
-function toStyleConflicts(
-  suggestions: string[]
-): MemoryAuditLog['logicConflicts'] {
-  return (suggestions || []).slice(0, 4).map((s) => ({
-    type: '行文套路' as const,
-    description: `[文笔建议] ${s}`,
-    suggestion: '可在画布划线精修或接受润色稿；不阻断定稿',
-    lane: 'style' as const,
-  }));
 }
 
 /**
@@ -311,8 +292,8 @@ export async function auditExistingProse(
     removedClichésList: style.removedClichésList,
     removedSublimationsCount: style.removedSublimationsCount,
     logicConflicts: [
-      ...toHardConflicts(hard.issues),
-      ...toStyleConflicts(style.suggestions),
+      ...hardIssuesToConflicts(hard.issues),
+      ...styleSuggestionsToConflicts(style.suggestions),
     ],
     verificationScore: Math.round(hard.score * 0.55 + style.score * 0.45),
     hardReview: hard,
@@ -326,45 +307,18 @@ export async function auditExistingProse(
       progressionBlocked && progression ? progression.summary : undefined,
   };
 
-  // 写后规则机检（零 LLM，对当前正文复扫）——与 aiEngine.mergeRuleScanIntoAudit 同构
-  const ruleScan = ruleScanProse(prose, styleConfig, {
-    previousProse: options.previousProse || undefined,
-    targetWordCount: options.targetWordCount || undefined,
-  });
-  const audit = toRuleScanAudit(ruleScan);
-  const machinePhrases = ruleScanHitPhrases(ruleScan);
-  const llmList = auditLog.removedClichésList || [];
-  const mergedList = [...new Set([...machinePhrases, ...llmList])];
-  const taste = 'aiTaste' in ruleScan ? ruleScan.aiTaste : undefined;
-  auditLog = {
-    ...auditLog,
-    ruleScan: audit,
-    ruleScanBlocked: !ruleScan.passed,
-    removedClichesCount: Math.max(auditLog.removedClichesCount || 0, ruleScan.blacklistHits),
-    removedClichésList: mergedList,
-    removedSublimationsCount: Math.max(
-      auditLog.removedSublimationsCount || 0,
-      ruleScan.sublimationHits
-    ),
-    aiTasteTier: taste?.tier,
-    aiTasteSummary: taste?.summary,
-    aiTasteScore: taste?.score,
-    verificationScore: ruleScan.passed
-      ? Math.min(auditLog.verificationScore, Math.max(ruleScan.score, auditLog.verificationScore - 5))
-      : Math.min(auditLog.verificationScore, ruleScan.score, 72),
-  };
-  const machineConflicts = ruleScan.hits
-    .filter((h) => h.severity === 'error')
-    .map((h) => ({
-      type: '行文套路' as const,
-      description: `[规则机检·${h.kind}] ${h.phrase}${
-        h.sample && h.sample !== h.phrase ? `（例：${h.sample}）` : ''
-      } ×${h.count}`,
-      suggestion: h.suggestion,
-    }));
-  if (machineConflicts.length > 0) {
-    auditLog.logicConflicts = [...(auditLog.logicConflicts || []), ...machineConflicts];
-  }
+  // 写后规则机检（零 LLM，对当前正文复扫）：复用 aiEngine 的共享实现。
+  // 此前这里是逐字相同的内联副本——任一侧调整压分阈值（如 72/68/70）就会造成
+  // 「同一正文，重跑本审与管线审校结论不一致」。
+  const merged = mergeRuleScanIntoAudit(
+    auditLog,
+    styleConfig,
+    prose,
+    options.previousProse,
+    options.targetWordCount
+  );
+  auditLog = merged.auditLog;
+  const ruleScan = merged.ruleScan;
   // 硬伤未过时压分并禁止虚高（同 step3_CriticVerify）
   if (!hard.passed) {
     auditLog.verificationScore = Math.min(auditLog.verificationScore, hard.score, 68);
@@ -374,9 +328,13 @@ export async function auditExistingProse(
     auditLog.verificationScore = Math.min(auditLog.verificationScore, 70);
   }
 
-  // 确定性写后校验（同 runAuditorAgent 尾部）
+  // 确定性写后校验（同 runAuditorAgent 尾部；含文风硬规同口径）
   onProgress?.(' [复核] 确定性写后校验…');
-  const postWriteViolations = validatePostWrite(prose, { allowEmDash });
+  const postWriteViolations = validatePostWrite(prose, {
+    allowEmDash,
+    hardRules: resolveStyleHardRules(styleConfig),
+    speakerNames: collectSpeakerNames(options.characters, chapter.involvedCharacterIds),
+  });
   if (postWriteViolations.length) {
     const extra = postWriteViolations.map((v) => ({
       type: '其他硬伤' as const,
@@ -392,7 +350,7 @@ export async function auditExistingProse(
       auditLog = {
         ...auditLog,
         verificationScore: Math.min(auditLog.verificationScore ?? 100, 70),
-        hardBlocked: auditLog.hardBlocked || true,
+        hardBlocked: true,
       };
     }
   }

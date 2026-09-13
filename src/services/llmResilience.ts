@@ -26,8 +26,8 @@ export const DEFAULT_TIMEOUT_MS = 300_000;
 /** 超时专用错误（可重试） */
 export class TimeoutError extends Error {
   readonly timeoutMs: number;
-  constructor(timeoutMs: number) {
-    super(`请求超时（${timeoutMs}ms）`);
+  constructor(timeoutMs: number, message?: string) {
+    super(message ?? `请求超时（${timeoutMs}ms）`);
     this.name = 'TimeoutError';
     this.timeoutMs = timeoutMs;
   }
@@ -118,7 +118,7 @@ export function releaseResponseAbort(res: Response): void {
 }
 
 /**
- * 带超时的 fetch（响应头到达前超时）+ 可选外部中止信号。
+ * 带超时的 fetch（响应头到达前超时）+ 可选外部中止信号 + 可选 body 阶段超时。
  * - 超时通过内部 AbortController 中断，抛 TimeoutError（可重试）；
  * - 外部 signal 中止（用户停止）抛 GenerationAbortedError（不可重试）；
  * - 两者任一触发都会中断同一请求。
@@ -127,12 +127,16 @@ export function releaseResponseAbort(res: Response): void {
  * （`res.json()`），那才是真正的生成等待期。此前在 finally 里一并摘除，导致
  * 「停止」对非流式调用无效、且 body 阶段没有任何超时。读完 body 请调用
  * `releaseResponseAbort(res)` 释放监听。
+ *
+ * `bodyTimeoutMs`：非流式调用传入，给 body 读取阶段补一个超时预算（见下）。
+ * 流式调用**不要传**——流式 body 长时间持续输出是正常的，由流空闲超时负责。
  */
 export async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
   timeoutMs: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  bodyTimeoutMs?: number
 ): Promise<Response> {
   if ((!timeoutMs || timeoutMs <= 0) && !signal) {
     return fetch(input, init);
@@ -151,8 +155,18 @@ export async function fetchWithTimeout(
     const res = await fetch(input, { ...init, signal: controller.signal });
     // 响应头已到达：解除「头超时」，但保留外部中止监听直到 body 读完
     if (timer) clearTimeout(timer);
-    if (signal) {
-      responseAbortHandles.set(res, () => signal.removeEventListener('abort', onExternalAbort));
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    if (bodyTimeoutMs && bodyTimeoutMs > 0) {
+      // 非流式调用真正等待生成发生在 body 读取（res.json()）阶段：头到达后若服务端
+      // 卡住，此前没有任何超时（只能等服务端自己的上游超时）。这里补一个 body 阶段
+      // 预算；超时即 abort，表现为 AbortError（isRetryableError 视为可重试）。
+      bodyTimer = setTimeout(() => controller.abort(), bodyTimeoutMs);
+    }
+    if (signal || bodyTimer) {
+      responseAbortHandles.set(res, () => {
+        if (bodyTimer) clearTimeout(bodyTimer);
+        if (signal) signal.removeEventListener('abort', onExternalAbort);
+      });
     }
     return res;
   } catch (err) {

@@ -199,7 +199,8 @@ export async function createSnapshot(
     const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
     tx.objectStore(STORE_SNAPSHOTS).put(snap);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('快照事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('快照事务中止'));
   });
 
   if (options.prune !== false) {
@@ -212,16 +213,29 @@ export async function createSnapshot(
   return meta;
 }
 
-/** 列出某书快照（新→旧），不含 project 大字段以减负——仍从整行 map 抽出 meta */
+/** 列出某书快照（新→旧）。用 cursor 逐条抽 meta：不把整行（含 projectGz）一次性读进内存 */
 export async function listSnapshots(projectId: string): Promise<ProjectSnapshotMeta[]> {
   const db = await initDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_SNAPSHOTS, 'readonly');
     const idx = tx.objectStore(STORE_SNAPSHOTS).index('by_project');
-    const req = idx.getAll(IDBKeyRange.only(projectId));
+    const metas: ProjectSnapshotMeta[] = [];
+    // 此前用 idx.getAll()：注释声称「不含 project 大字段以减负」，但 getAll 返回的是
+    // **完整记录**，projectGz 全被读入内存。pruneSnapshots 每次建快照都调本函数，
+    // 于是每次保存快照都会把该书全部快照（含 gzip 全书）读一遍——30 份 × 数 MB
+    // 可产生上百 MB 瞬时内存。改用 cursor：逐条处理、及时丢弃重字段。
+    const req = idx.openCursor(IDBKeyRange.only(projectId));
     req.onsuccess = () => {
-      const rows = (req.result || []) as ProjectSnapshot[];
-      const metas: ProjectSnapshotMeta[] = rows.map((s) => ({
+      const cursor = req.result;
+      if (!cursor) {
+        metas.sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        resolve(metas);
+        return;
+      }
+      const s = cursor.value as ProjectSnapshot;
+      metas.push({
         id: s.id,
         projectId: s.projectId,
         createdAt: s.createdAt,
@@ -232,11 +246,8 @@ export async function listSnapshots(projectId: string): Promise<ProjectSnapshotM
         chapterTitle: s.chapterTitle,
         chapterCount: s.chapterCount,
         totalWords: s.totalWords,
-      }));
-      metas.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      resolve(metas);
+      });
+      cursor.continue();
     };
     req.onerror = () => reject(req.error);
   });
@@ -312,7 +323,8 @@ export async function setSnapshotCap(
       store.put({ key: snapshotCapMetaKey(projectId), value: Math.floor(cap) });
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('快照事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('快照事务中止'));
   });
 }
 
@@ -322,7 +334,8 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
     const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');
     tx.objectStore(STORE_SNAPSHOTS).delete(snapshotId);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('快照事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('快照事务中止'));
   });
 }
 
@@ -349,7 +362,8 @@ export async function pruneSnapshots(
       store.delete(m.id);
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('快照事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('快照事务中止'));
   });
   return toDelete.length;
 }
@@ -399,7 +413,8 @@ export async function migrateLegacySnapshots(projectId?: string): Promise<number
       };
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('快照事务失败'));
+    tx.onabort = () => reject(tx.error || new Error('快照事务中止'));
   });
   return prepared.length;
 }

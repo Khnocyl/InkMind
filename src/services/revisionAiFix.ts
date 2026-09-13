@@ -11,6 +11,7 @@ import type {
   StyleConfig,
 } from '../types/novel';
 import { findProseSnippetRange } from './aiTasteScan';
+import { normalizeProseSymbols } from './deslop/normalizePunctuation';
 import {
   extractTodoSearchHints,
   findHintRangeInContent,
@@ -585,6 +586,9 @@ export async function aiFixRevisionTodo(input: {
       );
     }
   }
+
+  // 符号收口：LLM 改稿/补写常吐直角引号「」或半角引号，落盘前统一为中文双引号
+  finalProse = normalizeProseSymbols(finalProse).text;
 
   chapter = {
     ...chapter,

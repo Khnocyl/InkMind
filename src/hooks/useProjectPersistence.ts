@@ -85,25 +85,34 @@ export function useProjectPersistence({
       const base = projectRef.current;
       if (!base) return { ok: true };
 
-      let partial = typeof updates === 'function' ? updates(base) : updates;
-      // 保护文风仿写档案：禁止陈旧 styleConfig 整表覆盖冲掉 styleProfiles
-      if (partial.styleConfig) {
-        partial = {
+      // 不变量：本函数**永不 reject**。大量调用点是 fire-and-forget（未 await / 未 catch），
+      // 一旦在此抛出就会产生 unhandled rejection（状态条卡住、错误静默丢失）。
+      // 写盘失败由 CoalescedWriter 的 onError 处理并以 ok:false 回报；这里兜的是
+      // 「updater 函数自身抛错」——同样必须以 ok:false 如实回报，不能外泄成 rejection。
+      try {
+        let partial = typeof updates === 'function' ? updates(base) : updates;
+        // 保护文风仿写档案：禁止陈旧 styleConfig 整表覆盖冲掉 styleProfiles
+        if (partial.styleConfig) {
+          partial = {
+            ...partial,
+            styleConfig: mergeStyleConfigPreserve(base.styleConfig, partial.styleConfig),
+          };
+        }
+        const next: BookProject = {
+          ...base,
           ...partial,
-          styleConfig: mergeStyleConfigPreserve(base.styleConfig, partial.styleConfig),
+          lastModified: new Date().toISOString(),
         };
-      }
-      const next: BookProject = {
-        ...base,
-        ...partial,
-        lastModified: new Date().toISOString(),
-      };
-      setProjectSafe(next);
+        setProjectSafe(next);
 
-      // 合并式持久化：突发更新只写「正在跑 + 末尾一次」；
-      // 返回值即本次是否真的落盘 —— resolve 不代表成功（写失败时 ok:false）
-      const result = await persistWriterRef.current?.schedule();
-      return result ?? { ok: true };
+        // 合并式持久化：突发更新只写「正在跑 + 末尾一次」；
+        // 返回值即本次是否真的落盘 —— resolve 不代表成功（写失败时 ok:false）
+        const result = await persistWriterRef.current?.schedule();
+        return result ?? { ok: true };
+      } catch (e) {
+        console.error('handleUpdateAndPersistProject 更新失败:', e);
+        return { ok: false, error: e };
+      }
     },
     // projectRef / persistWriterRef 均为 ref（引用恒定），不会导致重创建
     [projectRef, setProjectSafe]

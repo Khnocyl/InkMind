@@ -41,6 +41,14 @@ export const WorldReviewStep: React.FC<WorldReviewStepProps> = ({
   const [activeSettingId, setActiveSettingId] = useState<string>(initialSettings[0]?.id || '');
   const [newRuleInput, setNewRuleInput] = useState('');
 
+  // 同 CharactersReviewStep：父级 AI 重构设定集后同步 props，避免旧值回写覆盖 AI 成果
+  useEffect(() => {
+    setSettings((cur) => (cur === initialSettings ? cur : initialSettings));
+    setActiveSettingId((cur) =>
+      initialSettings.some((s) => s.id === cur) ? cur : initialSettings[0]?.id || ''
+    );
+  }, [initialSettings]);
+
   // 草稿自动落盘（跳过首次挂载：初始值来自 props，无需回写）
   const draftMountedRef = useRef(false);
   useEffect(() => {

@@ -16,7 +16,11 @@ function runBuild(done) {
   const r = spawn(npmCmd, ['run', 'build'], {
     cwd: ROOT,
     stdio: 'inherit',
-    shell: isWin,
+    shell: false,
+  });
+  r.on('error', (err) => {
+    console.error('[start] 无法启动前端构建进程:', err);
+    process.exit(1);
   });
   r.on('exit', (code) => {
     if (code !== 0) {
@@ -32,8 +36,12 @@ function startServer() {
   const s = spawn(npmCmd, ['exec', '--yes', 'tsx', path.join('server', 'index.ts')], {
     cwd: ROOT,
     stdio: 'inherit',
-    shell: isWin,
+    shell: false,
     env: { ...process.env },
+  });
+  s.on('error', (err) => {
+    console.error('[start] 无法启动服务进程:', err);
+    process.exit(1);
   });
   s.on('exit', (code) => process.exit(code ?? 0));
 }

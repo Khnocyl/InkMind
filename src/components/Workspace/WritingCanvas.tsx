@@ -132,6 +132,13 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
   /** 最新正文快照：局部精修 await 后闭包内 chapter 是旧值，提交前用 ref 校验正文未被改动 */
   const chapterContentRef = useRef(chapter.content);
   chapterContentRef.current = chapter.content;
+  /**
+   * 最新整章快照：局部精修 await 期间用户可能已改标题/梗概/待修勾选。
+   * 提交时若仍用闭包里的旧 chapter 展开，会把这段并发编辑静默回退
+   * （正文校验能通过，所以不会提示）。用 ref 取最新章，只覆盖正文相关字段。
+   */
+  const chapterRef = useRef(chapter);
+  chapterRef.current = chapter;
 
   const proseFontStyle: React.CSSProperties = {
     fontFamily: '"Noto Serif SC", "Songti SC", Georgia, serif',
@@ -469,8 +476,10 @@ export const WritingCanvas: React.FC<WritingCanvasProps> = ({
           return;
         }
         const newContent = latest.slice(0, selRange.start) + text + latest.slice(selRange.end);
+        // 用最新章展开（而非 await 前的旧 chapter）：保留用户在处理期间的
+        // 标题/梗概/待修勾选等并发编辑，只覆盖本次真正改动的正文相关字段。
         onUpdateChapter({
-          ...chapter,
+          ...chapterRef.current,
           content: newContent,
           wordCount: proseWords(newContent),
           contentUpdatedAt: new Date().toISOString(),

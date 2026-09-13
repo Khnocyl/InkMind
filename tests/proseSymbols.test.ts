@@ -64,6 +64,22 @@ describe('deslop · normalizeProseSymbols 正文符号清洗', () => {
     expect(r.text).not.toContain('**');
   });
 
+  it('半角直引号 " 折叠为中文双引号“”（按出现顺序成对交替）', () => {
+    const r = normalizeProseSymbols('"谁啊——大清早的！"\n\n"开门，快点。"');
+    expect(r.changed).toBe(true);
+    expect(r.text).toBe('\u201C谁啊——大清早的！\u201D\n\n\u201C开门，快点。\u201D');
+    expect(r.text).not.toContain('"');
+    expect(r.findings.find((f) => f.type === 'quote-style')?.count)
+      .toBe(4);
+  });
+
+  it('直角 + 半角混排一次收口（先直角映射，再半角交替）', () => {
+    const r = normalizeProseSymbols('「甲」\n\n"乙"');
+    expect(r.text).toBe('\u201C甲\u201D\n\n\u201C乙\u201D');
+    expect(r.text).not.toContain('「');
+    expect(r.text).not.toContain('"');
+  });
+
   it('空串与 null 安全', () => {
     expect(normalizeProseSymbols('').text).toBe('');
     expect(normalizeProseSymbols(undefined as unknown as string).text).toBe('');
