@@ -425,6 +425,8 @@ export interface ChapterDeconstruct {
   hookStrength?: number;
   /** 本章爽点/情绪点类型（无则空） */
   payoffType?: string;
+  /** 本章主情绪张力 -9~+9（-9 极致低谷/压抑，0 平稳推进，+9 极致高潮/爽点），用于情绪曲线 */
+  emotion?: number;
   /** 本章埋下的伏笔 */
   foreshadowPlant?: string[];
   /** 本章回收的伏笔 */

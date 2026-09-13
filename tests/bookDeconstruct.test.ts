@@ -11,6 +11,9 @@ import {
   extractMainText,
   extractPageTitle,
   clampSourceText,
+  clampEmotion,
+  emotionSparkline,
+  resolveCharacterRelations,
   applyCharacterIdMapping,
   type SplitChapter,
 } from '../src/services/bookDeconstruct';
@@ -173,6 +176,104 @@ describe('normalizeDeconstructed 防御性归一', () => {
     expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], hookStrength: 99 })!.hookStrength).toBe(10);
     expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], hookStrength: -3 })!.hookStrength).toBe(0);
   });
+
+  it('emotion 收敛到 -9~+9，非法值不虚构', () => {
+    expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], emotion: 12 })!.emotion).toBe(9);
+    expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], emotion: -99 })!.emotion).toBe(-9);
+    expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], emotion: 7.4 })!.emotion).toBe(7);
+    expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }], emotion: 'high' })!.emotion).toBeUndefined();
+    expect(normalizeDeconstructed({ summary: 's', beats: [{ description: 'd' }] })!.emotion).toBeUndefined();
+  });
+});
+
+describe('情绪曲线与角色关系', () => {
+  it('clampEmotion 边界', () => {
+    expect(clampEmotion(9)).toBe(9);
+    expect(clampEmotion(-9.6)).toBe(-9);
+    expect(clampEmotion(NaN)).toBeUndefined();
+  });
+
+  it('emotionSparkline：-9 与 +9 落在方块两端', () => {
+    const s = emotionSparkline([{ emotion: -9 }, { emotion: 0 }, { emotion: 9 }]);
+    expect(s).toBe('▁▅█');
+  });
+
+  it('resolveCharacterRelations 按名字解析 targetId，未知名/自指/重复跳过，intimacy 收敛', () => {
+    const characters = [
+      { id: 'c1', name: '张三', relations: [] },
+      { id: 'c2', name: '李四', relations: [] },
+    ] as unknown as import('../src/types/novel').Character[];
+    resolveCharacterRelations(characters, [
+      {
+        name: '张三',
+        relations: [
+          { name: '李四', relation: '师徒', intimacy: 60 },
+          { name: '路人甲', relation: '未知对象' },
+          { name: '张三', relation: '自己' },
+          { name: '李四', relation: '重复' },
+          { name: '王五', relation: '列表外对象' },
+        ],
+      },
+      { name: '不在列表里的人', relations: [{ name: '张三', relation: '幻觉' }] },
+    ]);
+    expect(characters[0].relations).toEqual([{ targetId: 'c2', relation: '师徒', intimacy: 60 }]);
+    expect(characters[1].relations).toEqual([]);
+  });
+
+  it('buildRhythmStats 聚合情绪序列/均值/峰谷', () => {
+    const chapters = [1, 2, 3].map((n) => ({
+      number: n,
+      wordCount: 2000,
+      content: '',
+      deconstruct: { emotion: [-3, 7, -5][n - 1] },
+    })) as unknown as Chapter[];
+    const s = buildRhythmStats(chapters);
+    expect(s.emotionSeries).toEqual([
+      { chapterNumber: 1, emotion: -3 },
+      { chapterNumber: 2, emotion: 7 },
+      { chapterNumber: 3, emotion: -5 },
+    ]);
+    expect(s.avgEmotion).toBe(-0.3);
+    expect(s.emotionPeak).toEqual({ chapterNumber: 2, emotion: 7 });
+    expect(s.emotionTrough).toEqual({ chapterNumber: 3, emotion: -5 });
+  });
+
+  it('formatDeconstructReport 含情绪列、峰值行与关系行', () => {
+    const project = {
+      title: '测试书',
+      genre: '东方玄幻',
+      chapters: [
+        { number: 1, wordCount: 2000, content: '', summary: '开局', deconstruct: { hookStrength: 6, hookType: '悬念', payoffType: '无' } },
+      ],
+      characters: [
+        { id: 'c1', name: '张三', role: '主角', realmOrTitle: '炼气', personality: '坚韧', relations: [{ targetId: 'c2', relation: '师徒', intimacy: 60 }] },
+        { id: 'c2', name: '李四', role: '重要配角', personality: '沉稳', relations: [] },
+      ],
+      settings: [],
+      deconstructMeta: { source: 'file', sourceName: '书.txt', importedAt: '2026-09-13T00:00:00.000Z' },
+    } as unknown as BookProject;
+    const report = formatDeconstructReport(project);
+    expect(report).toContain('| 章 | 字数 | 钩子 | 爽点 | 情绪 | 梗概 |');
+    expect(report).toContain('| 1 | 2000 | 悬念·6 | 无 | — |');
+    expect(report).toContain('｜ 关系：李四（师徒）');
+  });
+
+  it('formatDeconstructReport 情绪全量时输出走向与曲线', () => {
+    const project = {
+      title: '测试书',
+      genre: '东方玄幻',
+      chapters: [
+        { number: 1, wordCount: 2000, content: '', summary: 'a', deconstruct: { emotion: -3 } },
+        { number: 2, wordCount: 2000, content: '', summary: 'b', deconstruct: { emotion: 7 } },
+      ],
+      characters: [],
+      settings: [],
+      deconstructMeta: { source: 'file', sourceName: '书.txt', importedAt: '2026-09-13T00:00:00.000Z' },
+    } as unknown as BookProject;
+    const report = formatDeconstructReport(project);
+    expect(report).toContain('均值 +2 · 峰值 第2章（+7） · 低谷 第1章（-3）');
+    expect(report).toContain('情绪曲线：');
+  });
 });
 
 describe('综合与回填', () => {
@@ -263,9 +364,9 @@ describe('节奏统计与报告', () => {
     const row = report.split('\n').find((l) => l.startsWith('| 1 |'));
     expect(row).toBeDefined();
     expect(row).toContain('前半 \\| 后半 换行了');
-    // 未转义的话这行会被拆成 6 列。先剔除转义竖线再数分隔符，应为 5 列 = 6 个分隔符。
+    // 未转义的话这行会被拆成 7 列。先剔除转义竖线再数分隔符，应为 6 列 = 7 个分隔符。
     const unescaped = row!.replace(/\\\|/g, '');
-    expect((unescaped.match(/\|/g) || []).length).toBe(6);
+    expect((unescaped.match(/\|/g) || []).length).toBe(7);
   });
 });
 

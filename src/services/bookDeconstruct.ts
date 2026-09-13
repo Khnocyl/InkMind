@@ -21,6 +21,7 @@ import type {
   Chapter,
   ChapterDeconstruct,
   Character,
+  CharacterRelation,
   CharacterRole,
   PlotBeat,
   SettingCategory,
@@ -328,6 +329,7 @@ interface RawChapterDeconstruct {
   hookType?: unknown;
   hookStrength?: unknown;
   payoffType?: unknown;
+  emotion?: unknown;
 }
 
 const asStringArray = (v: unknown, max = 20): string[] =>
@@ -371,8 +373,16 @@ export function normalizeDeconstructed(
     hookStrength:
       Number.isFinite(hookStrength) ? Math.min(10, Math.max(0, Math.round(hookStrength))) : undefined,
     payoffType: String(r.payoffType || '').trim().slice(0, 16) || undefined,
+    emotion: clampEmotion(r.emotion),
     analyzedAt: new Date().toISOString(),
   };
+}
+
+/** 情绪张力收敛到 -9~+9；非法值返回 undefined（不虚构中性值） */
+export function clampEmotion(v: unknown): number | undefined {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(9, Math.max(-9, Math.round(n)));
 }
 
 /** 逐章拆解：LLM 反推一章的结构数据（generateJSON + validate 闸门） */
@@ -508,6 +518,7 @@ export async function synthesizeBookLLM(options: {
       isActive: true,
     });
   }
+  resolveCharacterRelations(characters, Array.isArray(res.characters) ? res.characters : []);
 
   return {
     suggestedTitle: String(res.suggestedTitle || options.bookTitle || '').trim().slice(0, 60),
@@ -516,6 +527,45 @@ export async function synthesizeBookLLM(options: {
     characters,
     settings,
   };
+}
+
+/**
+ * 把模型输出的角色关系按「对方角色名」解析为 targetId 并回填。
+ * 未知名 / 自指 / 重复关系跳过；intimacy 收敛到 -100~100；每人最多 8 条。
+ * （若模型用了列表外的名字，该条丢弃——宁缺毋滥，不虚构关系对象。）
+ */
+export function resolveCharacterRelations(
+  characters: Character[],
+  rawCharacters: unknown[]
+): void {
+  const byName = new Map(characters.map((c) => [c.name, c]));
+  for (const rc of rawCharacters) {
+    const selfName = String((rc as { name?: unknown })?.name || '').trim();
+    const self = byName.get(selfName);
+    if (!self) continue;
+    const rawList = Array.isArray((rc as { relations?: unknown })?.relations)
+      ? ((rc as { relations: unknown[] }).relations)
+      : [];
+    const relations: CharacterRelation[] = [];
+    for (const r of rawList) {
+      if (relations.length >= 8) break;
+      const targetName = String((r as { name?: unknown })?.name || '').trim();
+      const relation = String((r as { relation?: unknown })?.relation || '').trim();
+      if (!relation) continue;
+      const target = byName.get(targetName);
+      if (!target || target.id === self.id) continue;
+      if (relations.some((x) => x.targetId === target.id)) continue;
+      const intimacy = Number((r as { intimacy?: unknown })?.intimacy);
+      relations.push({
+        targetId: target.id,
+        relation: relation.slice(0, 30),
+        intimacy: Number.isFinite(intimacy)
+          ? Math.min(100, Math.max(-100, Math.round(intimacy)))
+          : 0,
+      });
+    }
+    self.relations = relations;
+  }
 }
 
 /** 综合后把人物名映射为角色 id，回填各章 involvedCharacterIds */
@@ -644,6 +694,7 @@ export interface RhythmPoint {
   hookStrength?: number;
   hookType?: string;
   payoffType?: string;
+  emotion?: number;
 }
 
 export interface RhythmStats {
@@ -656,6 +707,11 @@ export interface RhythmStats {
   avgHook: number;
   /** 相邻两个爽点章之间的章数间隔 */
   payoffGaps: number[];
+  /** 有情绪值的章节序列（按章号序），供情绪曲线 */
+  emotionSeries: { chapterNumber: number; emotion: number }[];
+  avgEmotion?: number;
+  emotionPeak?: { chapterNumber: number; emotion: number };
+  emotionTrough?: { chapterNumber: number; emotion: number };
 }
 
 const isPayoff = (t?: string) => !!t && t !== '无';
@@ -667,6 +723,7 @@ export function buildRhythmStats(chapters: Chapter[]): RhythmStats {
     hookStrength: c.deconstruct?.hookStrength,
     hookType: c.deconstruct?.hookType,
     payoffType: c.deconstruct?.payoffType,
+    emotion: c.deconstruct?.emotion,
   }));
   const deconstructed = chapters.filter((c) => c.deconstruct);
   const words = points.map((p) => p.words).filter((n) => n > 0);
@@ -680,6 +737,20 @@ export function buildRhythmStats(chapters: Chapter[]): RhythmStats {
   for (let i = 1; i < payoffChapters.length; i += 1) {
     payoffGaps.push(payoffChapters[i] - payoffChapters[i - 1]);
   }
+  const emotionSeries = deconstructed
+    .filter((c) => typeof c.deconstruct?.emotion === 'number')
+    .map((c) => ({ chapterNumber: c.number, emotion: c.deconstruct!.emotion! }));
+  const avgEmotion = emotionSeries.length
+    ? Math.round(
+        (emotionSeries.reduce((a, b) => a + b.emotion, 0) / emotionSeries.length) * 10
+      ) / 10
+    : undefined;
+  const emotionPeak = emotionSeries.length
+    ? emotionSeries.reduce((a, b) => (b.emotion > a.emotion ? b : a))
+    : undefined;
+  const emotionTrough = emotionSeries.length
+    ? emotionSeries.reduce((a, b) => (b.emotion < a.emotion ? b : a))
+    : undefined;
   return {
     points,
     deconstructedCount: deconstructed.length,
@@ -691,6 +762,10 @@ export function buildRhythmStats(chapters: Chapter[]): RhythmStats {
       ? Math.round((hooks.reduce((a, b) => a + b, 0) / hooks.length) * 10) / 10
       : 0,
     payoffGaps,
+    emotionSeries,
+    avgEmotion,
+    emotionPeak,
+    emotionTrough,
   };
 }
 
@@ -701,6 +776,20 @@ const cell = (s: string, max: number): string =>
     .replace(/\|/g, '\\|')
     .trim()
     .slice(0, max);
+
+const fmtSigned = (n: number): string => (n > 0 ? `+${n}` : String(n));
+
+const EMOTION_BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/** 情绪伪曲线：-9~+9 → 8 级 Unicode 方块，每章一个字符 */
+export function emotionSparkline(series: { emotion: number }[]): string {
+  return series
+    .map((p) => {
+      const level = Math.round(((p.emotion + 9) / 18) * (EMOTION_BLOCKS.length - 1));
+      return EMOTION_BLOCKS[level] ?? '▄';
+    })
+    .join('');
+}
 
 /** 拆解报告（Markdown）：可直接复制保存，或粘进作者笔记 */
 export function formatDeconstructReport(project: BookProject): string {
@@ -727,16 +816,28 @@ export function formatDeconstructReport(project: BookProject): string {
     );
     lines.push(`- 爽点节奏：平均每 ${avgGap} 章一个爽点（共 ${stats.payoffGaps.length + 1} 个）`);
   }
+  if (stats.emotionSeries.length) {
+    lines.push(
+      `- 情绪走向：均值 ${fmtSigned(stats.avgEmotion ?? 0)} · ` +
+        `峰值 第${stats.emotionPeak!.chapterNumber}章（${fmtSigned(stats.emotionPeak!.emotion)}） · ` +
+        `低谷 第${stats.emotionTrough!.chapterNumber}章（${fmtSigned(stats.emotionTrough!.emotion)}）`
+    );
+    // 每章一个字符的伪曲线；章数太多时字符图失去可读性，只保留数值摘要
+    if (stats.emotionSeries.length <= 60) {
+      lines.push(`- 情绪曲线：${emotionSparkline(stats.emotionSeries)}`);
+    }
+  }
   lines.push('');
   lines.push('## 逐章拆解');
   lines.push('');
-  lines.push('| 章 | 字数 | 钩子 | 爽点 | 梗概 |');
-  lines.push('|---|---|---|---|---|');
+  lines.push('| 章 | 字数 | 钩子 | 爽点 | 情绪 | 梗概 |');
+  lines.push('|---|---|---|---|---|---|');
   for (const p of stats.points) {
     const hook =
       p.hookStrength != null ? `${p.hookType || '钩子'}·${p.hookStrength}` : '—';
     lines.push(
       `| ${p.chapterNumber} | ${p.words} | ${cell(hook, 20)} | ${cell(p.payoffType || '—', 20)} | ` +
+        `${p.emotion != null ? fmtSigned(p.emotion) : '—'} | ` +
         `${cell(summaryByNumber.get(p.chapterNumber) || '', 50)} |`
     );
   }
@@ -744,9 +845,19 @@ export function formatDeconstructReport(project: BookProject): string {
     lines.push('');
     lines.push('## 主要人物');
     lines.push('');
+    const nameById = new Map(project.characters.map((c) => [c.id, c.name]));
     for (const c of project.characters) {
+      const rel = (c.relations || [])
+        .map((r) => {
+          const target = nameById.get(r.targetId);
+          return target ? `${target}（${r.relation}）` : null;
+        })
+        .filter(Boolean)
+        .slice(0, 4)
+        .join('、');
       lines.push(
-        `- **${c.name}**（${c.role}）${c.realmOrTitle ? `· ${c.realmOrTitle}` : ''}：${c.personality}`
+        `- **${c.name}**（${c.role}）${c.realmOrTitle ? `· ${c.realmOrTitle}` : ''}：${c.personality}` +
+          (rel ? ` ｜ 关系：${rel}` : '')
       );
     }
   }

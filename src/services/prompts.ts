@@ -1357,7 +1357,8 @@ ${options.sourceText}
   "foreshadowPayoff": ["本章回收的前文伏笔（无则空数组）"],
   "hookType": "章末钩子类型（悬念/危机/反转/期待/情感/无）",
   "hookStrength": 0到10的整数（10=令人必须点开下一章）,
-  "payoffType": "本章提供的爽点/情绪点（打脸/升级/获宝/解谜/情感/无）"
+  "payoffType": "本章提供的爽点/情绪点（打脸/升级/获宝/解谜/情感/无）",
+  "emotion": -9到9的整数（本章主情绪张力：-9=极致低谷/压抑，0=平稳推进，+9=极致高潮/爽点）
 }
 要求：characterNames 只写正文里真实行动或说话的角色名；beats 按 3-6 条给出。`;
 
@@ -1384,10 +1385,10 @@ ${options.chapterDigests.join('\n')}
   "suggestedTitle": "这本书的书名（原文有书名则照抄，无则根据内容拟一个）",
   "genre": "题材判断（10-20 字，如「东方玄幻 · 升级流」）",
   "synopsis": "全书一句话主线（60-120 字）",
-  "characters": [{"name": "角色名", "role": "主角|重要配角|反派|势力首领|神秘路人", "personality": "性格特征（30 字内）", "background": "背景/身份（60 字内）", "realmOrTitle": "境界或身份（无则空串）"}],
+  "characters": [{"name": "角色名", "role": "主角|重要配角|反派|势力首领|神秘路人", "personality": "性格特征（30 字内）", "background": "背景/身份（60 字内）", "realmOrTitle": "境界或身份（无则空串）", "relations": [{"name": "对方角色名", "relation": "关系（师徒/死敌/恋人/父子/同盟/上下级等，10 字内）", "intimacy": -100到100的整数（-100=死敌，0=中性，100=生死之交）"}]}],
   "settings": [{"category": "力量与境界体系|世界地理势力|功法神兵道具|天道禁忌与法则|核心历史伏笔", "name": "设定名", "description": "设定说明（80 字内）"}]
 }
-要求：人物合并同一角色的不同称呼（取最常用名）；characters 给 5-15 个最重要的；settings 给 5-15 条最核心的；role/category 必须严格使用给出的枚举值之一。`;
+要求：人物合并同一角色的不同称呼（取最常用名）；characters 给 5-15 个最重要的；settings 给 5-15 条最核心的；role/category 必须严格使用给出的枚举值之一；relations 的 name 必须是本次列出的角色、最多 4 条/人。`;
 
   return [
     { role: 'system', content: systemPrompt },

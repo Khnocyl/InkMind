@@ -319,6 +319,7 @@ export const DeconstructModal: React.FC<DeconstructModalProps> = ({
           hookType: result.hookType,
           hookStrength: result.hookStrength,
           payoffType: result.payoffType,
+          emotion: result.emotion,
           foreshadowPlant: result.foreshadowPlant,
           foreshadowPayoff: result.foreshadowPayoff,
           newSettings: result.newSettings,
