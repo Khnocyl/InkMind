@@ -299,7 +299,7 @@ export const CharactersReviewStep: React.FC<CharactersReviewStepProps> = ({
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 tracking-wide mb-1 flex items-center space-x-1">
                     <Eye className="w-3.5 h-3.5 text-amber-600" />
-                    <span>◉ 微细辨识度外貌特征 (用于 Show Don't Tell 渲染)</span>
+                    <span>微细辨识度外貌特征 (用于 Show Don't Tell 渲染)</span>
                   </label>
                   <textarea
                     value={activeChar.appearance}
@@ -326,7 +326,7 @@ export const CharactersReviewStep: React.FC<CharactersReviewStepProps> = ({
                 <div className="bg-rose-50 border border-rose-300 rounded-xl p-4">
                   <label className="block text-xs font-bold text-rose-800 tracking-wide mb-2 flex items-center space-x-1.5">
                     <ShieldAlert className="w-4 h-4 text-rose-600 animate-pulse" />
-                    <span>🔒 隐藏暗线 / 真实身份与致命软肋（绝密伏笔，仅 AI 与作者可见）</span>
+                    <span>隐藏暗线 / 真实身份与致命软肋（绝密伏笔，仅 AI 与作者可见）</span>
                   </label>
                   <textarea
                     value={activeChar.secretNotes}

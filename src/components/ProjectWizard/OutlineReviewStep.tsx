@@ -376,7 +376,7 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
             className="px-8 py-3.5 bg-black hover:bg-neutral-800 text-white font-bold rounded-full shadow-lg flex items-center space-x-2 transition-all transform hover:-translate-y-0.5 text-sm"
           >
             <CheckCircle className="w-5 h-5" />
-            <span>🎯 骨架全部就绪！立即进入一章一章写作工作台</span>
+            <span>骨架全部就绪！立即进入一章一章写作工作台</span>
           </button>
         </div>
       </div>

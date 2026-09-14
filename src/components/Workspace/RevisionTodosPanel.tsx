@@ -152,7 +152,7 @@ export const RevisionTodosPanel: React.FC<RevisionTodosPanelProps> = ({
                       title="停止一键修全部：置软停标志并中断当前 AI 调用，已修成果保留"
                     >
                       <Square size={11} />
-                      ⏹ 停止
+                      停止
                     </button>
                   )
                 ) : (
@@ -165,7 +165,7 @@ export const RevisionTodosPanel: React.FC<RevisionTodosPanelProps> = ({
                       title="串行 AI 局部改写全书所有未完成待修（优先跨章/硬伤/去AI），带进度与失败容忍"
                     >
                       <Zap size={11} />
-                      ⚡ 一键修全部 ({overview.openCount})
+                      一键修全部 ({overview.openCount})
                     </button>
                   )
                 ))}

@@ -1575,8 +1575,8 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
                   {isSavingConfig
                     ? '服务端加密保存中...'
                     : editingProfileId
-                      ? '💾 保存当前配置档'
-                      : '💾 新建并保存配置档'}
+                      ? '保存当前配置档'
+                      : '新建并保存配置档'}
                 </span>
               </button>
             </div>
