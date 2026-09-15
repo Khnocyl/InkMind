@@ -216,7 +216,7 @@ export const AIWorkflowPanel: React.FC<AIWorkflowPanelProps> = ({
             className="w-full py-3 px-4 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 shadow-md transform hover:-translate-y-0.5 bg-black hover:bg-neutral-800"
           >
             <Sparkles size={15} />
-            <span>{locked ? '重写本章（将先解锁）' : '✨ 写这一章'}</span>
+            <span>{locked ? '重写本章（将先解锁）' : '写这一章'}</span>
           </button>
         )}
       </div>

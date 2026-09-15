@@ -267,7 +267,11 @@ export function isSameOriginClient(input: {
         return false;
       }
     }
-    return true;
+    // 没有 Origin 的 same-origin 请求（典型是浏览器 GET，或**伪造头的脚本**）：
+    // Sec-Fetch-Site 客户端可以任意伪造，不能单独作为豁免依据——必须同时确认
+    // 请求的 Host 本身是受信主机（回环或 TRUSTED_HOSTS），否则 LAN 下任意脚本
+    // 伪造这一个头就能不带 token 调用全部 /api/*。
+    return input.isTrustedHostname(normalizeHostname(hostUrl.hostname));
   }
   if (typeof input.origin === 'string' && input.origin) {
     try {

@@ -205,7 +205,7 @@ export const WriteGroup: React.FC<WriteGroupProps> = ({
                 className="w-full py-2.5 px-3 bg-black hover:bg-neutral-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 shadow-sm"
               >
                 <Rocket size={14} />
-                <span>🚀 启动连写</span>
+                <span>启动连写</span>
               </button>
             </div>
           )}

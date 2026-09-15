@@ -812,6 +812,9 @@ export function useChapterActions({
     let failed = 0;
     let stopped = false;
     const failures: string[] = [];
+    /** 本轮已失败的条目：下轮选取时跳过——否则修不动的条会被反复选中，
+        循环预算全耗在同一条上（死循环烧 API 调用，后续待修永远轮不到） */
+    const skippedIds = new Set<string>();
 
     try {
       for (let i = 0; i < openCount; i++) {
@@ -825,12 +828,18 @@ export function useChapterActions({
           stopped = true;
           break;
         }
-        const first = pickFirstOpenRevision(live.chapters);
+        const first = pickFirstOpenRevision(live.chapters, skippedIds);
         if (!first) break; // 全部修完（可能某条被他处勾完）
         const ch = live.chapters.find((c) => c.id === first.chapterId);
-        if (!ch) continue;
+        if (!ch) {
+          skippedIds.add(first.todo.id);
+          continue;
+        }
         const todo = (ch.revisionTodos || []).find((t) => t.id === first.todo.id);
-        if (!todo || todo.status === 'done') continue;
+        if (!todo || todo.status === 'done') {
+          skippedIds.add(first.todo.id);
+          continue;
+        }
 
         setAiTasteScanMessage(`一键修 ${i + 1}/${openCount} · 第${ch.number}章…`);
         setStatusMessage(`⚡ 一键修 ${i + 1}/${openCount} · 第${ch.number}章…`);
@@ -855,6 +864,7 @@ export function useChapterActions({
           if (!r.replaced) {
             failed += 1;
             failures.push(`第${ch.number}章：${(r.message || '未替换').slice(0, 80)}`);
+            skippedIds.add(todo.id); // 修不动就跳过，别下轮又选它
             continue;
           }
           // 合并进最新 prev（同单条 AI 修）：正文被手动改动则放弃该条，计入失败
@@ -863,6 +873,7 @@ export function useChapterActions({
           if (!mergedChapter) {
             failed += 1;
             failures.push(`第${ch.number}章：正文已被手动改动，本次结果未写入`);
+            skippedIds.add(todo.id);
             continue;
           }
           await handleUpdateAndPersistProject((prev) => ({
@@ -882,6 +893,7 @@ export function useChapterActions({
           const msg = e instanceof Error ? e.message : String(e);
           failed += 1;
           failures.push(`第${ch.number}章：${msg.slice(0, 80)}`);
+          skippedIds.add(todo.id); // 抛错同样跳过，避免反复重试同一条
         }
       }
 

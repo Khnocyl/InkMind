@@ -4,6 +4,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { StyleConfig, StyleProfile } from '../../types/novel';
 import { proseWords } from '../../services/proseWords';
+import { readTextFileSmart } from '../../services/textEncoding';
 import {
   analyzeReferenceStyle,
   importStyleProfile,
@@ -105,7 +106,9 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
     e.target.value = '';
     if (!file || busy) return;
     try {
-      const text = await file.text();
+      // 按字节读再智能解码：国内小说 TXT 多为 GBK，File.text() 只按 UTF-8 解 → 满屏乱码，
+      // 而仿写会照乱码学文风（静默失败，比报错更糟）。
+      const text = (await readTextFileSmart(file)).text;
       setSampleText(text.slice(0, 20000));
       setName((n) => n || file.name.replace(/\.[^.]+$/, '').slice(0, 40));
       await runAnalyze(text, file.name);

@@ -76,13 +76,19 @@ function timeLabel(): string {
 /**
  * 优先挑跨章 audit 待修，否则第一条 open。
  * 用于「修第一处」捷径。
+ * `skipTodoIds`：本轮已失败过、不想再选的条目——批量修复（一键修全部）必须传，
+ * 否则某条修失败后仍被下一轮原样选中，循环预算全耗在同一条上（死循环烧 API 调用）。
  */
 export function pickFirstOpenRevision(
-  chapters: Chapter[]
+  chapters: Chapter[],
+  skipTodoIds?: ReadonlySet<string>
 ): RevisionTodoEntry | null {
   const { open } = collectRevisionTodos(chapters);
-  if (!open.length) return null;
-  const audit = open.find(
+  const candidates = skipTodoIds?.size
+    ? open.filter((e) => !skipTodoIds.has(e.todo.id))
+    : open;
+  if (!candidates.length) return null;
+  const audit = candidates.find(
     (e) =>
       e.todo.id.startsWith('audit-') ||
       e.todo.id.startsWith('hard-') ||
@@ -94,7 +100,7 @@ export function pickFirstOpenRevision(
       e.todo.text.includes('[硬伤]') ||
       e.todo.text.includes('[去AI')
   );
-  return audit || open[0];
+  return audit || candidates[0];
 }
 
 /** 清空全书已完成待修（保留 open） */

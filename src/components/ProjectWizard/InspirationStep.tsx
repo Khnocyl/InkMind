@@ -4,6 +4,7 @@ import { Sparkles, BookOpen, Layers, Type, Flame, Wand2, Compass, Library, Finge
 import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
 import { generateInspirationSparks, type InspirationSpark } from '../../services/inspirationSparks';
 import { analyzeReferenceStyle, applyStyleKeyToProject, importStyleProfile } from '../../services/styleImitate';
+import { readTextFileSmart } from '../../services/textEncoding';
 import {
   mergeWizardStyleProfiles,
   upsertGlobalStyleProfiles,
@@ -193,7 +194,8 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || styleBusy) return;
-    const text = await file.text();
+    // 同拆书/文风导入：按字节智能解码，否则 GBK 文风样本会变乱码
+    const { text } = await readTextFileSmart(file);
     await importStyleInWizard(text.slice(0, 20000), file.name);
   };
 
@@ -680,7 +682,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                 className="px-8 py-4 bg-black hover:bg-neutral-800 text-white font-bold rounded-full shadow-lg transition-all duration-300 transform hover:-translate-y-0.5 flex items-center space-x-3 text-base disabled:opacity-50 disabled:pointer-events-none"
               >
                 <Sparkles className="w-5 h-5" />
-                <span>✨ 启动 AI 推导：生成书名与核心简介</span>
+                <span>启动 AI 推导：生成书名与核心简介</span>
               </button>
             )}
             <p className="text-xs text-slate-500 mt-3">

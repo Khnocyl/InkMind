@@ -655,7 +655,23 @@ app.post('/api/fetch-article', rateLimitExpensive(), async (req, res) => {
     }
     const { url: finalUrl, response } = followed;
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      // 错误体也要限量读：恶意上游可以拿一个几 GB 的 502 body 打爆内存（2MB 上限只管成功路径）
+      const chunks: Uint8Array[] = [];
+      let errReceived = 0;
+      const errReader = response.body?.getReader();
+      if (errReader) {
+        while (true) {
+          const { done, value } = await errReader.read();
+          if (done) break;
+          errReceived += value?.byteLength || 0;
+          if (errReceived > 65536) {
+            void errReader.cancel().catch(() => {});
+            break;
+          }
+          chunks.push(value);
+        }
+      }
+      const text = Buffer.concat(chunks).toString('utf-8');
       return res.status(502).json({
         success: false,
         error: `抓取失败 [${response.status}]: ${text.slice(0, 200)}`,

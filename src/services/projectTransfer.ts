@@ -1,5 +1,6 @@
 import { contentWordsOrFallback } from './proseWords';
 import type {
+  BookDeconstructMeta,
   BookProject,
   Chapter,
   Character,
@@ -9,6 +10,7 @@ import type {
   WorldSetting,
 } from '../types/novel';
 import { getDefaultStyleConfig } from './storage';
+import { normalizeChapterDeconstruct } from './bookDeconstruct';
 import { normalizeStoryMemory } from './storyMemory';
 import { normalizeChapterIntent } from './chapterIntent';
 import type { CrossChapterAuditReport } from '../types/novel';
@@ -309,6 +311,22 @@ function normalizeVolume(raw: unknown, index: number): Volume {
   };
 }
 
+/**
+ * 拆书元信息归一。要求 `importedAt` 存在——它是「这是模板书」的判据
+ * （书库的 isDeconstruct 就取自本字段），不能让任意 JSON 朴空地造出标记。
+ */
+function normalizeDeconstructMeta(raw: unknown): BookDeconstructMeta | undefined {
+  if (!isRecord(raw)) return undefined;
+  const importedAt = asString(raw.importedAt);
+  if (!importedAt) return undefined;
+  return {
+    source: asString(raw.source) === 'url' ? 'url' : 'file',
+    sourceName: asString(raw.sourceName),
+    importedAt,
+    synthesisDone: asBool(raw.synthesisDone, false),
+  };
+}
+
 function normalizeChapter(raw: unknown, index: number): Chapter {
   const r = isRecord(raw) ? raw : {};
   return {
@@ -316,6 +334,9 @@ function normalizeChapter(raw: unknown, index: number): Chapter {
     number: asNumber(r.number, index + 1),
     title: asString(r.title, `第 ${index + 1} 章`),
     summary: asString(r.summary),
+    // 拆书逐章分析：此前导入不认这个字段，直接导致「导出备份 → 导入恢复」后
+    // 拆解数据/情绪曲线/伏笔全丢（导出侧是带的，导出包还自称「完整恢复」）。
+    deconstruct: normalizeChapterDeconstruct(r.deconstruct),
     wordCount: asNumber(r.wordCount, 0),
     status: (asString(r.status, '大纲待拆') as Chapter['status']) || '大纲待拆',
     content: asString(r.content),
@@ -522,6 +543,8 @@ export function normalizeImportedProject(
     chapters,
     currentChapterId: asString(raw.currentChapterId) || chapters[0]?.id,
     styleConfig: normalizeStyleConfig(raw.styleConfig),
+    // 漏了这个字段，导入后书库的「已完成的拆解」入口会消失（isDeconstruct 取自它）
+    deconstructMeta: normalizeDeconstructMeta(raw.deconstructMeta),
     memory: raw.memory ? normalizeStoryMemory(raw.memory) : undefined,
     lastCrossAudit: isRecord(raw.lastCrossAudit)
       ? (raw.lastCrossAudit as unknown as CrossChapterAuditReport)

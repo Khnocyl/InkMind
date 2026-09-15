@@ -437,6 +437,12 @@ export interface ChapterDeconstruct {
   characterNames?: string[];
   /** 拆解时间 ISO */
   analyzedAt?: string;
+  /**
+   * 逐章拆解数据的字段版本（写入时由 `DECONSTRUCT_SCHEMA_VERSION` 填）。
+   * 缺省 = 本次新增 emotion 之前拆的旧数据；断点续跑据此识别「待补齐」，
+   * 否则「有 deconstruct 即视为拆完」会让旧书永远拿不到后续新增的字段。
+   */
+  v?: number;
 }
 
 /** 章级待修条目 */

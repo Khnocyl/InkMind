@@ -107,6 +107,9 @@ export function makeChapterBatchValidator(
           ? Math.floor(rec.number)
           : Number(String(rec.number));
       if (!Number.isFinite(num) || num < fromChapter || num > toChapter) continue;
+      // 闸门口径（与既有契约一致）：标题或摘要任一非空即算「有效章」。
+      // 注意与 normalize 的差异：normalize 还要求 summary ≥20 才当成真章，否则降成占位——
+      // 这是产品上的「接受部分输出 + 让用户在审阅页补全」的设计，**不是 bug**，不要收紧。
       const hasContent =
         (typeof rec.title === 'string' && rec.title.trim().length > 0) ||
         (typeof rec.summary === 'string' && rec.summary.trim().length > 0);
@@ -409,7 +412,9 @@ export async function generateFullOutline(
       let need = false;
       for (let n = from; n <= to; n++) {
         const existing = chapterMap.get(n);
-        if (!existing || (existing.summary || '').trim().length < 40) {
+        // 防御：存量的 summary 可能是非字符串（导入/旧数据）——先 String 再 trim，
+        // 否则 summary 是数字时 .trim() 抛 TypeError，整段生成直接崩
+        if (!existing || String(existing.summary ?? '').trim().length < 40) {
           need = true;
           break;
         }
