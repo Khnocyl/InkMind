@@ -8,6 +8,7 @@ import type {
   BookProject,
   FewShotExample,
   ProseHardRules,
+  ReferenceStyleProfile,
   StyleConfig,
   StyleFingerprint,
   StyleProfile,
@@ -48,6 +49,96 @@ export function resolveStyleHardRules(
   style?: StyleConfig | null
 ): ProseHardRules | null {
   return getActiveStyleProfile(style)?.hardRules ?? null;
+}
+
+// ─── 本书专属参考源（拆书模板书文风；不进档案库）─────────────────────────
+
+/** 本书参考源快照档案；没有则 null。**不参与**档案库/下拉/向导列表 */
+export function getReferenceStyleProfile(
+  style?: StyleConfig | null
+): StyleProfile | null {
+  return style?.referenceProfile?.profile ?? null;
+}
+
+/**
+ * 文风层注入的唯一解析入口：**本书参考源优先**，否则回落档案库里激活的档案。
+ *
+ * 语义：给一本书设了参考源，就等于声明「这本书按它写」——否则用户会困惑
+ * 「我明明选了档案为什么没生效」。结构层（大纲/分镜）仍走 getActiveStyleProfile：
+ * 参考源快照只有句法层（analyzeReferenceStyle 不产出 structureGuide）。
+ */
+export function resolveStyleForInjection(style?: StyleConfig | null): {
+  profile: StyleProfile | null;
+  fromReference: boolean;
+} {
+  const ref = getReferenceStyleProfile(style);
+  if (ref) return { profile: ref, fromReference: true };
+  return { profile: getActiveStyleProfile(style), fromReference: false };
+}
+
+/** 便捷：只要注入档案本身 */
+export function resolveInjectionProfile(
+  style?: StyleConfig | null
+): StyleProfile | null {
+  return resolveStyleForInjection(style).profile;
+}
+
+/** 设置/替换本书参考源（只改本书 styleConfig，不碰全局档案库） */
+export function setReferenceProfile(
+  styleConfig: StyleConfig,
+  ref: ReferenceStyleProfile
+): StyleConfig {
+  return { ...styleConfig, referenceProfile: ref };
+}
+
+/** 清除本书参考源 */
+export function clearReferenceProfile(styleConfig: StyleConfig): StyleConfig {
+  const next = { ...styleConfig };
+  delete next.referenceProfile;
+  return next;
+}
+
+/**
+ * 参考源归一化：导入/备份还原时**不信任外部 JSON** 的形状与范围。
+ * 形状不合格一律返回 undefined（宁可不注入，也不让脏数据进注入链路）。
+ */
+export function normalizeReferenceProfile(
+  raw: unknown
+): ReferenceStyleProfile | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Partial<ReferenceStyleProfile>;
+  const p = r.profile as StyleProfile | undefined;
+  if (!p || typeof p !== 'object') return undefined;
+  if (!p.fingerprint || typeof p.fingerprint !== 'object') return undefined;
+  const projectId = typeof r.projectId === 'string' ? r.projectId : '';
+  const name = String(p.name || '参考源').trim().slice(0, 40) || '参考源';
+  // 章号按 unknown 处理：外部 JSON 里可能是字符串/null/bool（声明类型骗不了运行时）
+  const rawNums = (r as { sampledChapterNumbers?: unknown }).sampledChapterNumbers;
+  return {
+    projectId,
+    sourceLabel: String(r.sourceLabel || name).trim().slice(0, 80) || name,
+    sampledChapterNumbers: Array.isArray(rawNums)
+      ? rawNums
+          // 先排空值再 Number()：Number(null)/Number('')/Number([]) 都是 0，
+          // 会凭空多出一个「第 0 章」（同 clampEmotion 的坑）
+          .filter((n) => n != null && typeof n !== 'boolean' && n !== '')
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n) && n > 0)
+          .slice(0, 60)
+      : [],
+    sampleChars:
+      typeof r.sampleChars === 'number' && Number.isFinite(r.sampleChars)
+        ? Math.max(0, Math.round(r.sampleChars))
+        : 0,
+    profile: {
+      ...p,
+      id: String(p.id || `ref-${projectId || 'style'}`),
+      name,
+      doList: Array.isArray(p.doList) ? p.doList.map(String).slice(0, 12) : [],
+      dontList: Array.isArray(p.dontList) ? p.dontList.map(String).slice(0, 12) : [],
+    },
+    derivedAt: String(r.derivedAt || p.createdAt || new Date().toISOString()),
+  };
 }
 
 /** 把硬规翻译成写作侧的逐条声明（写手先写对，比写后被机检打回省一全文成本） */
@@ -226,7 +317,8 @@ export function formatStyleConstraintsForRewrite(
   const blMax = options?.blacklistMax ?? 25;
   const parts: string[] = [];
 
-  const profile = getActiveStyleProfile(styleConfig);
+  // 注入解析走统一入口：本书参考源优先于档案库激活档案
+  const profile = resolveInjectionProfile(styleConfig);
   const imitate = formatStyleProfileForPrompt(profile, options?.bookGenre);
   if (imitate) {
     parts.push(
@@ -492,6 +584,12 @@ export function mergeStyleConfigPreserve(
     next.activeStyleProfileId = p.activeStyleProfileId;
   } else {
     next.activeStyleProfileId = b.activeStyleProfileId;
+  }
+  // 本书参考源同样按「patch 显式带才覆盖」处理：陈旧整表覆盖不能把参考源冲掉
+  if ('referenceProfile' in p) {
+    next.referenceProfile = p.referenceProfile;
+  } else {
+    next.referenceProfile = b.referenceProfile;
   }
   if (!next.selectedExampleId) {
     next.selectedExampleId = b.selectedExampleId || '';

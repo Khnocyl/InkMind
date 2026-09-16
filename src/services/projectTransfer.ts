@@ -11,6 +11,7 @@ import type {
 } from '../types/novel';
 import { getDefaultStyleConfig } from './storage';
 import { normalizeChapterDeconstruct } from './bookDeconstruct';
+import { normalizeReferenceProfile } from './styleImitate';
 import { normalizeStoryMemory } from './storyMemory';
 import { normalizeChapterIntent } from './chapterIntent';
 import type { CrossChapterAuditReport } from '../types/novel';
@@ -399,6 +400,8 @@ function normalizeStyleConfig(raw: unknown): StyleConfig {
   const merged: StyleConfig = {
     ...base,
     ...raw,
+    // 本书参考源（拆书模板书文风）：不信任外部形状，形状不合格即丢弃
+    referenceProfile: normalizeReferenceProfile(raw.referenceProfile),
     clicheBlacklist: Array.isArray(raw.clicheBlacklist)
       ? raw.clicheBlacklist.map(String)
       : base.clicheBlacklist,

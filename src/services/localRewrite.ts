@@ -4,7 +4,7 @@ import { formatIntentForPrompt } from './chapterIntent';
 import { formatStoryMemoryForPrompt } from './storyMemory';
 import {
   formatStyleConstraintsForRewrite,
-  getActiveStyleProfile,
+  resolveInjectionProfile,
 } from './styleImitate';
 import { normalizeProseSymbols } from './deslop/normalizePunctuation';
 
@@ -117,7 +117,8 @@ export async function runLocalRewrite(
   const mutates = action !== 'check_logic';
   const contextBlock = buildContextBlock(ctx);
 
-  const styleName = getActiveStyleProfile(ctx.styleConfig)?.name;
+  // 与写稿同口径：本书参考源优先于档案库激活档案
+  const styleName = resolveInjectionProfile(ctx.styleConfig)?.name;
   const styleLine = styleName
     ? `5. 文风必须贴近已激活仿写「${styleName}」与下方风格约束，禁止通用 AI 网文腔。`
     : `5. 文风必须对齐下方风格约束 / few-shot，禁止通用 AI 网文腔。`;

@@ -2,16 +2,20 @@
  * 文风仿写面板：样本分析 → 风格提炼 → 写作注入
  */
 import React, { useEffect, useRef, useState } from 'react';
-import type { StyleConfig, StyleProfile } from '../../types/novel';
+import type { BookProjectSummary, StyleConfig, StyleProfile } from '../../types/novel';
 import { proseWords } from '../../services/proseWords';
 import { readTextFileSmart } from '../../services/textEncoding';
 import {
   analyzeReferenceStyle,
+  clearReferenceProfile,
   importStyleProfile,
   removeStyleProfile,
   setActiveStyleProfile,
+  setReferenceProfile,
   updateStyleProfile,
 } from '../../services/styleImitate';
+import { sampleProseForStyle } from '../../services/bookDeconstruct';
+import { getAllProjects, loadProject } from '../../services/storage';
 import { formatFingerprintSummary } from '../../services/styleFingerprint';
 import { BUILTIN_STYLE_PRESETS } from '../../services/stylePresets';
 import {
@@ -27,6 +31,10 @@ import {
   CheckCircle2,
   Circle,
   PenLine,
+  BookOpen,
+  RefreshCw,
+  Save,
+  X,
 } from 'lucide-react';
 
 interface StyleImitatePanelProps {
@@ -51,9 +59,30 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   const [msg, setMsg] = useState<string | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
   const [editGuide, setEditGuide] = useState('');
+  // 本书参考源（拆书模板书）相关：模板书列表 / 选中 / 忙碌 / 提示
+  const [templateBooks, setTemplateBooks] = useState<BookProjectSummary[]>([]);
+  const [pickedBookId, setPickedBookId] = useState('');
+  const [refBusy, setRefBusy] = useState(false);
+  const [refMsg, setRefMsg] = useState<string | null>(null);
 
   const profiles = styleConfig.styleProfiles || [];
   const activeId = styleConfig.activeStyleProfileId || null;
+  const reference = styleConfig.referenceProfile || null;
+
+  // 参考源候选 = 拆书模板书（拆书工作台产出）
+  useEffect(() => {
+    let alive = true;
+    getAllProjects()
+      .then((list) => {
+        if (alive) setTemplateBooks(list.filter((p) => p.isDeconstruct));
+      })
+      .catch(() => {
+        if (alive) setTemplateBooks([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // R3 收尾·文风全局化：挂载时把本书档案并入全局库（历史档案立即可在新书向导选择）
   useEffect(() => {
@@ -99,6 +128,89 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   const handleAnalyzePaste = () => {
     if (busy) return;
     void runAnalyze(sampleText, '粘贴样本');
+  };
+
+  // ── 本书参考源（拆书模板书 → 仅本书注入；不进档案库）────────────────────
+
+  const handleAnalyzeReference = async () => {
+    if (refBusy) return;
+    if (!pickedBookId) {
+      setRefMsg('请先选择一本拆书模板书');
+      return;
+    }
+    setRefBusy(true);
+    setRefMsg('读取模板书正文…');
+    try {
+      const project = await loadProject(pickedBookId);
+      if (!project) throw new Error('找不到该模板书（可能已被删除）');
+      const sample = sampleProseForStyle(project.chapters);
+      if (proseWords(sample.text) < 120) {
+        throw new Error('该模板书可用正文过少（不足 120 字），无法分析文风');
+      }
+      setRefMsg(
+        `已抽样 ${sample.chapterNumbers.length} 章 / ${sample.charCount} 字（第 ${sample.chapterNumbers.join('、')} 章），正在分析…`
+      );
+      const { profile, fingerprintOnly } = await analyzeReferenceStyle({
+        text: sample.text,
+        name: `${project.title}·文风`,
+        sourceLabel: `拆书模板：${project.title}`,
+        onProgress: (m) => setRefMsg(m),
+      });
+      await onUpdateStyleConfig((prev) =>
+        setReferenceProfile(prev, {
+          projectId: project.id,
+          sourceLabel: `拆书模板：${project.title}`,
+          sampledChapterNumbers: sample.chapterNumbers,
+          sampleChars: sample.charCount,
+          profile,
+          derivedAt: new Date().toISOString(),
+        })
+      );
+      setRefMsg(
+        `✅ 已设为本书参考源：${sample.chapterNumbers.length} 章 / ${sample.charCount} 字${
+          fingerprintOnly ? '（模型不可用，仅统计指纹版）' : ''
+        } · 只注入本书，未保存到档案库`
+      );
+    } catch (e: unknown) {
+      setRefMsg(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefBusy(false);
+    }
+  };
+
+  const handleClearReference = async () => {
+    await onUpdateStyleConfig((prev) => clearReferenceProfile(prev));
+    setRefMsg('已清除本书参考源');
+  };
+
+  /**
+   * 手动出口：把参考源转成正式档案（入库 + 激活），并清除参考源。
+   * 默认不存——只有点这个按钮才会进档案库。
+   */
+  const handleSaveReferenceAsProfile = async () => {
+    if (!reference || refBusy) return;
+    setRefBusy(true);
+    try {
+      const saved: StyleProfile = {
+        ...reference.profile,
+        id: `style-ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        sourceLabel: reference.sourceLabel,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await onUpdateStyleConfig((prev) =>
+        importStyleProfile(clearReferenceProfile(prev), saved, {
+          activate: true,
+          syncFewShot: true,
+        })
+      );
+      upsertGlobalStyleProfiles([saved]);
+      setRefMsg(`✅ 已转存为正式档案「${saved.name}」并激活（本书参考源已清除）`);
+    } catch (e: unknown) {
+      setRefMsg(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefBusy(false);
+    }
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,11 +308,125 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
             </p>
           </div>
         </div>
-        {activeId && (
-          <span className="shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 flex items-center gap-1">
-            <CheckCircle2 size={12} />
-            仿写已激活
+        {reference ? (
+          <span
+            className="shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-900 border border-indigo-300 flex items-center gap-1"
+            title="本书参考源生效中：优先于档案库的激活档案，且不保存到档案库"
+          >
+            <BookOpen size={12} />
+            参考源生效中
           </span>
+        ) : (
+          activeId && (
+            <span className="shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 flex items-center gap-1">
+              <CheckCircle2 size={12} />
+              仿写已激活
+            </span>
+          )
+        )}
+      </div>
+
+      {/* 本书参考源：拆书模板书的文风，只注入本书、不进档案库 */}
+      <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+              <BookOpen size={13} />
+              参考源（仅本书）
+            </div>
+            <p className="text-[11px] text-indigo-800/80 mt-0.5 leading-relaxed">
+              把一本<strong>拆书模板书</strong>的文风只注入到这本书里：不进档案库、不出现在向导与下拉列表。
+              想复用时点「另存为档案」才会入库。
+            </p>
+          </div>
+          {reference && (
+            <button
+              type="button"
+              disabled={refBusy}
+              onClick={() => void handleClearReference()}
+              className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg border border-indigo-300 bg-white text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+            >
+              <X size={12} />
+              清除
+            </button>
+          )}
+        </div>
+
+        {reference ? (
+          <div className="space-y-2">
+            <div className="text-[11px] text-indigo-900">
+              <strong>{reference.sourceLabel}</strong> · 抽样{' '}
+              {reference.sampledChapterNumbers.length} 章 / {reference.sampleChars} 字
+              {reference.sampledChapterNumbers.length > 0 && (
+                <span className="text-indigo-800/70">
+                  （第 {reference.sampledChapterNumbers.join('、')} 章）
+                </span>
+              )}{' '}
+              · {new Date(reference.derivedAt).toLocaleString()}
+            </div>
+            <p className="text-[11px] text-indigo-900/90 leading-relaxed">
+              <strong>要诀：</strong>
+              {reference.profile.authorStyle || '（无）'}
+            </p>
+            <pre className="text-[10px] text-indigo-800/80 font-mono whitespace-pre-wrap bg-white/70 border border-indigo-100 rounded-lg p-2 max-h-24 overflow-y-auto">
+              {formatFingerprintSummary(reference.profile.fingerprint)}
+            </pre>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={refBusy || !pickedBookId}
+                onClick={() => void handleAnalyzeReference()}
+                title={pickedBookId ? '按当前选择重新抽样分析' : '先在下方选择模板书'}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-indigo-300 bg-white text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+              >
+                <RefreshCw size={12} />
+                重新分析
+              </button>
+              <button
+                type="button"
+                disabled={refBusy}
+                onClick={() => void handleSaveReferenceAsProfile()}
+                title="入库并激活为正式文风档案（会清除本书参考源）"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-indigo-300 bg-white text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+              >
+                <Save size={12} />
+                另存为档案
+              </button>
+            </div>
+            <p className="text-[10px] text-indigo-800/70">
+              参考源存在时<strong>优先于</strong>下方档案列表里激活的档案；清除后才按档案走。
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={pickedBookId}
+              onChange={(e) => setPickedBookId(e.target.value)}
+              disabled={refBusy}
+              className="flex-1 min-w-[200px] text-xs border border-indigo-300 rounded-lg px-2 py-1.5 bg-white text-slate-800 focus:outline-none disabled:opacity-50"
+            >
+              <option value="">
+                {templateBooks.length ? '选择拆书模板书…' : '（还没有拆书模板书）'}
+              </option>
+              {templateBooks.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.title}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={refBusy || !pickedBookId}
+              onClick={() => void handleAnalyzeReference()}
+              className="inline-flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {refBusy ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+              分析并设为参考源
+            </button>
+          </div>
+        )}
+        {refMsg && (
+          <p className="text-[11px] text-indigo-900 leading-relaxed break-words">{refMsg}</p>
         )}
       </div>
 

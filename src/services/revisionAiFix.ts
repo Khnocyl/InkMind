@@ -23,7 +23,7 @@ import { isChapterLocked, unlockChapterForRewrite } from './chapterLock';
 import { toggleRevisionTodoOnChapter } from './revisionTodos';
 import {
   formatStyleConstraintsForRewrite,
-  getActiveStyleProfile,
+  resolveInjectionProfile,
 } from './styleImitate';
 import { ensureProseWordCount } from './wordCount';
 import { proseWords } from './proseWords';
@@ -345,7 +345,8 @@ async function runTodoGuidedRewrite(input: {
     parts.push(`【后文语境】${input.surroundingAfter.trim().slice(0, 140)}…`);
   }
 
-  const activeName = getActiveStyleProfile(input.styleConfig)?.name;
+  // 与写稿同口径：本书参考源优先于档案库激活档案
+  const activeName = resolveInjectionProfile(input.styleConfig)?.name;
   const styleRule = activeName
     ? `改写后的文气必须服从已激活文风仿写「${activeName}」（句长、对白密度、要做/不要做）；禁止写成另一套通用 AI 网文腔。`
     : '改写须对齐下方【目标文风】few-shot / 约束；禁止滑回通用 AI 套话腔。';

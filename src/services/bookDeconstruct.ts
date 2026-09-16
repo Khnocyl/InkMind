@@ -393,6 +393,65 @@ export function clampSourceText(content: string): string {
   return `${content.slice(0, SOURCE_LIMIT - tailLen)}\n……（中段略）……\n${content.slice(-tailLen)}`;
 }
 
+// ─── 文风参考源抽样（拆书模板书 → 仅本书的文风注入）──────────────────────
+
+/** 参考源抽样默认：10 章 / 约 4200 字（与 buildStyleAnalyzePrompt 的 4500 字上限对齐） */
+export const STYLE_SAMPLE_CHAPTERS = 10;
+export const STYLE_SAMPLE_MAX_CHARS = 4200;
+
+/**
+ * 为「本书参考源」抽样正文：首/中/尾均匀取样，跳过没正文的章。
+ *
+ * 为什么必须抽样：`buildStyleAnalyzePrompt` 只取样本的**首 2200 + 尾 2200 字**，
+ * 整本书直接丢进去 = 只学了全书第一段与最后一段；抽样之后统计指纹与 LLM 指南口径才一致。
+ * 纯本地、可复现（同一本书 + 同一参数 → 同一份样本）。
+ */
+export function sampleProseForStyle(
+  chapters: Chapter[],
+  options?: { chapterCount?: number; maxChars?: number }
+): { text: string; chapterNumbers: number[]; charCount: number } {
+  const count = Math.max(2, Math.min(40, options?.chapterCount ?? STYLE_SAMPLE_CHAPTERS));
+  const maxChars = Math.max(
+    1200,
+    Math.min(4400, options?.maxChars ?? STYLE_SAMPLE_MAX_CHARS)
+  );
+  const usable = chapters.filter((c) => hasUsableChapterBody(c.content));
+  if (!usable.length) return { text: '', chapterNumbers: [], charCount: 0 };
+
+  const picked: Chapter[] = [];
+  if (usable.length <= count) {
+    picked.push(...usable);
+  } else {
+    // 均匀取样（含首尾）：step=(n-1)/(count-1)，四舍五入后去重
+    const seen = new Set<number>();
+    for (let i = 0; i < count; i += 1) {
+      const idx = Math.round((i * (usable.length - 1)) / (count - 1));
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      picked.push(usable[idx]);
+    }
+  }
+
+  const per = Math.max(200, Math.floor(maxChars / picked.length));
+  const parts: string[] = [];
+  const chapterNumbers: number[] = [];
+  let charCount = 0;
+  for (const c of picked) {
+    const body = (c.content || '').trim();
+    if (!body) continue;
+    let piece = body;
+    if (body.length > per) {
+      // 单章也截头留尾：首段给起手式与语感，尾段给收束/钩子习惯
+      const head = Math.floor(per * 0.6);
+      piece = `${body.slice(0, head)}\n……\n${body.slice(-(per - head))}`;
+    }
+    parts.push(piece);
+    chapterNumbers.push(c.number);
+    charCount += proseWords(piece);
+  }
+  return { text: parts.join('\n\n'), chapterNumbers, charCount };
+}
+
 /**
  * 逐章拆解数据的字段版本。**新增/改动逐章字段时必须 +1**：
  * 断点续跑以「数据是否完整」而非「是否存在」为判据，旧书才会被识别为待补齐，

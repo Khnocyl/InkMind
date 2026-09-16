@@ -337,15 +337,27 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
   const activeStyleProfile = (styleConfig.styleProfiles || []).find(
     (p) => p.id === styleConfig.activeStyleProfileId
   );
+  /** 本书参考源（拆书模板书文风）：优先于激活档案，且不进档案库 */
+  const referenceProfile = styleConfig.referenceProfile;
   const styleBits: string[] = [];
-  if (activeStyleProfile) styleBits.push(`仿写「${activeStyleProfile.name}」`);
+  if (referenceProfile) styleBits.push(`参考源「${referenceProfile.sourceLabel}」`);
+  else if (activeStyleProfile) styleBits.push(`仿写「${activeStyleProfile.name}」`);
   if (example) styleBits.push(`范例「${example.title}」`);
-  else if (!activeStyleProfile) styleBits.push('未选 few-shot 范例');
+  else if (!activeStyleProfile && !referenceProfile) styleBits.push('未选 few-shot 范例');
   styleBits.push(styleConfig.enforceShowDontTell ? 'Show-don\'t-tell 开' : 'SdT 关');
   styleBits.push(styleConfig.forbidEndingSublimation ? '禁升华 开' : '禁升华 关');
   styleBits.push(`黑名单 ${bl} 条`);
 
-  if (activeStyleProfile) {
+  if (referenceProfile) {
+    // 参考源存在时是它生效（不是档案列表里那个）——不显示出来用户会以为设了没生效
+    push({
+      id: 'style_imitate',
+      label: '文风参考源',
+      severity: 'ok',
+      summary: `参考源「${referenceProfile.sourceLabel}」· 抽样 ${referenceProfile.sampledChapterNumbers.length} 章 / ${referenceProfile.sampleChars} 字 · 均句长 ${referenceProfile.profile.fingerprint.avgSentenceLen} · 对白约 ${Math.round(referenceProfile.profile.fingerprint.dialogueRatio * 100)}%`,
+      detail: `${referenceProfile.profile.authorStyle}（仅本书注入，未保存到档案库）`,
+    });
+  } else if (activeStyleProfile) {
     const hr = activeStyleProfile.hardRules;
     push({
       id: 'style_imitate',
@@ -358,7 +370,7 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
     });
   }
 
-  if (!example && !activeStyleProfile) {
+  if (!example && !activeStyleProfile && !referenceProfile) {
     push({
       id: 'style',
       label: '文风约束',

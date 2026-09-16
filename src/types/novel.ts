@@ -614,6 +614,28 @@ export interface LlmRoleRouting {
   routes?: Partial<Record<LlmRole, string>>;
 }
 
+/**
+ * 本书专属「参考源」：把一本拆书模板书的文风作为**仅本书**的写作注入。
+ *
+ * 设计约束（与"档案库"彻底分离）：
+ * - 不写入 `styleProfiles`，不进全局档案库，不出现在向导/下拉的档案列表里；
+ * - 快照内嵌（指纹 + 指南 + 摘录），来源书被删也不影响继续注入——只有「重新分析」需要源书；
+ * - 想复用时必须显式点「另存为档案」，才走正常档案入库路径。
+ */
+export interface ReferenceStyleProfile {
+  /** 来源拆书模板书 id */
+  projectId: string;
+  /** 来源名（书名/文件名），用于 UI 与 prompt 标注 */
+  sourceLabel: string;
+  /** 抽样用到的章号：让用户知道「这一章学的是哪几章」 */
+  sampledChapterNumbers: number[];
+  /** 抽样字数（去空白） */
+  sampleChars: number;
+  /** 快照：与 StyleProfile 同形，「另存为档案」时直接复用 */
+  profile: StyleProfile;
+  derivedAt: string;
+}
+
 export interface StyleConfig {
   clicheBlacklist: string[]; // 禁用的套话列表
   customBlacklist: string[]; // 用户额外追加
@@ -647,6 +669,11 @@ export interface StyleConfig {
   styleProfiles?: StyleProfile[];
   /** 当前激活的仿写档案 id；空=不注入指纹指南 */
   activeStyleProfileId?: string | null;
+  /**
+   * 本书专属参考源（拆书模板书文风快照）：存在时**优先于** activeStyleProfileId 注入，
+   * 且不进入全局档案库——「保存的档案」与「本书参考源」是两件事。
+   */
+  referenceProfile?: ReferenceStyleProfile;
   enforceShowDontTell: boolean; // 是否开启“展示而非直接阐述”强约束
   forbidEndingSublimation: boolean; // 是否禁止结尾升华、哲理感悟与命运说教
   modelName?: string;

@@ -3,9 +3,9 @@ import type { ProjectConfig, Character, WorldSetting, PlotBeat, StyleConfig, Cha
 import { getGenrePackById } from './genrePacks';
 import {
   formatStyleProfileForPrompt,
-  getActiveStyleProfile,
   isStyleGenreMismatch,
   resolveAllowEmDash,
+  resolveInjectionProfile,
 } from './styleImitate';
 import { mergeExtendedBlacklist } from './aiTasteScan';
 
@@ -609,7 +609,7 @@ export function buildChapterProsePrompt(
 ) {
   const beatsText = beats.map(b => `[分镜头 #${b.order}] (${b.focusSense ? '主打感官：' + b.focusSense : ''})：${b.description}`).join('\n\n');
   const selectedStyle = styleConfig.fewShotExamples.find(e => e.id === styleConfig.selectedExampleId) || styleConfig.fewShotExamples[0];
-  const activeStyleProfile = getActiveStyleProfile(styleConfig);
+  const activeStyleProfile = resolveInjectionProfile(styleConfig);
   const styleImitateBlock = formatStyleProfileForPrompt(activeStyleProfile, bookGenre);
   // 与写后机检同口径：题材附加词 + 自定义词 + 扩展套话表（白名单豁免）
   const blacklist = mergeExtendedBlacklist(styleConfig);
@@ -770,7 +770,7 @@ export function buildChapterExpandPrompt(options: {
   // 全量注入（与写稿分支同口径），不截断、不用硬编码默认词冒充黑名单
   const bl = blacklist.length ? blacklist.join('、') : '（无）';
   const intent = chapterIntentBlock?.trim() || '（沿用本章既有意图）';
-  const activeProfile = styleConfig ? getActiveStyleProfile(styleConfig) : null;
+  const activeProfile = styleConfig ? resolveInjectionProfile(styleConfig) : null;
   const styleHint =
     activeProfile?.authorStyle ||
     styleConfig?.fewShotExamples?.find((e) => e.id === styleConfig.selectedExampleId)
@@ -1146,7 +1146,7 @@ export function buildStyleReviewPrompt(
   const blacklist = [...(styleConfig.clicheBlacklist || []), ...(styleConfig.customBlacklist || [])];
   const names = characters.map((c) => c.name).join('、') || '（未绑定）';
   // 文风保护 + 收敛：激活档案时，润色不得破坏其节奏器官与指纹，且要把偏离语感的段落贴齐
-  const activeProfile = getActiveStyleProfile(styleConfig);
+  const activeProfile = resolveInjectionProfile(styleConfig);
   const styleGuardLines: string[] = [];
   let guardNo = 8;
   if (activeProfile) {
