@@ -16,6 +16,7 @@ import { getEmbeddingConfig } from './llmClient';
 import {
   buildSemanticCorpus,
   semanticBoostMap,
+  RELATED_CHAPTERS_TOP_K,
   type SemanticBoostMaps,
 } from './semanticIndex';
 import type { Chapter, StoryMemory } from '../types/novel';
@@ -282,7 +283,7 @@ async function semanticBoostViaEmbedding(
     .map((d, i) => ({ d, s: norm[i] }))
     .filter((x) => x.d.kind === 'chapter' && x.s > 0.3)
     .sort((a, b) => b.s - a.s)
-    .slice(0, 3)
+    .slice(0, RELATED_CHAPTERS_TOP_K)
     .flatMap((x) => {
       const ch = byId.get(x.d.refId);
       return ch ? [{ chapter: ch, score: x.s }] : [];

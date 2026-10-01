@@ -41,6 +41,14 @@ export interface SemanticHit {
   score: number;
 }
 
+/**
+ * 远记忆「相关章召回」条数上限——单一来源。
+ * TF-IDF 路径（recommendRelatedChapters）与 embedding 路径（embeddingIndex boost）
+ * 必须共用本值；改一处只会造成两路径静默分叉。
+ * 3→6：远记忆几乎全压在 top-K 上，K 是长书召回率的第一杠杆（成本 ≈ 每章 +200~300 字注入）。
+ */
+export const RELATED_CHAPTERS_TOP_K = 6;
+
 const STOP = new Set([
   '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很',
   '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '那', '他', '她',
@@ -219,7 +227,7 @@ export function recommendRelatedChapters(
   query: string,
   chapters: Chapter[],
   chapterNumber: number,
-  topK = 3
+  topK = RELATED_CHAPTERS_TOP_K
 ): { chapter: Chapter; score: number }[] {
   const docs = buildSemanticCorpus({ chapters, chapterNumber });
   const hits = semanticSearch(query, docs, { topK: topK * 3, kind: 'chapter' });
@@ -282,8 +290,7 @@ export function semanticBoostMap(
   const relatedChapters = recommendRelatedChapters(
     query,
     params.chapters || [],
-    params.chapterNumber ?? 99999,
-    3
+    params.chapterNumber ?? 99999
   );
   return { factBoost, threadBoost, digestBoost, relatedChapters };
 }
