@@ -749,8 +749,9 @@ async function streamOnce(
         await releaseReader();
         // 用户主动停止：无论已产出多少都不当作成功稿
         if (isGenerationAborted(err)) throw err;
-        // 流中断：已有产出则返回部分（不重试），否则抛错让 withRetry 重试
-        if (bytesProduced > 0) {
+        // 流中断：**确有正文产出**才返回部分（不重试），否则抛错让 withRetry 重试。
+        // 判据用 fullContent.length：bytesProduced 含 SSE 帧头/错误帧，不能代表产出。
+        if (fullContent.length > 0) {
           if (onProgress) {
             onProgress(`⚠️ 连接中断，已保留已生成部分（${fullContent.length} 字）`);
           }
@@ -761,6 +762,11 @@ async function streamOnce(
       const { done, value } = result;
       if (done) break;
       bytesProduced += value?.byteLength || 0;
+      // ⚠️ 判「是否已有产出」必须用 fullContent.length，**不能**用 bytesProduced：
+      // 后者统计的是 SSE 原始字节，`data: ` 帧头、`[DONE]`（14 字节）、甚至
+      // `{"error":...}` 错误帧都计入。用它当判据会把「上游报错但字节数 > 0」
+      // 误判成「已有产出」，于是错误帧被当成功返回、generateStream 正常 resolve
+      // 并记 ok:true，真实错误只剩一行状态文案。bytesProduced 仅供诊断。
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -771,10 +777,10 @@ async function streamOnce(
           // 用户主动停止：原样上抛
           if (isGenerationAborted(err)) throw err;
           await releaseReader();
-          // 上游错误帧（consumeLine 内已 releaseReader）：已产出则保留部分并收尾。
+          // 上游错误帧（consumeLine 内已 releaseReader）：**确有正文产出**才保留部分并收尾。
           // 此前直接 throw → withRetry 重跑 streamOnce 会二次 onChunk，造成正文
-          // 重复段落，同时上游被第二次完整调用（重复计费）。未产出才抛错重试。
-          if (bytesProduced > 0) {
+          // 重复段落，同时上游被第二次完整调用（重复计费）。无产出才抛错重试。
+          if (fullContent.length > 0) {
             if (onProgress) {
               onProgress(`⚠️ 上游返回错误，已保留已生成部分（${fullContent.length} 字）`);
             }
@@ -791,11 +797,11 @@ async function streamOnce(
       try {
         await consumeLine(buffer);
       } catch (err) {
-        // 与循环内错误帧同口径：中止原样上抛；已产出内容不整体重试
-        //（withRetry 重跑 streamOnce 会二次 onChunk 造成正文重复），保留部分收尾
+        // 与循环内错误帧同口径：中止原样上抛；**确有正文产出**才保留部分收尾
+        //（withRetry 重跑 streamOnce 会二次 onChunk 造成正文重复）
         if (isGenerationAborted(err)) throw err;
         await releaseReader();
-        if (bytesProduced > 0) {
+        if (fullContent.length > 0) {
           if (onProgress) {
             onProgress(`⚠️ 上游返回错误，已保留已生成部分（${fullContent.length} 字）`);
           }

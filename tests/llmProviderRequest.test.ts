@@ -5,6 +5,8 @@ import {
   parseNonStreamResponse,
   extractStreamEvent,
   readUpstreamStreamError,
+  splitSseChunk,
+  MAX_SSE_BUFFER_CHARS,
 } from '../server/llmProviderRequest';
 
 describe('llmProviderRequest · 端点解析', () => {
@@ -173,5 +175,50 @@ describe('llmProviderRequest · 响应解析', () => {
     const r = extractStreamEvent({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '先想一下' } });
     expect(r.reasoning).toBe('先想一下');
     expect(r.chunk).toBe('');
+  });
+});
+
+describe('llmProviderRequest · SSE 切帧与缓冲上限', () => {
+  it('按 \\n 切帧，尾段留待下一块', () => {
+    const { lines, rest } = splitSseChunk('', 'data: a\ndata: b\ndata: c');
+    expect(lines).toEqual(['data: a', 'data: b']);
+    expect(rest).toBe('data: c');
+  });
+
+  it('跨块拼接：被切断的帧在下一块补齐后才输出', () => {
+    const first = splitSseChunk('', 'data: {"cho');
+    expect(first.lines).toEqual([]);
+    expect(first.rest).toBe('data: {"cho');
+    const second = splitSseChunk(first.rest, 'ices":[]}\n');
+    expect(second.lines).toEqual(['data: {"choices":[]}']);
+    expect(second.rest).toBe('');
+  });
+
+  it('超长且无换行的尾段 → 抛错（防无界累积 OOM）', () => {
+    // 这块数据里没有 \n，整块都留在 rest 里
+    const huge = 'x'.repeat(2000);
+    expect(() => splitSseChunk('', huge, 1000)).toThrow(/SSE 单行超长/);
+    // 已经攒到接近上限、再来一块就爆
+    expect(() => splitSseChunk('y'.repeat(900), 'z'.repeat(200), 1000)).toThrow(
+      /SSE 单行超长/
+    );
+  });
+
+  it('恰好等于上限不抛（边界不误伤）', () => {
+    expect(() => splitSseChunk('', 'x'.repeat(1000), 1000)).not.toThrow();
+  });
+
+  it('单块很大但**有换行**不受限（限制只针对未切完的尾段）', () => {
+    const big = `${'data: x\n'.repeat(5000)}data: tail`;
+    const { lines, rest } = splitSseChunk('', big, 1000);
+    expect(lines).toHaveLength(5000);
+    expect(rest).toBe('data: tail');
+  });
+
+  it('默认上限是有限的（防止有人把它改成 Infinity/去掉）', () => {
+    expect(Number.isFinite(MAX_SSE_BUFFER_CHARS)).toBe(true);
+    expect(MAX_SSE_BUFFER_CHARS).toBeGreaterThan(0);
+    // 远超正常单帧（真实帧几百字节~几 KB）
+    expect(MAX_SSE_BUFFER_CHARS).toBeGreaterThanOrEqual(100_000);
   });
 });

@@ -827,7 +827,10 @@ const PAGE_CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob:",
-  "connect-src 'self'",
+  // 放行 GitHub Releases API：客户端「检查更新」直接用 fetch 调 api.github.com
+  //（见 src/services/appUpdate.ts），dev 由 Vite 提供页面不受此头约束，
+  // 但打包后（npm start / exe）由本服务托管，缺少该项会导致检查更新必然失败。
+  "connect-src 'self' https://api.github.com",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

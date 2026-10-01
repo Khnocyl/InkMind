@@ -42,6 +42,7 @@
     "concurrently": "^10.0.3",
     "electron": "^44.1.1",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "fake-indexeddb": "^6.2.5",
     "oxlint": "^1.71.0",
     "postject": "^1.0.0-alpha.6",

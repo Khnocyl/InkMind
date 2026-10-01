@@ -19,6 +19,41 @@ export interface ChatMessage {
 
 export const ANTHROPIC_VERSION = '2023-06-01';
 
+/**
+ * SSE 单行缓冲上限（字符）。**必须有限**。
+ *
+ * 流式读取按 `\n` 切帧，切剩的尾段要留到下一块数据再拼。若上游（用户可自配的
+ * baseURL）持续发**不含换行**的流，尾段会无界增长 → 进程 OOM。
+ * 这与 llmService 里 `readErrorBodySnippet` 防的是同一类问题（无界读取），
+ * 当时只堵了错误体那一条，漏了这里。
+ *
+ * 1MB 远超任何正常 SSE 单帧（真实帧几百字节到几 KB），正常流式绝不会触碰。
+ */
+export const MAX_SSE_BUFFER_CHARS = 1_000_000;
+
+/**
+ * 把一块新到的 SSE 数据并进缓冲并按 `\n` 切帧。
+ *
+ * 返回 `{ lines, rest }`：`lines` 是完整的帧（含末尾空行，交由调用方过滤），
+ * `rest` 是最后一段不完整的尾段，需留到下一次调用。
+ *
+ * `rest` 超长即抛错——见 `MAX_SSE_BUFFER_CHARS` 的说明。
+ */
+export function splitSseChunk(
+  buffer: string,
+  chunk: string,
+  maxChars: number = MAX_SSE_BUFFER_CHARS
+): { lines: string[]; rest: string } {
+  const lines = (buffer + chunk).split('\n');
+  const rest = lines.pop() || '';
+  if (rest.length > maxChars) {
+    throw new Error(
+      `上游 SSE 单行超长（>${maxChars} 字符且无换行），已中断以免内存耗尽`
+    );
+  }
+  return { lines, rest };
+}
+
 /** 上游流中错误帧（Anthropic event:error / OpenAI error 对象）→ 中断消费、上抛走降级链 */
 export class UpstreamStreamError extends Error {
   constructor(message: string) {

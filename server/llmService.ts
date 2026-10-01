@@ -8,6 +8,7 @@ import {
   extractStreamEvent,
   parseNonStreamResponse,
   readUpstreamStreamError,
+  splitSseChunk,
   UpstreamStreamError,
   type ChatProvider,
 } from './llmProviderRequest';
@@ -269,14 +270,32 @@ function migrateSecretKeyIfNeeded(): void {
   }
 }
 
+/**
+ * 目录加固只做一次：Windows 上 icacls 要 spawn 一个进程（~150-450ms），而
+ * encryptKey / decryptKey / loadConfigFile 每次调用都会走 ensureDirectories ——
+ * 此前**每个请求**都同步 spawn 一次，阻塞事件循环数百毫秒（backupService 早已
+ * 用同款去重，这里漏了）。目录 ACL 是幂等的，已存在目录的 ACL 也早已设好。
+ */
+let dataDirHardenDone = false;
+/** 一次性迁移检查：幂等且效果持久化在磁盘上，进程内做一次足够 */
+let migrationsChecked = false;
+
 function ensureDirectories() {
-  migrateLegacyDataDir();
+  if (!migrationsChecked) {
+    migrateLegacyDataDir();
+    migrateSecretKeyIfNeeded();
+    migrateCipherToGcmIfNeeded();
+    migrationsChecked = true;
+  }
+  // 目录存在性仍每次校验（可能被外部删除），但只有真正新建时才需要重新加固
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
+    dataDirHardenDone = false;
   }
-  hardenFilePermissions(DATA_DIR, true);
-  migrateSecretKeyIfNeeded();
-  migrateCipherToGcmIfNeeded();
+  if (!dataDirHardenDone) {
+    hardenFilePermissions(DATA_DIR, true);
+    dataDirHardenDone = true;
+  }
 }
 
 /**
@@ -1146,6 +1165,42 @@ const LLM_UPSTREAM_TIMEOUT_MS = Number(process.env.NOVEL_LLM_TIMEOUT_MS) > 0
   ? Number(process.env.NOVEL_LLM_TIMEOUT_MS)
   : 600_000;
 
+/**
+ * 读取上游错误响应体，**限量**返回（默认前 400 字符）。
+ *
+ * 两个理由：
+ * 1. 错误体此前被 `await response.text()` 全量读入并整段抛进 500 响应与日志 ——
+ *    上游/中转站返回超大 body 即可撑爆内存；且 OpenAI 系 401 报文常回显密钥片段，
+ *    全量落盘等于把密钥写进日志文件。
+ * 2. 诊断只需要前几百字符（错误码 + message 都在开头）。
+ * 读取时立即 cancel，避免为了一小段前缀而把整个 body 拉完。
+ */
+async function readErrorBodySnippet(response: Response, limit = 400): Promise<string> {
+  try {
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let out = '';
+    try {
+      while (out.length < limit) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+      }
+      out += decoder.decode();
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+    }
+    return out.slice(0, limit);
+  } catch {
+    return '';
+  }
+}
+
 export async function callLLMService(options: {
   messages: { role: string; content: string }[];
   temperature?: number;
@@ -1280,7 +1335,7 @@ export async function callLLMService(options: {
 
     if (response.ok) break;
 
-    const errText = await response.text();
+    const errText = await readErrorBodySnippet(response);
     const retryable = [429, 502, 503, 504].includes(response.status);
     if (!retryable || attempt >= maxAttempts) {
       throw new Error(`LLM API 请求失败 [${response.status}]: ${errText}`);
@@ -1303,73 +1358,87 @@ export async function callLLMService(options: {
     const debugSse = process.env.NOVEL_DEBUG_SSE === '1';
     const rawSamples: string[] = [];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+    // 读取段包在 try/finally 里：错误帧、截断守卫、网络中断都会从中间抛出，
+    // 若不主动释放，上游 body 会一直悬挂到超时（客户端侧最长 10 分钟）并占用
+    // 一个并发槽 —— LLM_MAX_CONCURRENT=4，4 次异常即可让服务持续 429（可诱导 DoS）。
+    // 正常读完时 cancel 是幂等空操作。
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const { lines, rest } = splitSseChunk(
+          buffer,
+          decoder.decode(value, { stream: true })
+        );
+        buffer = rest;
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const dataStr = trimmed.slice(6).trim();
-        if (debugSse && rawSamples.length < 8) rawSamples.push(dataStr.slice(0, 300));
-        if (dataStr === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(dataStr);
-          // 上游流中错误帧（如 Anthropic overloaded_error / OpenAI error 对象）：
-          // 中断抛错走降级链，绝不把无声空稿交给管线当正常完成
-          const streamErr = readUpstreamStreamError(parsed);
-          if (streamErr) throw streamErr;
-          const { chunk, reasoning, finishReason: fr } = extractStreamEvent(parsed);
-          if (fr) finishReason = fr;
-          if (reasoning && options.onReasoning) {
-            options.onReasoning(reasoning);
-          }
-          if (chunk) {
-            fullContent += chunk;
-            if (options.onChunk) {
-              options.onChunk(chunk);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const dataStr = trimmed.slice(6).trim();
+          if (debugSse && rawSamples.length < 8) rawSamples.push(dataStr.slice(0, 300));
+          if (dataStr === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(dataStr);
+            // 上游流中错误帧（如 Anthropic overloaded_error / OpenAI error 对象）：
+            // 中断抛错走降级链，绝不把无声空稿交给管线当正常完成
+            const streamErr = readUpstreamStreamError(parsed);
+            if (streamErr) throw streamErr;
+            const { chunk, reasoning, finishReason: fr } = extractStreamEvent(parsed);
+            if (fr) finishReason = fr;
+            if (reasoning && options.onReasoning) {
+              options.onReasoning(reasoning);
             }
+            if (chunk) {
+              fullContent += chunk;
+              if (options.onChunk) {
+                options.onChunk(chunk);
+              }
+            }
+          } catch (frameErr) {
+            // 区分「错误帧主动抛出」与「单帧 JSON 解析失败（忽略）」
+            if (frameErr instanceof UpstreamStreamError) throw frameErr;
+            // ignore
           }
-        } catch (frameErr) {
-          // 区分「错误帧主动抛出」与「单帧 JSON 解析失败（忽略）」
-          if (frameErr instanceof UpstreamStreamError) throw frameErr;
-          // ignore
         }
       }
+      if (debugSse) {
+        console.log(
+          `[SSE-DEBUG] model=${payload.model} finish=${finishReason} chars=${fullContent.length} 原始帧样本:\n` +
+            rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')
+        );
+      }
+      // 异常守卫：预算耗尽（length）却没有一个正文字符——典型于推理模型把
+      // 输出预算全部花在思考上、或中转站上游异常路由。必须显式失败，
+      // 让调用方走降级链（保守稿），绝不把「空成功」交给管线当正常稿。
+      if (finishReason === 'length' && !fullContent.trim()) {
+        console.error(
+          `[LLM] 异常：finish=length 但正文 0 字符（model=${payload.model}）。` +
+            '多为推理模型思考烧尽输出预算或中转异常；换非推理模型 / 调大 NOVEL_LLM_MAX_TOKENS 可解。' +
+            (rawSamples.length
+              ? `原始帧样本:\n${rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')}`
+              : '')
+        );
+        throw new Error(
+          '上游返回截断信号但正文为空（疑似推理模型思考烧尽输出预算，或中转站异常）——' +
+            '请换非推理模型（如 glm-5 / kimi-k2.5），或调大 NOVEL_LLM_MAX_TOKENS 后重试。'
+        );
+      }
+      if (finishReason === 'length') {
+        console.warn(
+          `[LLM] 输出被 max_tokens 截断（finish=length，产出 ${fullContent.length} 字符）。` +
+            `若目标字数仍不足：换更长上限的模型，或设置环境变量 NOVEL_LLM_MAX_TOKENS 调大。`
+        );
+      }
+      options.onFinish?.({ finishReason });
+      return fullContent;
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
     }
-    if (debugSse) {
-      console.log(
-        `[SSE-DEBUG] model=${payload.model} finish=${finishReason} chars=${fullContent.length} 原始帧样本:\n` +
-          rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')
-      );
-    }
-    // 异常守卫：预算耗尽（length）却没有一个正文字符——典型于推理模型把
-    // 输出预算全部花在思考上、或中转站上游异常路由。必须显式失败，
-    // 让调用方走降级链（保守稿），绝不把「空成功」交给管线当正常稿。
-    if (finishReason === 'length' && !fullContent.trim()) {
-      console.error(
-        `[LLM] 异常：finish=length 但正文 0 字符（model=${payload.model}）。` +
-          '多为推理模型思考烧尽输出预算或中转异常；换非推理模型 / 调大 NOVEL_LLM_MAX_TOKENS 可解。' +
-          (rawSamples.length
-            ? `原始帧样本:\n${rawSamples.map((s, i) => `  [${i}] ${s}`).join('\n')}`
-            : '')
-      );
-      throw new Error(
-        '上游返回截断信号但正文为空（疑似推理模型思考烧尽输出预算，或中转站异常）——' +
-          '请换非推理模型（如 glm-5 / kimi-k2.5），或调大 NOVEL_LLM_MAX_TOKENS 后重试。'
-      );
-    }
-    if (finishReason === 'length') {
-      console.warn(
-        `[LLM] 输出被 max_tokens 截断（finish=length，产出 ${fullContent.length} 字符）。` +
-          `若目标字数仍不足：换更长上限的模型，或设置环境变量 NOVEL_LLM_MAX_TOKENS 调大。`
-      );
-    }
-    options.onFinish?.({ finishReason });
-    return fullContent;
   } else {
     const data = (await response.json()) as any;
     const { text, finishReason: fr } = parseNonStreamResponse(provider, data);

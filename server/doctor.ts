@@ -108,7 +108,7 @@ export async function runDoctor(options?: {
   const hasKey = hasEncrypted && decrypted.length > 0;
 
   const maskedKeyHint = hasKey
-    ? `已配置（长度 ${decrypted.length}，脱敏展示 sk-****）`
+    ? '已配置'
     : hasEncrypted
       ? '有密文但无法解密（密文来自其他机器拷贝，或本机指纹/用户名已变化）'
       : '未配置';
