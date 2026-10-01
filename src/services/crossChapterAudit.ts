@@ -12,6 +12,41 @@ function sortChapters(chapters: Chapter[]): Chapter[] {
   return [...chapters].sort((a, b) => a.number - b.number);
 }
 
+/**
+ * 跨章抽检的「检查窗口」（近 N 章）。
+ *
+ * 窗口此前**写死 5**（`useAutoPilot.ts` 与 `useChapterActions.ts` 两处字面量），
+ * 面板也没有入口 → 想复查更远的中程漂移根本做不到。
+ *
+ * 两条路径的**成本曲线不同**，所以上限分开：
+ * - **手动 + 模型**（`runCrossChapterAudit({useLlm:true})`）：窗口越大，送进 prompt 的
+ *   近章正文越多 → **线性花 token**，上限收到 30；
+ * - **手动 + 纯本地启发**（`useLlm:false`）：只在本地拼 blob 做字符串匹配，**不花 token**，
+ *   上限放宽到 100。
+ *
+ * ⚠️ **Auto-Pilot 的周期抽检不读这个值**：它的结果直接决定
+ * `stopReason='cross_audit_fail'`（`useAutoPilot.ts`），放宽窗口会改变停机行为，
+ * 属另一个需要单独决策的变更。
+ */
+export const CROSS_AUDIT_MIN_RECENT = 5;
+export const CROSS_AUDIT_MAX_RECENT_LLM = 30;
+export const CROSS_AUDIT_MAX_RECENT_LOCAL = 100;
+
+/** 把用户设的窗口夹到合法区间；非法输入回落默认 5 */
+export function clampCrossAuditRecentCount(
+  value: unknown,
+  options?: { useLlm?: boolean }
+): number {
+  const max = options?.useLlm
+    ? CROSS_AUDIT_MAX_RECENT_LLM
+    : CROSS_AUDIT_MAX_RECENT_LOCAL;
+  const n =
+    typeof value === 'number' && Number.isFinite(value)
+      ? Math.floor(value)
+      : CROSS_AUDIT_MIN_RECENT;
+  return Math.max(CROSS_AUDIT_MIN_RECENT, Math.min(max, n));
+}
+
 function strip(s: string): string {
   return (s || '').replace(/\s+/g, '');
 }

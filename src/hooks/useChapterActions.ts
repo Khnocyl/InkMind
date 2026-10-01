@@ -25,7 +25,7 @@ import {
   scanBookAiTasteOnly,
   scanChapterAiTasteOnly,
 } from '../services/aiTasteActions';
-import { runCrossChapterAudit } from '../services/crossChapterAudit';
+import { runCrossChapterAudit, clampCrossAuditRecentCount } from '../services/crossChapterAudit';
 import { mergeRewriteIntoLatest } from '../services/chapterRewriteMerge';
 import {
   applyCrossAuditToChapters,
@@ -491,7 +491,7 @@ export function useChapterActions({
   };
 
   /** 跨章连贯抽检 */
-  const handleRunCrossAudit = async (useLlm: boolean) => {
+  const handleRunCrossAudit = async (useLlm: boolean, recentCountInput?: number) => {
     const proj = projectRef.current;
     if (!proj) return;
     if (generatingLockRef.current) {
@@ -499,10 +499,19 @@ export function useChapterActions({
       return;
     }
     setCrossAuditBusy(true);
-    setStatusMessage(useLlm ? '跨章抽检：本地 + 模型…' : '跨章抽检：本地启发…');
+    // 窗口：用户设置 → 按路径夹区间（模型路径线性花 token，上限 30；本地启发零 token，上限 100）
+    const recentCount = clampCrossAuditRecentCount(
+      recentCountInput ?? proj.config?.crossAuditRecentCount,
+      { useLlm }
+    );
+    setStatusMessage(
+      useLlm
+        ? `跨章抽检：本地 + 模型（近 ${recentCount} 章）…`
+        : `跨章抽检：本地启发（近 ${recentCount} 章）…`
+    );
     try {
       const report = await runCrossChapterAudit(proj, {
-        recentCount: 5,
+        recentCount,
         useLlm,
         onProgress: (msg) => setStatusMessage(msg),
       });
@@ -516,7 +525,8 @@ export function useChapterActions({
         delete cp.crossAuditRemindDismissedUntilCount;
         return {
           lastCrossAudit: report,
-          config: { ...prev.config, customParameters: cp },
+          // 记住本次窗口，下次打开面板即回填（按路径夹过的合法值）
+          config: { ...prev.config, crossAuditRecentCount: recentCount, customParameters: cp },
           ...(applied ? { chapters: applied.chapters } : {}),
         };
       });

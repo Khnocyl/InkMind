@@ -40,7 +40,7 @@ interface BookGroupProps {
   dailyWordLog?: Record<string, number> | null;
   crossAuditReport?: CrossChapterAuditReport | null;
   crossAuditBusy?: boolean;
-  onRunCrossAudit?: (useLlm: boolean) => Promise<void> | void;
+  onRunCrossAudit?: (useLlm: boolean, recentCount?: number) => Promise<void> | void;
   crossAuditRemind?: CrossAuditRemindStatus | null;
   onDismissCrossAuditRemind?: () => void;
   onJumpAuditIssue?: (
@@ -146,10 +146,13 @@ export const BookGroup: React.FC<BookGroupProps> = ({
               {crossAuditOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
             </button>
             {crossAuditOpen && (
+              /* key=项目 id：切书时强制重挂载，窗口等内部 state 不把上一本书的值带进这一本 */
               <CrossChapterAuditPanel
+                key={projectId ?? 'cross-audit'}
                 report={crossAuditReport}
                 busy={!!crossAuditBusy || isGenerating || isAutoPiloting}
                 onRun={onRunCrossAudit}
+                recentCount={projectConfig?.crossAuditRecentCount}
                 remind={crossAuditRemind}
                 onDismissRemind={onDismissCrossAuditRemind}
                 onJumpIssue={onJumpAuditIssue}

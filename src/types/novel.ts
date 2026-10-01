@@ -476,6 +476,12 @@ export interface ProjectConfig {
   writingStyle: string; // 写作风格
   genre: string; // 题材类型
   targetAudience?: string; // 核心读者受众
+  /**
+   * 跨章抽检的检查窗口（近 N 章）。缺省 5。
+   * 合法区间随路径不同：手动+模型 ≤30（线性花 token）、手动+本地启发 ≤100（零 token），
+   * 见 `clampCrossAuditRecentCount`。Auto-Pilot 周期抽检不读此值。
+   */
+  crossAuditRecentCount?: number;
   customParameters?: Record<string, any>;
 }
 

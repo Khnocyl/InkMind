@@ -536,6 +536,13 @@ export function normalizeImportedProject(
       writingStyle: asString(configRaw.writingStyle, '克制严谨、网文节奏'),
       genre,
       targetAudience: asString(configRaw.targetAudience) || undefined,
+      // 跨章抽检窗口：不校验类型就等于丢设置（导出→导入后静默回默认 5）。
+      // 这里只做类型收敛，区间夹取交给消费方 clampCrossAuditRecentCount（按路径不同上限）。
+      crossAuditRecentCount:
+        typeof configRaw.crossAuditRecentCount === 'number' &&
+        Number.isFinite(configRaw.crossAuditRecentCount)
+          ? Math.floor(configRaw.crossAuditRecentCount)
+          : undefined,
       customParameters: isRecord(configRaw.customParameters)
         ? (configRaw.customParameters as Record<string, unknown>)
         : {},

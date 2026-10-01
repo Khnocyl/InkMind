@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import type { CrossChapterAuditReport, CrossChapterIssue } from '../../types/novel';
 import type { CrossAuditRemindStatus } from '../../services/crossAuditRemind';
 import {
+  CROSS_AUDIT_MAX_RECENT_LLM,
+  CROSS_AUDIT_MAX_RECENT_LOCAL,
+  CROSS_AUDIT_MIN_RECENT,
+  clampCrossAuditRecentCount,
+} from '../../services/crossChapterAudit';
+import {
   Radar,
   Loader2,
   AlertTriangle,
@@ -18,7 +24,9 @@ import {
 interface CrossChapterAuditPanelProps {
   report?: CrossChapterAuditReport | null;
   busy?: boolean;
-  onRun: (useLlm: boolean) => Promise<void> | void;
+  onRun: (useLlm: boolean, recentCount?: number) => Promise<void> | void;
+  /** 已保存的检查窗口（近 N 章），缺省 5 */
+  recentCount?: number | null;
   /** 到期提醒（每 N 章） */
   remind?: CrossAuditRemindStatus | null;
   onDismissRemind?: () => void;
@@ -41,6 +49,7 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
   report,
   busy = false,
   onRun,
+  recentCount,
   remind,
   onDismissRemind,
   onJumpIssue,
@@ -48,7 +57,19 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [useLlm, setUseLlm] = useState(true);
+  // 检查窗口（近 N 章）。此前写死 5 且无入口，想看更远的中程漂移做不到。
+  // 初始按模型档（useLlm 默认 true）夹取：存的是本地档的 100 时，不带 options 会初始化
+  // 成 100，出现「输入框 100、标签按模型档 30」的错位；带上即与首屏标签一致。
+  const [windowChapters, setWindowChapters] = useState<number>(
+    clampCrossAuditRecentCount(recentCount, { useLlm: true })
+  );
   const due = !!remind?.due;
+  // 上限随路径变：模型路径线性花 token（≤30），本地启发零 token（≤100）
+  const windowMax = useLlm
+    ? CROSS_AUDIT_MAX_RECENT_LLM
+    : CROSS_AUDIT_MAX_RECENT_LOCAL;
+  // 切到模型路径时若当前窗口超出其上��，就地夹下来（避免「显示 80 实际按 30 跑」）
+  const effectiveWindow = clampCrossAuditRecentCount(windowChapters, { useLlm });
 
   return (
     <div className="p-4 border-b border-slate-200 bg-white space-y-2">
@@ -145,10 +166,32 @@ export const CrossChapterAuditPanel: React.FC<CrossChapterAuditPanelProps> = ({
             使用模型加深（关闭则仅本地启发，更快）
           </label>
 
+          <label className="flex items-center justify-between gap-2 text-[10px] text-slate-600">
+            <span>
+              检查窗口：近 <strong className="text-slate-900">{effectiveWindow}</strong> 章
+            </span>
+            <input
+              type="number"
+              min={CROSS_AUDIT_MIN_RECENT}
+              max={windowMax}
+              step={5}
+              value={windowChapters}
+              onChange={(e) => setWindowChapters(Number(e.target.value))}
+              onBlur={() => setWindowChapters(effectiveWindow)}
+              disabled={busy}
+              className="w-16 px-2 py-1 border border-slate-300 rounded-md font-mono text-[10px]"
+            />
+          </label>
+          <p className="text-[10px] text-slate-500 leading-relaxed -mt-0.5">
+            {useLlm
+              ? `模型路径窗口越大越费 token，上限 ${CROSS_AUDIT_MAX_RECENT_LLM} 章；想看更远请关掉「使用模型加深」。`
+              : `本地启发不花 token，上限 ${CROSS_AUDIT_MAX_RECENT_LOCAL} 章——复查中程漂移用这档。`}
+          </p>
+
           <button
             type="button"
             disabled={busy}
-            onClick={() => onRun(useLlm)}
+            onClick={() => onRun(useLlm, effectiveWindow)}
             className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-bold py-2 rounded-lg border border-black bg-black text-white hover:bg-neutral-800 disabled:opacity-50"
           >
             {busy ? <Loader2 size={13} className="animate-spin" /> : <Radar size={13} />}
