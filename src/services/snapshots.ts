@@ -12,11 +12,17 @@ import { sanitizeProjectForExport } from './projectTransfer';
 /** 每书最多保留快照数（超出删最旧） */
 export const MAX_SNAPSHOTS_PER_PROJECT = 30;
 /**
- * 永不参与裁剪的快照类型：迁移前备份是降级/迁移失败的唯一退路，
- * 回滚前备份是「后悔药」（用于撤销一次错误回滚）。按时间淘汰会在几十条
- * 普通快照之后把它们静默删掉；它们只由用户动作/schema 升级产生，数量有界。
+ * 回滚前备份（pre_restore）单独的小上限：它由「用户点回滚」产生，次数无界，
+ * 不能像普通快照那样吃满 30 份配额——否则反复回滚会永久滞留大量整书 gzip，
+ * 最终以 QuotaExceededError 反噬正常保存（为救数据反而丢得更多）。保留最近
+ * 3 份足够撤销一次错误回滚，更早的按时间淘汰。
  */
-const PINNED_SNAPSHOT_REASONS = new Set<SnapshotReason>(['migration', 'pre_restore']);
+export const MAX_PRE_RESTORE_SNAPSHOTS = 3;
+/**
+ * 永不参与裁剪的快照类型：迁移前备份是降级/迁移失败的唯一退路，只由 schema
+ * 升级产生（每次升级至多一份），数量确实有界，故永不淘汰。
+ */
+const PINNED_SNAPSHOT_REASONS = new Set<SnapshotReason>(['migration']);
 
 export type SnapshotReason =
   | 'pre_write'
@@ -340,9 +346,11 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
 }
 
 /**
- * 超出 keep（缺省读项目级 cap，再缺省 MAX_SNAPSHOTS_PER_PROJECT）时删除最旧快照。
- * 迁移前备份 / 回滚前备份永不淘汰（见 PINNED_SNAPSHOT_REASONS）——它们不占
- * 普通快照的配额，因此普通快照仍保留 cap 条，安全快照额外保留。
+ * 裁剪某书超额快照，删除最旧者。两类配额互相独立（metas 已新→旧）：
+ * - 回滚前备份：单独小上限 MAX_PRE_RESTORE_SNAPSHOTS，超出删最旧；
+ * - 普通快照：按 keep（缺省读项目级 cap，再缺省 MAX_SNAPSHOTS_PER_PROJECT）；
+ * - 迁移前备份：永不淘汰（见 PINNED_SNAPSHOT_REASONS）。
+ * pre_restore 不占普通快照配额，普通快照也不挤掉它。
  */
 export async function pruneSnapshots(
   projectId: string,
@@ -351,9 +359,22 @@ export async function pruneSnapshots(
   const cap =
     keep ?? (await getSnapshotCap(projectId)) ?? MAX_SNAPSHOTS_PER_PROJECT;
   const metas = await listSnapshots(projectId);
-  const candidates = metas.filter((m) => !PINNED_SNAPSHOT_REASONS.has(m.reason));
-  if (candidates.length <= cap) return 0;
-  const toDelete = candidates.slice(cap); // candidates 已新→旧，保留前 cap 条
+
+  const toDelete: ProjectSnapshotMeta[] = [];
+  // 回滚前备份：独立小上限（此前它在 PINNED 集合里完全绕开 cap，无界增长）
+  const preRestore = metas.filter((m) => m.reason === 'pre_restore');
+  if (preRestore.length > MAX_PRE_RESTORE_SNAPSHOTS) {
+    toDelete.push(...preRestore.slice(MAX_PRE_RESTORE_SNAPSHOTS));
+  }
+  // 普通快照：排除 pinned 与 pre_restore，保留最新 cap 条
+  const candidates = metas.filter(
+    (m) => !PINNED_SNAPSHOT_REASONS.has(m.reason) && m.reason !== 'pre_restore'
+  );
+  if (candidates.length > cap) {
+    toDelete.push(...candidates.slice(cap));
+  }
+  if (!toDelete.length) return 0;
+
   const db = await initDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_SNAPSHOTS, 'readwrite');

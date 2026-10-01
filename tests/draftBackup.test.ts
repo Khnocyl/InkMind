@@ -13,6 +13,17 @@ let putGate: Promise<void> | null = null;
 /** 剩余需要失败的 put 次数（模拟配额满 / 事务 abort） */
 let putFailures = 0;
 
+/**
+ * cleanupStaleDrafts 抢救路径的可控状态。
+ * 用 vi.hoisted：vi.mock 会被提升到模块顶部，工厂函数需能在模块初始化前引用到它。
+ */
+const rescueState = vi.hoisted(() => ({
+  /** loadProject 的返回值；null 表示项目不存在（草稿直接清理） */
+  project: null as unknown,
+  /** 被抢救固化出来的快照（断言用） */
+  snapshots: [] as { project: unknown; opts: unknown }[],
+}));
+
 function makeReq(compute: (req: { result?: unknown }) => void) {
   const req: {
     result?: unknown;
@@ -40,6 +51,8 @@ function makeReq(compute: (req: { result?: unknown }) => void) {
 vi.mock('../src/services/storage', () => ({
   STORE_META: 'meta',
   DRAFT_META_PREFIX: 'draft:',
+  // cleanupStaleDrafts 的抢救路径要读项目判断草稿是否已被终稿覆盖
+  loadProject: vi.fn(async () => rescueState.project),
   initDB: vi.fn(async () => ({
     transaction: () => {
       const tx = {
@@ -92,6 +105,13 @@ async function freshModule() {
   return await import('../src/services/draftBackup');
 }
 
+// 抢救路径会把未覆盖草稿固化成快照；桩掉以避免引入真实 snapshots（其依赖真实 IndexedDB）
+vi.mock('../src/services/snapshots', () => ({
+  createSnapshot: vi.fn(async (project: unknown, opts: unknown) => {
+    rescueState.snapshots.push({ project, opts });
+    return { id: 'snap-1' };
+  }),
+}));
 describe('saveDraftBackup / clearDraftBackup', () => {
   beforeEach(() => {
     memStore.clear();
@@ -228,6 +248,8 @@ describe('listDraftBackups', () => {
 describe('cleanupStaleDrafts', () => {
   beforeEach(() => {
     memStore.clear();
+    rescueState.project = null;
+    rescueState.snapshots.length = 0;
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-03T12:00:00Z'));
   });
@@ -272,6 +294,122 @@ describe('cleanupStaleDrafts', () => {
     const removed = await m.cleanupStaleDrafts();
     expect(removed).toBe(1);
   });
+
+  it('草稿未被终稿覆盖 → 先固化成快照再删，绝不静默丢唯一副本', async () => {
+    const m = await freshModule();
+    memStore.set('draft:p1:lost', {
+      projectId: 'p1',
+      chapterId: 'lost',
+      chapterNumber: 3,
+      chapterTitle: '断章',
+      content: '这是被中断的正文，磁盘上没有。',
+      wordCount: 15,
+      updatedAt: '2026-07-20T00:00:00.000Z', // 14 天前
+    });
+    // 项目存在但该章正文为空（草稿是唯一副本）
+    rescueState.project = {
+      id: 'p1',
+      title: '测试书',
+      chapters: [{ id: 'lost', number: 3, title: '断章', content: '', wordCount: 0 }],
+    };
+
+    const removed = await m.cleanupStaleDrafts();
+
+    expect(removed).toBe(1);
+    expect(rescueState.snapshots).toHaveLength(1);
+    const opts = rescueState.snapshots[0].opts as { reason: string; label: string };
+    expect(opts.reason).toBe('manual');
+    expect(opts.label).toContain('草稿抢救');
+    // 快照里应含草稿正文（否则"抢救"没有意义）
+    const snapProject = rescueState.snapshots[0].project as {
+      chapters: { id: string; content: string }[];
+    };
+    expect(snapProject.chapters.find((c) => c.id === 'lost')?.content).toBe(
+      '这是被中断的正文，磁盘上没有。'
+    );
+    // 草稿本身已清掉
+    expect(await m.listDraftBackups()).toHaveLength(0);
+  });
+
+  it('草稿已被终稿覆盖（终稿更长）→ 直接删，不产生快照', async () => {
+    const m = await freshModule();
+    memStore.set('draft:p1:done', {
+      projectId: 'p1',
+      chapterId: 'done',
+      chapterNumber: 4,
+      chapterTitle: '成章',
+      content: '草稿的一半内容',
+      wordCount: 7,
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    });
+    rescueState.project = {
+      id: 'p1',
+      title: '测试书',
+      chapters: [
+        {
+          id: 'done',
+          number: 4,
+          title: '成章',
+          content: '这是已经落盘的完整终稿，比草稿长得多，草稿已无保留价值。',
+          wordCount: 26,
+        },
+      ],
+    };
+
+    const removed = await m.cleanupStaleDrafts();
+
+    expect(removed).toBe(1);
+    expect(rescueState.snapshots).toHaveLength(0);
+  });
+
+  it('抢救/固化失败 → 保留草稿（宁可多留也不丢）', async () => {
+    const m = await freshModule();
+    memStore.set('draft:p1:err', {
+      projectId: 'p1',
+      chapterId: 'err',
+      chapterNumber: 5,
+      chapterTitle: '异常',
+      content: '内容',
+      wordCount: 2,
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    });
+    // 项目能读到、但章节未覆盖 → 走 createSnapshot；让它抛错
+    rescueState.project = {
+      id: 'p1',
+      title: '测试书',
+      chapters: [{ id: 'err', number: 5, title: '异常', content: '', wordCount: 0 }],
+    };
+    const snapMod = await import('../src/services/snapshots');
+    (snapMod.createSnapshot as unknown as { mockRejectedValueOnce: (e: unknown) => void })
+      .mockRejectedValueOnce(new Error('配额满'));
+
+    const removed = await m.cleanupStaleDrafts();
+
+    expect(removed).toBe(0);
+    expect(await m.listDraftBackups()).toHaveLength(1);
+  });
+
+  it('读取项目抛错（迁移/事务故障）≠ 项目已删 → 保留草稿', async () => {
+    const m = await freshModule();
+    memStore.set('draft:p1:loadfail', {
+      projectId: 'p1',
+      chapterId: 'loadfail',
+      chapterNumber: 6,
+      chapterTitle: '读失败',
+      content: '唯一副本',
+      wordCount: 4,
+      updatedAt: '2026-07-20T00:00:00.000Z',
+    });
+    const storageMod = await import('../src/services/storage');
+    (storageMod.loadProject as unknown as { mockRejectedValueOnce: (e: unknown) => void })
+      .mockRejectedValueOnce(new Error('迁移失败'));
+
+    const removed = await m.cleanupStaleDrafts();
+
+    // 关键：读取失败不能当成"项目已删"而清稿
+    expect(removed).toBe(0);
+    expect(await m.listDraftBackups()).toHaveLength(1);
+  });
 });
 
 describe('scheduleDraftBackup / flushDraftBackup（去抖）', () => {
@@ -302,6 +440,43 @@ describe('scheduleDraftBackup / flushDraftBackup（去抖）', () => {
     const all = await m.listDraftBackups();
     expect(all).toHaveLength(1);
     expect(all[0].content).toBe('最终版');
+  });
+
+  it('持续流式（chunk 间隔 < 去抖窗口）也必须周期性落盘，不能无限推后', async () => {
+    const m = await freshModule();
+    // 模拟约 120ms 一个 chunk 的流畅流式，共 3.6s —— 全程没有 800ms 的空隙。
+    // 旧实现是纯尾沿去抖：每次 schedule 都 clearTimeout 重置，草稿一条都不会落盘，
+    // 崩溃保护在最需要它的窗口里恰好失效。
+    for (let i = 0; i < 30; i += 1) {
+      m.scheduleDraftBackup({
+        projectId: 'p1',
+        chapterId: 'c1',
+        chapterNumber: 1,
+        chapterTitle: '一',
+        content: `第 ${i} 段正文`,
+      });
+      await vi.advanceTimersByTimeAsync(120);
+    }
+    const all = await m.listDraftBackups();
+    expect(all.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('短促突发仍被合并（maxWait 不破坏去抖本意）', async () => {
+    const m = await freshModule();
+    for (let i = 0; i < 4; i += 1) {
+      m.scheduleDraftBackup({
+        projectId: 'p1',
+        chapterId: 'c1',
+        chapterNumber: 1,
+        chapterTitle: '一',
+        content: `v${i}`,
+      });
+      await vi.advanceTimersByTimeAsync(100); // 合计 400ms < MAX_WAIT
+    }
+    await vi.advanceTimersByTimeAsync(800); // 触发尾沿
+    const all = await m.listDraftBackups();
+    expect(all).toHaveLength(1);
+    expect(all[0].content).toBe('v3'); // 只写最新一版
   });
 
   it('flushDraftBackup 立即冲刷未落盘调度', async () => {

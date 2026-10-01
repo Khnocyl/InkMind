@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   applyPipelineResult,
+  mergeCharacterStatesFromPipeline,
   mergeRevisionTodoStatus,
   mergeRewriteIntoLatest,
 } from '../src/services/chapterRewriteMerge';
-import type { Chapter } from '../src/types/novel';
+import type { Chapter, Character } from '../src/types/novel';
 
 function ch(overrides: Partial<Chapter> = {}): Chapter {
   return {
@@ -160,5 +161,74 @@ describe('applyPipelineResult · 管线终稿合并', () => {
     };
     expect(merged.revisionTodos.find((t) => t.id === 't1')?.status).toBe('done');
     expect(merged.revisionTodos.find((t) => t.id === 't2')).toBeTruthy();
+  });
+});
+
+// ── 管线角色表合并（P0-1）：生成期间的用户编辑不得被整表回滚 ──────────────
+
+function chr(id: string, over: Partial<Character> = {}): Character {
+  return {
+    id,
+    name: `角色${id}`,
+    status: '活跃',
+    realmOrTitle: '练气',
+    currentLocation: '青云宗',
+    secretNotes: '',
+    personality: '沉默',
+    ...over,
+  } as unknown as Character;
+}
+
+describe('mergeCharacterStatesFromPipeline · 角色表字段级合并', () => {
+  it('用户生成期间改的字段（性格/姓名）不被管线覆盖', () => {
+    const baseline = [chr('a')];
+    const latest = [chr('a', { personality: '用户改过的性格', name: '用户改的名' })];
+    const produced = [chr('a')]; // 管线没动这个角色
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out[0].personality).toBe('用户改过的性格');
+    expect(out[0].name).toBe('用户改的名');
+  });
+
+  it('管线真正改动的状态字段照常写入', () => {
+    const baseline = [chr('a')];
+    const latest = [chr('a', { personality: '用户改过的性格' })];
+    const produced = [chr('a', { status: '已阵亡/退出', lastMemoryChapterNumber: 7 })];
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out[0].status).toBe('已阵亡/退出');
+    expect(out[0].lastMemoryChapterNumber).toBe(7);
+    // 同一次合并里，用户改的非状态字段仍保留
+    expect(out[0].personality).toBe('用户改过的性格');
+  });
+
+  it('用户生成期间新增的角色保留，不被管线整表替换丢掉', () => {
+    const baseline = [chr('a')];
+    const latest = [chr('a'), chr('new-user')];
+    const produced = [chr('a', { status: '重伤' })];
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out.map((c) => c.id)).toEqual(['a', 'new-user']);
+  });
+
+  it('用户生成期间删除的角色不被管线复活', () => {
+    const baseline = [chr('a'), chr('b')];
+    const latest = [chr('a')]; // 用户删了 b
+    const produced = [chr('a'), chr('b', { status: '已阵亡/退出' })];
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out.map((c) => c.id)).toEqual(['a']);
+  });
+
+  it('管线新增的角色（基线里没有）追加进来', () => {
+    const baseline = [chr('a')];
+    const latest = [chr('a')];
+    const produced = [chr('a'), chr('pipeline-new')];
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out.map((c) => c.id)).toEqual(['a', 'pipeline-new']);
+  });
+
+  it('管线与用户都没动 → 原样返回，不产生无谓的字段抖动', () => {
+    const baseline = [chr('a')];
+    const latest = [chr('a')];
+    const produced = [chr('a')];
+    const out = mergeCharacterStatesFromPipeline(latest, produced, baseline);
+    expect(out).toEqual(latest);
   });
 });

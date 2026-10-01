@@ -1,7 +1,7 @@
 /**
  * 项目生命周期与存储韧性（真实 fake-indexeddb）：
  * - 删除项目级联清理 draft:* / snapshot-cap:* / snapshots / active_project_id；
- * - 快照裁剪尊重项目级上限，且永不淘汰 migration / pre_restore 安全快照；
+ * - 快照裁剪尊重项目级上限；migration 永不淘汰，pre_restore 走独立小上限；
  * - loadProject 面对损坏行 / 迁移抛错 / 迁移回写失败都不再让书「打不开」。
  *
  * migrations 被 mock，用来构造「迁移函数抛错」和「迁移回写触发跨页冲突」两条路径。
@@ -137,7 +137,7 @@ describe('deleteProject · 级联清理', () => {
 });
 
 describe('pruneSnapshots · 上限与安全快照保护', () => {
-  it('尊重项目级上限，且 migration / pre_restore 永不被裁剪', async () => {
+  it('尊重项目级上限，migration 永不淘汰；pre_restore 走独立小上限', async () => {
     const p = makeProject('p-prune');
     await saveProject(p);
     await setSnapshotCap(p.id, 2);
@@ -152,8 +152,25 @@ describe('pruneSnapshots · 上限与安全快照保护', () => {
     const reasons = rows.map((r) => r.reason);
     expect(reasons).toContain('migration');
     expect(reasons).toContain('pre_restore');
-    // 普通快照受上限约束（2 条），安全快照额外保留
+    // 普通快照受上限约束（2 条）；migration / pre_restore 不占该配额
     expect(reasons.filter((r) => r === 'manual')).toHaveLength(2);
+    expect(rows).toHaveLength(4);
+  });
+
+  it('反复回滚：pre_restore 只保留最近 3 份，不无界增长（防 QuotaExceededError 反噬保存）', async () => {
+    const p = makeProject('p-prune-restore');
+    await saveProject(p);
+    // 迁移前备份：永不淘汰
+    await createSnapshot(p, { reason: 'migration', prune: false, label: '迁移前备份' });
+
+    // 模拟用户反复回滚 5 次（每次 createSnapshot 默认触发 prune）
+    for (let i = 0; i < 5; i += 1) {
+      await createSnapshot(p, { reason: 'pre_restore', label: `回滚前备份 ${i}` });
+    }
+
+    const rows = await listSnapshots(p.id);
+    expect(rows.filter((r) => r.reason === 'pre_restore')).toHaveLength(3);
+    expect(rows.filter((r) => r.reason === 'migration')).toHaveLength(1);
     expect(rows).toHaveLength(4);
   });
 });

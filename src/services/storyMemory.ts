@@ -16,6 +16,58 @@ import {
   normalizeFactLedger,
 } from './factLedger';
 
+/**
+ * 生成期间的记忆编辑保护：把「用户新建/钉死的条目」并回管线产出的记忆。
+ *
+ * 背景：`produced`（章末 consolidate 结果）是基于**生成开始时的记忆快照**算出的整对象，
+ * 生成期间用户在记忆面板钉的事实、新增的伏笔、补的手动断言会被整对象覆盖而静默丢失
+ * （与角色表同类问题，见 chapterRewriteMerge 的合并纪律）。
+ *
+ * 记忆是嵌套结构，无法像角色表那样判定「管线改了哪个字段」；这里只做**按 id 并集**：
+ * 以 produced 为准（保证本章 recap / 账本的更新生效），把 latest 中 produced 缺失的
+ * 条目补回末尾。factLedger.assertions 会在下次 normalizeFactLedger 时按既有上限收敛。
+ *
+ * 已知取舍：用户在生成期间对**已有条目**的删 / 改不会被保留（produced 里仍有该 id，
+ * 故以管线为准）——本函数只保住「新建 / 钉死」这类新增意图。
+ */
+export function mergeMemoryUserAdditions(
+  latest: StoryMemory | null | undefined,
+  produced: StoryMemory
+): StoryMemory {
+  if (!latest) return produced;
+  const appendMissing = <T extends { id: string }>(base: T[], extra: T[]): T[] => {
+    if (!extra?.length) return base;
+    const seen = new Set(base.map((x) => x.id));
+    const merged = [...base];
+    for (const item of extra) {
+      if (item && item.id && !seen.has(item.id)) {
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  };
+
+  const latestLedger = latest.factLedger;
+  const producedLedger = produced.factLedger;
+  return {
+    ...produced,
+    pinnedFacts: appendMissing(produced.pinnedFacts || [], latest.pinnedFacts || []),
+    openThreads: appendMissing(produced.openThreads || [], latest.openThreads || []),
+    factLedger:
+      latestLedger && producedLedger
+        ? {
+            ...producedLedger,
+            assertions: appendMissing(
+              producedLedger.assertions || [],
+              latestLedger.assertions || []
+            ),
+          }
+        : producedLedger,
+    updatedAt: produced.updatedAt,
+  };
+}
+
 export function emptyStoryMemory(): StoryMemory {
   return {
     pinnedFacts: [],

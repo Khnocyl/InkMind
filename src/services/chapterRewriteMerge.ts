@@ -1,4 +1,4 @@
-import type { Chapter } from '../types/novel';
+import type { Chapter, Character } from '../types/novel';
 
 export interface MergeRewriteResult {
   /** 合并后的章节；null = 正文已被用户改动，结果不可安全采用 */
@@ -105,4 +105,70 @@ export function applyPipelineResult(latest: Chapter, finalChapter: Chapter): Cha
     lastModified: finalChapter.lastModified,
     revisionTodos: mergeRevisionTodoStatus(latest.revisionTodos, finalChapter.revisionTodos),
   };
+}
+
+/**
+ * 管线在角色卡上会改动的状态字段（`applyCharacterPatches` + `syncDeathsFromLedgerToCharacters`）。
+ * 其余字段（姓名/性格/背景/关系…）属于用户编辑，本函数一律不覆盖。
+ */
+type PipelineOwnedCharacterField =
+  | 'status'
+  | 'realmOrTitle'
+  | 'currentLocation'
+  | 'secretNotes'
+  | 'lastMemoryChapterNumber'
+  | 'lastMemoryUpdatedAt';
+
+const PIPELINE_OWNED_CHARACTER_FIELDS: PipelineOwnedCharacterField[] = [
+  'status',
+  'realmOrTitle',
+  'currentLocation',
+  'secretNotes',
+  'lastMemoryChapterNumber',
+  'lastMemoryUpdatedAt',
+];
+
+/**
+ * 把管线算出的角色表合并进「最新角色表」。
+ *
+ * 背景：`produced`（管线产出）是基于**生成开始时的角色快照**算出的整表，含 settler
+ * 状态回写与账本死亡同步；而生成耗时可达分钟级。此前直接整表替换
+ * （`characters: charsAfterLedger`）会把用户在这期间的编辑静默回滚 ——
+ * 与 `mergeRewriteIntoLatest` / `applyPipelineResult` 是同一类问题。
+ *
+ * 策略（以 latest 为底，只覆盖管线**真正改动**的字段）：
+ * - 同 id：仅当管线值与 `baseline`（管线输入快照）不同时，才认为该字段是管线产出的，
+ *   取管线值；未变动的字段保留 `latest`，用户编辑得以保留；
+ * - `latest` 有、`produced` 无 → 用户新增的角色，保留；
+ * - `produced` 有、`latest` 无、但 `baseline` 有 → 用户在生成期间删除了它，尊重删除；
+ * - `produced` 有、`latest` 无、`baseline` 也无 → 管线新增，追加。
+ */
+export function mergeCharacterStatesFromPipeline(
+  latest: Character[],
+  produced: Character[],
+  baseline: Character[]
+): Character[] {
+  const producedById = new Map(produced.map((c) => [c.id, c]));
+  const baselineById = new Map(baseline.map((c) => [c.id, c]));
+  const latestIds = new Set(latest.map((c) => c.id));
+
+  const merged = latest.map((c) => {
+    const p = producedById.get(c.id);
+    if (!p) return c;
+    const b = baselineById.get(c.id);
+    const take = (k: PipelineOwnedCharacterField): Character[PipelineOwnedCharacterField] =>
+      b && p[k] === b[k] ? c[k] : p[k];
+    const next: Character = { ...c };
+    for (const k of PIPELINE_OWNED_CHARACTER_FIELDS) {
+      (next as Record<PipelineOwnedCharacterField, unknown>)[k] = take(k);
+    }
+    return next;
+  });
+
+  for (const p of produced) {
+    if (latestIds.has(p.id)) continue;
+    if (baselineById.has(p.id)) continue; // 用户已删除 → 不复活
+    merged.push(p);
+  }
+  return merged;
 }

@@ -35,8 +35,15 @@ import {
   isChapterLocked,
   unlockChapterForRewrite,
 } from '../services/chapterLock';
-import { formatStoryMemoryForPrompt, mergeRecapIntoMemory } from '../services/storyMemory';
-import { applyPipelineResult } from '../services/chapterRewriteMerge';
+import {
+  formatStoryMemoryForPrompt,
+  mergeMemoryUserAdditions,
+  mergeRecapIntoMemory,
+} from '../services/storyMemory';
+import {
+  applyPipelineResult,
+  mergeCharacterStatesFromPipeline,
+} from '../services/chapterRewriteMerge';
 import { detectRecapConflicts } from '../services/memoryConsistency';
 import {
   applyHardIssuesAsRevisionTodos,
@@ -855,8 +862,18 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
             chapters: prev.chapters.map((c) =>
               c.id === chapterId ? applyPipelineResult(c, finalChapter) : c
             ),
-            characters: charsAfterLedger,
-            memory: consolidatedMemory,
+            // charsAfterLedger 基于**生成开始时的快照**算出（含 settler 回写与账本
+            // 死亡同步），生成期间用户对角色卡的新增/编辑/删除若被整表覆盖会静默丢失。
+            // 这里以 prev.characters 为底、只覆盖管线真正改动的状态字段。
+            characters: mergeCharacterStatesFromPipeline(
+              prev.characters || [],
+              charsAfterLedger,
+              beatsChars
+            ),
+            // consolidatedMemory 同样基于生成开始时的记忆快照；生成期间用户钉的事
+            // 实/新增伏笔若被整对象覆盖会静默丢失。记忆为嵌套结构，无法做字段级合并，
+            // 故按 id 把用户新增的条目并回（详见 mergeMemoryUserAdditions 注释）。
+            memory: mergeMemoryUserAdditions(prev.memory, consolidatedMemory),
             ...(delta !== 0
               ? { dailyWordLog: accrueDailyWords(prev.dailyWordLog, delta) }
               : {}),

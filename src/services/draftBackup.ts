@@ -6,7 +6,9 @@
  * 本服务把最新正文去抖落盘到 meta store，页面重新打开时提示恢复。
  */
 import { proseWords } from './proseWords';
-import { DRAFT_META_PREFIX, initDB, STORE_META } from './storage';
+import { DRAFT_META_PREFIX, initDB, STORE_META, loadProject } from './storage';
+import { createSnapshot } from './snapshots';
+import type { Chapter } from '../types/novel';
 
 export interface DraftBackup {
   projectId: string;
@@ -109,7 +111,19 @@ export async function listDraftBackups(projectId?: string): Promise<DraftBackup[
   return filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** 清理超期草稿，返回清理条数 */
+/**
+ * 清理超期草稿，返回清理条数。
+ *
+ * ⚠️ 不能按时长**无条件**删：正常路径是「终稿落盘成功后 clearDraftBackup」，
+ * 因此仍然存在的草稿往往意味着那次生成被中断/失败/直接关页 —— 它就是那段正文的
+ * **唯一副本**。此前隔 7 天连提示带正文一起删掉，用户回来时正文已永久消失且无任何
+ * 提示（与 snapshots.ts「钉死快照宁可多留」的取舍也自相矛盾）。
+ *
+ * 现在口径：
+ * - 终稿已覆盖（正文字数 ≥ 草稿）→ 直接清，空间正常回收；
+ * - 未被覆盖 → 先固化成快照（可在快照面板找回）再清草稿，绝不静默丢稿；
+ * - 项目已不存在 → 草稿无所依附，直接清。
+ */
 export async function cleanupStaleDrafts(
   maxAgeMs: number = DRAFT_MAX_AGE_MS
 ): Promise<number> {
@@ -118,25 +132,85 @@ export async function cleanupStaleDrafts(
   let removed = 0;
   for (const d of drafts) {
     const age = now - new Date(d.updatedAt).getTime();
-    if (Number.isNaN(age) || age > maxAgeMs) {
-      try {
-        await clearDraftBackup(d.projectId, d.chapterId);
-        removed++;
-      } catch {
-        /* ignore */
-      }
+    if (!Number.isNaN(age) && age <= maxAgeMs) continue;
+    try {
+      await rescueUncoveredDraft(d);
+      await clearDraftBackup(d.projectId, d.chapterId);
+      removed++;
+    } catch (err) {
+      // 抢救/删除失败一律保留草稿——宁可多留，也不静默丢唯一副本
+      console.warn('[draftBackup] 超期草稿清理失败，本次保留:', (err as Error)?.message || err);
     }
   }
   return removed;
 }
 
+/**
+ * 超期草稿若尚未被终稿覆盖，先转成快照再允许删除。返回是否发生了抢救。
+ *
+ * 快照会把草稿正文并进对应章节后再固化，因此恢复出来的就是那份未落盘的稿子；
+ * 用 `manual` 理由（非 pinned），受既有每书 30 条上限约束，存储有界。
+ */
+async function rescueUncoveredDraft(d: DraftBackup): Promise<boolean> {
+  // 不要 .catch(() => null)：loadProject 只在**确实查无此书**时返回 null（正常情况
+  // 返回项目对象），迁移失败 / 事务故障等一律抛错。把「读取失败」当成「项目已删」
+  // 会直接清掉草稿，静默丢掉唯一副本 —— 与本函数「宁可多留」的取舍自相矛盾。
+  // 抛错交由外层 catch 处理（保留草稿）。
+  const project = await loadProject(d.projectId);
+  if (!project) return false; // 确实查无此书：草稿无所依附
+
+  const chapters = project.chapters || [];
+  const chapter = chapters.find((c) => c.id === d.chapterId);
+  const draftWords = d.wordCount || proseWords(d.content || '');
+  const finalWords = chapter
+    ? proseWords(chapter.content || '') || chapter.wordCount || 0
+    : 0;
+  if (chapter && finalWords >= draftWords) return false; // 已被终稿覆盖
+
+  const rescuedChapter: Chapter = {
+    ...(chapter || ({} as Chapter)),
+    id: d.chapterId,
+    number: chapter?.number ?? d.chapterNumber,
+    title: chapter?.title ?? d.chapterTitle,
+    content: d.content,
+    wordCount: draftWords,
+  };
+  await createSnapshot(
+    {
+      ...project,
+      chapters: chapter
+        ? chapters.map((c) => (c.id === d.chapterId ? rescuedChapter : c))
+        : [...chapters, rescuedChapter],
+    },
+    {
+      reason: 'manual',
+      label: `草稿抢救：第${d.chapterNumber ?? '?'}章 ${draftWords} 字（未落盘）`,
+      chapterId: d.chapterId,
+      chapterNumber: d.chapterNumber,
+      chapterTitle: d.chapterTitle,
+    }
+  );
+  return true;
+}
+
 // ── 流式去抖：onStreamProse 高频触发，合并为周期落盘 ──
 const DEBOUNCE_MS = 800;
+/**
+ * 持续流式下的强制落盘间隔。
+ *
+ * 仅尾沿去抖是不够的：调用方是约每 120ms 触发一次的流式回调，chunk 间隔远小于
+ * DEBOUNCE_MS → 计时器被无限重置，**草稿在正常流畅流式下从不落盘**，崩溃保护
+ * 在最需要它的那段窗口里恰好失效（只有流暂停 ≥800ms 或结束时才会写一次）。
+ * 超过该间隔就立即落一次盘，保证崩溃丢稿窗口不超过它。
+ */
+const MAX_WAIT_MS = 3000;
 /** 写失败后的重试退避上限：配额满时避免高频空转 */
 const MAX_RETRY_DELAY_MS = 30_000;
 let pending: SaveDraftInput | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let saving = false;
+/** 首个待落盘变更的时间戳（0 = 当前无待处理）；用于 MAX_WAIT_MS 判定 */
+let firstPendingAt = 0;
 /** 连续写失败次数：用于退避，成功后归零 */
 let failureStreak = 0;
 
@@ -154,9 +228,16 @@ function reschedulePending(): void {
   }, retryDelayMs());
 }
 
-/** 去抖调度：只保留最新一次，DEBOUNCE_MS 后写入 */
+/** 去抖调度：合并突发，但保证最长不超过 MAX_WAIT_MS 落一次盘 */
 export function scheduleDraftBackup(input: SaveDraftInput): void {
+  const now = Date.now();
   pending = input;
+  if (!firstPendingAt) firstPendingAt = now;
+  if (now - firstPendingAt >= MAX_WAIT_MS) {
+    // 距首个未落盘变更已超过上限：立即落盘（flush 会清掉定时器并重置计时起点）
+    void flushDraftBackup();
+    return;
+  }
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
     timer = null;
@@ -173,6 +254,7 @@ export async function flushDraftBackup(): Promise<void> {
   if (!pending) return;
   const job = pending;
   pending = null;
+  firstPendingAt = 0;
   if (saving) {
     // 上一次写入还在进行：保留最新 job，并**重新挂上定时器**。
     // 此前只保留 pending 不再调度，若之后没有新的 schedule 调用，

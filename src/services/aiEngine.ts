@@ -14,7 +14,7 @@ import type {
   StyleReviewResult,
   HardReviewIssue,
 } from '../types/novel';
-import { generateJSON, generateStream } from './llmClient';
+import { generateJSON, generateStream, isGenerationAborted } from './llmClient';
 import {
   countProseWords,
   deriveWordBand,
@@ -172,6 +172,9 @@ export async function generateChapterRecap(
     }
     return recap;
   } catch (err: any) {
+    // 用户中止：原样上抛。否则中止会被降级成「服务不可用」→ 走启发式兜底把
+    // 正文末段当事实写成假 recap（keyFacts 形如「大纲规划:…」），污染书级记忆。
+    if (isGenerationAborted(err)) throw err;
     if (onProgress) {
       onProgress(` [记忆警告] recap 生成失败，使用启发式摘要：${err.message || err}`);
     }
@@ -2119,6 +2122,9 @@ export async function step5_AutoUpdateMemoryGraph(
 
     return { updatedCharacters, writeLog, patches };
   } catch (err: any) {
+    // 用户中止：原样上抛。否则会走启发式兜底，从正文尾段按关键词**猜**角色状态
+    // （已阵亡/重伤/被捕）并真实写进角色卡 —— 中止一次就留下不可逆的错误状态。
+    if (isGenerationAborted(err)) throw err;
     if (onProgress) {
       onProgress(` [Step 5 记忆警告] LLM 抽取失败，改用启发式：${err.message || err}`);
     }
