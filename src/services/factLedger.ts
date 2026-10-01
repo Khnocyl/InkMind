@@ -21,6 +21,7 @@ import type {
   WorldEntityState,
 } from '../types/novel';
 import { splitProseForReview } from './proseSegments';
+import { generateJSON } from './llmClient';
 
 const MAX_ACTIVE = 120;
 const MAX_SNAPSHOTS = 30;
@@ -272,6 +273,73 @@ function pushAssert(
 }
 
 /**
+ * 抽取「角色已被写死」的确定性正文表达。
+ *
+ * 只当**角色名 + 0~16 字符 + 死亡词**在同一句命中，且：
+ * - 角色名与死亡词之间没有弱化词（差点/险些/若/如果/诈死/以为/误以为/都当/传说…）——
+ *   回忆杀、假设句、诈死、濒死（命悬一线）都不构成「这章已经死了」；
+ * - 死亡词之后 14 字符内没有抵消词（救活/复活/还魂）——作者可能写了「身亡」后
+ *   立刻反转，账本不该把反转的瞬间才死的人提前钉死。
+ *
+ * 返回命中的原文片段（供 claim 存证），不确定则返回 null。（观察项 #2）
+ */
+const DEATH_WEAKEN_RE =
+  /差点|险些|几乎|差一点|若|如果|假如|万一|要是|即便|就算|假装|诈|疑似|恐怕|大概|也许|可能|传说|据说|相传|传闻|自称|宛如|仿佛|谎称|以为|误以为|都当|只当|命悬一线|气息奄奄|一息尚存|回天乏术|想起|回忆|当年|那时|曾经|曾|从前|昔日|忆起|早年间|变故/;
+const DEATH_REVIVE_RE = /救活|死而复生|还魂|复活|却未断气|又活/;
+// 分句分隔符不含顿号「、」：顿号常用于回忆列举（「他想起当年、那场大战，阿岚已死」），
+// 若作分句边界会把「想起」隔在回看窗口外 → 回忆杀被误判为真死。
+// 移出后这类回忆引导落在「前一分句」内，由 24 字回看地板罩住。
+const DEATH_CLAUSE_SEP_RE = /[，。！？；：\n—…]/;
+
+/** 从 from 处向前找到最近的分句边界起点（无边界则 0） */
+function clauseStartBefore(blob: string, from: number): number {
+  for (let i = from - 1; i >= 0; i -= 1) {
+    if (DEATH_CLAUSE_SEP_RE.test(blob[i])) return i + 1;
+  }
+  return 0;
+}
+
+function extractDeathFromText(
+  name: string,
+  blob: string,
+  otherNames: string[] = []
+): string | null {
+  // 必须遍历**全部**出现位置：角色名在本章可能先出现在回忆杀/假设句里
+  // （"他想起当年阿岚便是陨落于此"），若只看首个匹配就会把后面真正的
+  // 死亡描写一起放过（假阴性）。逐个候选判定，任一候选成立即可确认写死。
+  const re = new RegExp(
+    `${escapeReg(name)}[^。！？\\n]{0,16}(身亡|阵亡|已死|死去|陨落|毙命|气绝)`,
+    'g'
+  );
+  for (const m of blob.matchAll(re)) {
+    const phrase = m[0];
+    // 弱化语境回看规则：**当前分句 + 前一个分句**，而非固定 N 字窗口。
+    // 固定 12 字会跨过逗号把无关动作卷进来——"他想起往事，转身拔剑，阿岚当场身亡"
+    // 里的"想起"属于上一分句，却会误吞本分句的当场真死（假阴性）。
+    // 只看一个分句既能罩住"他想起那一战，阿岚已死"这类回忆引导，又不会误吞。
+    const curStart = clauseStartBefore(blob, m.index);
+    const prevStart = curStart > 0 ? clauseStartBefore(blob, curStart - 1) : 0;
+    const lead = blob.slice(Math.max(prevStart, m.index - 24), m.index);
+    const between = phrase
+      .slice(name.length)
+      .replace(/(身亡|阵亡|已死|死去|陨落|毙命|气绝)$/, '');
+    if (DEATH_WEAKEN_RE.test(lead) || DEATH_WEAKEN_RE.test(between)) continue;
+    // 抵消词（复活/救活）窗口：截断到**另一个角色名**出现之前。
+    // 否则"阿岚当场身亡，三日后镇夜复活"会把镇夜的复活算到阿岚头上，
+    // 从而漏记阿岚真实的死亡。14 字为上限（覆盖"她还会复活归来"这类预告）。
+    let after = blob.slice(m.index + phrase.length, m.index + phrase.length + 14);
+    for (const other of otherNames) {
+      if (!other || other === name) continue;
+      const at = after.indexOf(other);
+      if (at >= 0) after = after.slice(0, at);
+    }
+    if (DEATH_REVIVE_RE.test(after)) continue;
+    return phrase.slice(0, 40);
+  }
+  return null;
+}
+
+/**
  * 从角色卡 + recap + 正文启发式抽取本章事实快照。
  */
 export function extractChapterFactSnapshot(input: {
@@ -293,6 +361,8 @@ export function extractChapterFactSnapshot(input: {
   const assertions: FactAssertion[] = [];
   const chars = input.characters || [];
   const involved = new Set(input.chapter.involvedCharacterIds || []);
+  // 供死亡抽取区分「抵消词属于别的角色」用（避免把旁人的复活算到本人头上）
+  const allNames = chars.map((c) => c.name).filter(Boolean);
 
   // —— 角色：死亡 / 状态 / 地点 ——
   for (const c of chars) {
@@ -335,15 +405,13 @@ export function extractChapterFactSnapshot(input: {
       });
     }
 
-    // 正文/recap：X死了 / X身亡
-    const deathRe = new RegExp(
-      `${escapeReg(c.name)}[^。！？\\n]{0,8}(身亡|阵亡|已死|死去|陨落|毙命|气绝)`
-    );
-    if (deathRe.test(blob)) {
+    // 正文/recap：X死了 / X身亡（收紧版：回忆/假设/差点/诈死不判写死，见 extractDeathFromText）
+    const deathPhrase = extractDeathFromText(c.name, blob, allNames);
+    if (deathPhrase) {
       pushAssert(assertions, {
         kind: 'death',
         subject: c.name,
-        claim: `${c.name}在文中被描述为死亡/阵亡`,
+        claim: `${c.name}在文中被描述为死亡/阵亡（原文：${deathPhrase}）`,
         value: 'dead',
         sourceChapterNumber: chN,
         note: 'from_text',
@@ -525,18 +593,42 @@ export function mergeSnapshotIntoLedger(
     assertions.push({ ...incoming, status: 'active', createdAt: now });
   }
 
-  // 活跃上限：优先保留 death / item_owner / 新近
+  // 活跃上限：优先保留 **手动钉死** / death / item_owner / 新近。
+  // 手动条目的唯一标记是 `note === 'manual'`（FactAssertion 没有专门的 pinned 字段），
+  // 而此前 rank 只看 kind → 用户手钉的 event 等低优先条目会被自动抽取的
+  // death/item_owner 悄悄挤掉，且淘汰时 note 被整条覆盖，连「这条本来是手动钉的」都查不到了。
   const active = assertions.filter((a) => a.status === 'active');
   if (active.length > MAX_ACTIVE) {
-    const ranked = [...active].sort((a, b) => {
-      const rank = (k: FactAssertionKind) =>
-        k === 'death' ? 0 : k === 'item_owner' ? 1 : k === 'character_status' ? 2 : 3;
-      return rank(a.kind) - rank(b.kind) || b.sourceChapterNumber - a.sourceChapterNumber;
-    });
+    const rank = (a: FactAssertion): number => {
+      // 手动钉死最高优先；仅当手动条目自身超过上限时，仍按新近淘汰最旧的
+      if (a.note === 'manual') return -1;
+      return a.kind === 'death'
+        ? 0
+        : a.kind === 'item_owner'
+          ? 1
+          : a.kind === 'character_status'
+            ? 2
+            : 3;
+    };
+    const ranked = [...active].sort(
+      (a, b) => rank(a) - rank(b) || b.sourceChapterNumber - a.sourceChapterNumber
+    );
     const keepIds = new Set(ranked.slice(0, MAX_ACTIVE).map((a) => a.id));
     assertions = assertions.map((a) =>
       a.status === 'active' && !keepIds.has(a.id)
-        ? { ...a, status: 'superseded' as const, note: '[账本上限归档]' }
+        ? {
+            ...a,
+            status: 'superseded' as const,
+            // 保留原 note（含 'manual' 标记），不要整条覆盖。
+            // 措辞改为「淘汰」：本路径**不写摘要**（factLedger 完全不碰 spanDigests），
+            // 且 normalizeFactLedger 的 slice 会让它在下次加载时消失；
+            // 真正「写入摘要、冷检索可命中」的是 longformMemory.archiveOverflowFacts
+            // ——那个作用于 pinnedFacts，与这里不是同一套存储。此前写「归档」是误导。
+            note: [a.note, '[账本上限淘汰：未写入摘要，重新加载后不再保留]']
+              .filter(Boolean)
+              .join(' · ')
+              .slice(0, 120),
+          }
         : a
     );
   }
@@ -1224,7 +1316,10 @@ export async function enrichSnapshotWithLlm(
     onProgress?: (msg: string) => void;
   }
 ): Promise<ChapterFactSnapshot> {
-  const { generateJSON } = await import('./llmClient');
+  // generateJSON 为顶层静态导入：llmClient 的依赖链（llmResilience/jsonRepair/
+  // llmTrace/llmRouting）均为叶子模块，与本文件无循环依赖；且它已被 App/engine
+  // 静态引入主 chunk，此处的动态导入既拆不出分包也无法真正延迟加载，
+  // 只会让构建报 INEFFECTIVE_DYNAMIC_IMPORT。改为静态导入。
   input.onProgress?.(' [账本] LLM 补抽关键事实…');
   const prose = (input.prose || '').trim();
   // 分段送审（替代旧版「头 2000 + 尾 2000」截断——中段事实不再盲区）
