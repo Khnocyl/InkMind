@@ -8,5 +8,12 @@ npx tsc -b || {
   exit 1
 }
 echo "[pre-commit] oxlint..."
-npx oxlint >/dev/null 2>&1 || true
-echo "✅ [pre-commit] 通过（类型 0 错误）"
+# 此前是 `npx oxlint >/dev/null 2>&1 || true`：把 lint 结果整个吞掉再打印 ✅，
+# 门禁等于自欺。改为保留输出、以退出码判定：oxlint 仅在存在 error 级问题时
+# 非 0 退出（warning 不拦），因此不会因历史 warning 卡死提交，但真错误会拦。
+npx oxlint || {
+  echo ""
+  echo "❌ [pre-commit] oxlint 存在 error 级问题 —— 提交被拦截。修掉或 --no-verify 跳过（不建议）。"
+  exit 1
+}
+echo "✅ [pre-commit] 通过（类型 0 错误，lint 0 error）"
