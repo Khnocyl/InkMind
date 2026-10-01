@@ -443,6 +443,10 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
         // 出场角色为空时回退全书角色，避免分镜/正文「空人设」弱输出
         const beatsChars = activeChars.length ? activeChars : allCharacters;
         const beatsSets = activeSets.length ? activeSets : allSettings;
+        // 生成开始时的记忆快照：作为章末记忆合并的 baseline。
+        // 有它才能判断「管线到底改过哪条」——否则用户在生成期间的删/改会被整对象覆盖
+        // （与 beatsChars 对角色表的作用同理，见 mergeMemoryUserAdditions）。
+        const beatsMemory = projectRef.current?.memory || liveProject.memory;
 
         let beats: PlotBeat[] = [];
 
@@ -870,10 +874,14 @@ export function useChapterPipeline(deps: UseChapterPipelineDeps) {
               charsAfterLedger,
               beatsChars
             ),
-            // consolidatedMemory 同样基于生成开始时的记忆快照；生成期间用户钉的事
-            // 实/新增伏笔若被整对象覆盖会静默丢失。记忆为嵌套结构，无法做字段级合并，
-            // 故按 id 把用户新增的条目并回（详见 mergeMemoryUserAdditions 注释）。
-            memory: mergeMemoryUserAdditions(prev.memory, consolidatedMemory),
+            // consolidatedMemory 同样基于生成开始时的记忆快照；生成期间用户钉的事实、
+            // 新增伏笔、手补断言、乃至**删除**若被整对象覆盖会静默丢失。
+            // 传 beatsMemory 作 baseline 走三方合并，与角色表（beatsChars）同口径。
+            memory: mergeMemoryUserAdditions(
+              prev.memory,
+              consolidatedMemory,
+              beatsMemory
+            ),
             ...(delta !== 0
               ? { dailyWordLog: accrueDailyWords(prev.dailyWordLog, delta) }
               : {}),

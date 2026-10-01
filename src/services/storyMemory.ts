@@ -17,53 +17,161 @@ import {
 } from './factLedger';
 
 /**
- * 生成期间的记忆编辑保护：把「用户新建/钉死的条目」并回管线产出的记忆。
+ * 结构化深比较（忽略键顺序）：判断管线是否真的改动过某条目
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (typeof a === 'object') {
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const ak = Object.keys(ao);
+    const bk = Object.keys(bo);
+    if (ak.length !== bk.length) return false;
+    return ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqual(ao[k], bo[k]));
+  }
+  return false;
+}
+
+/**
+ * 按 id 做**三方合并**（latest 用户态 / produced 管线产出 / baseline 生成开始快照）。
+ *
+ * 规则：
+ * - 管线新增（produced 有、baseline 无、latest 无）→ 保留；
+ * - 用户在生成期间**删除**（baseline 有、latest 无）→ **不复活**；
+ * - 用户**改过**而管线没动（`produced` 与 `baseline` 相同）→ 保留用户的版本；
+ * - 管线真的改过（与 baseline 不同）→ 以管线为准（保证本章 recap / 账本更新生效）；
+ * - 用户仍有、管线产出里没有 → 并回（用户新建的，或管线丢弃而用户保留的）。
+ */
+function mergeCollectionById<T>(
+  latestArr: T[] | undefined,
+  producedArr: T[] | undefined,
+  baselineArr: T[] | undefined,
+  keyOf: (x: T) => string
+): T[] {
+  const latest = latestArr || [];
+  const produced = producedArr || [];
+  const baseline = baselineArr || [];
+  const latestByKey = new Map(latest.map((x) => [keyOf(x), x]));
+  const baselineByKey = new Map(baseline.map((x) => [keyOf(x), x]));
+  const producedKeys = new Set(produced.map(keyOf));
+
+  const out: T[] = [];
+  for (const p of produced) {
+    const k = keyOf(p);
+    const l = latestByKey.get(k);
+    if (!l) {
+      // 用户侧没有：baseline 里也没有 = 管线新增 → 保留；baseline 里有 = 用户删了 → 不复活
+      if (!baselineByKey.has(k)) out.push(p);
+      continue;
+    }
+    const b = baselineByKey.get(k);
+    out.push(b && deepEqual(p, b) ? l : p);
+  }
+  for (const l of latest) {
+    if (!producedKeys.has(keyOf(l))) out.push(l);
+  }
+  return out;
+}
+
+/**
+ * 生成期间的记忆编辑保护：把「用户在生成期间对记忆的改动」并回管线产出的记忆。
  *
  * 背景：`produced`（章末 consolidate 结果）是基于**生成开始时的记忆快照**算出的整对象，
- * 生成期间用户在记忆面板钉的事实、新增的伏笔、补的手动断言会被整对象覆盖而静默丢失
- * （与角色表同类问题，见 chapterRewriteMerge 的合并纪律）。
+ * 生成期间用户在记忆面板钉的事实、新增的伏笔、补的手动断言、甚至**删除**都会被整对象
+ * 覆盖而静默丢失（与角色表同类问题，见 `mergeCharacterStatesFromPipeline`）。
  *
- * 记忆是嵌套结构，无法像角色表那样判定「管线改了哪个字段」；这里只做**按 id 并集**：
- * 以 produced 为准（保证本章 recap / 账本的更新生效），把 latest 中 produced 缺失的
- * 条目补回末尾。factLedger.assertions 会在下次 normalizeFactLedger 时按既有上限收敛。
+ * 传入 `baseline`（生成开始时的记忆）后走**三方合并**，与角色表同口径：
+ * 用户的增/改/删都能保住，同时管线真正做过的改动照常生效。
  *
- * 已知取舍：用户在生成期间对**已有条目**的删 / 改不会被保留（produced 里仍有该 id，
- * 故以管线为准）——本函数只保住「新建 / 钉死」这类新增意图。
+ * 不传 `baseline` 时降级为旧的「按 id 并集」行为——只保新增，不保改/删
+ * （兼容既有调用方与测试）。
  */
 export function mergeMemoryUserAdditions(
   latest: StoryMemory | null | undefined,
-  produced: StoryMemory
+  produced: StoryMemory,
+  baseline?: StoryMemory | null
 ): StoryMemory {
   if (!latest) return produced;
-  const appendMissing = <T extends { id: string }>(base: T[], extra: T[]): T[] => {
-    if (!extra?.length) return base;
-    const seen = new Set(base.map((x) => x.id));
-    const merged = [...base];
-    for (const item of extra) {
-      if (item && item.id && !seen.has(item.id)) {
-        seen.add(item.id);
-        merged.push(item);
+
+  // 降级路径：无 baseline 时无法判断「管线是否改过」，只能按 id 并集补新增
+  if (!baseline) {
+    const appendMissing = <T extends { id: string }>(base: T[], extra: T[]): T[] => {
+      if (!extra?.length) return base;
+      const seen = new Set(base.map((x) => x.id));
+      const merged = [...base];
+      for (const item of extra) {
+        if (item && item.id && !seen.has(item.id)) {
+          seen.add(item.id);
+          merged.push(item);
+        }
       }
-    }
-    return merged;
-  };
+      return merged;
+    };
+    const latestLedger = latest.factLedger;
+    const producedLedger = produced.factLedger;
+    return {
+      ...produced,
+      pinnedFacts: appendMissing(produced.pinnedFacts || [], latest.pinnedFacts || []),
+      openThreads: appendMissing(produced.openThreads || [], latest.openThreads || []),
+      factLedger:
+        latestLedger && producedLedger
+          ? {
+              ...producedLedger,
+              assertions: appendMissing(
+                producedLedger.assertions || [],
+                latestLedger.assertions || []
+              ),
+            }
+          : producedLedger,
+      updatedAt: produced.updatedAt,
+    };
+  }
 
   const latestLedger = latest.factLedger;
   const producedLedger = produced.factLedger;
   return {
     ...produced,
-    pinnedFacts: appendMissing(produced.pinnedFacts || [], latest.pinnedFacts || []),
-    openThreads: appendMissing(produced.openThreads || [], latest.openThreads || []),
+    pinnedFacts: mergeCollectionById(
+      latest.pinnedFacts,
+      produced.pinnedFacts,
+      baseline.pinnedFacts,
+      (f) => f.id
+    ),
+    openThreads: mergeCollectionById(
+      latest.openThreads,
+      produced.openThreads,
+      baseline.openThreads,
+      (t) => t.id
+    ),
+    // 伏笔回收建议以 threadId 为键（一个线程至多一条建议）
+    pendingHookResolves: mergeCollectionById(
+      latest.pendingHookResolves,
+      produced.pendingHookResolves,
+      baseline.pendingHookResolves,
+      (h) => h.threadId
+    ),
     factLedger:
       latestLedger && producedLedger
         ? {
             ...producedLedger,
-            assertions: appendMissing(
-              producedLedger.assertions || [],
-              latestLedger.assertions || []
+            assertions: mergeCollectionById(
+              latestLedger.assertions,
+              producedLedger.assertions,
+              baseline.factLedger?.assertions,
+              (a) => a.id
             ),
           }
         : producedLedger,
+    // 作者备忘是纯用户字段（管线从不写它）→ 生成期间编辑过就以用户的为准
+    authorNotes:
+      baseline.authorNotes !== produced.authorNotes
+        ? produced.authorNotes
+        : (latest.authorNotes ?? produced.authorNotes),
     updatedAt: produced.updatedAt,
   };
 }
