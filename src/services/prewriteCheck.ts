@@ -342,6 +342,10 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
   const styleBits: string[] = [];
   if (referenceProfile) styleBits.push(`参考源「${referenceProfile.sourceLabel}」`);
   else if (activeStyleProfile) styleBits.push(`仿写「${activeStyleProfile.name}」`);
+  // 参考源只接管**文风指南**；硬规与标点豁免仍读激活档案（见下方说明）→ bits 里也要标出来
+  if (referenceProfile && activeStyleProfile?.hardRules) {
+    styleBits.push(`硬规「${activeStyleProfile.name}」仍生效`);
+  }
   if (example) styleBits.push(`范例「${example.title}」`);
   else if (!activeStyleProfile && !referenceProfile) styleBits.push('未选 few-shot 范例');
   styleBits.push(styleConfig.enforceShowDontTell ? 'Show-don\'t-tell 开' : 'SdT 关');
@@ -357,6 +361,26 @@ export function buildPrewriteCheckReport(input: BuildPrewriteCheckInput): Prewri
       summary: `参考源「${referenceProfile.sourceLabel}」· 抽样 ${referenceProfile.sampledChapterNumbers.length} 章 / ${referenceProfile.sampleChars} 字 · 均句长 ${referenceProfile.profile.fingerprint.avgSentenceLen} · 对白约 ${Math.round(referenceProfile.profile.fingerprint.dialogueRatio * 100)}%`,
       detail: `${referenceProfile.profile.authorStyle}（仅本书注入，未保存到档案库）`,
     });
+    // ⚠️ 这里是**两个独立的轴**，不能当成二选一：
+    //   ① 文风指南 → resolveInjectionProfile，参考源优先（上面这条）；
+    //   ② 硬规与标点豁免 → resolveStyleHardRules / resolveAllowEmDash，**仍读激活档案**，
+    //      并在 auditorAgent / reviserAgent / 写稿 prompt 里真实生效。
+    // 此前用 else if 把两轴合并显示，于是设了参考源后硬规**仍在机检生效却完全不显示**
+    // ——用户会被一条自己看不见的硬规判不通过（同「设了却看不见 = 等于没设」）。
+    const hr = activeStyleProfile?.hardRules;
+    if (hr) {
+      push({
+        id: 'style_hard_rules',
+        label: '硬规（来自激活档案）',
+        severity: 'ok',
+        summary: `参考源只接管文风指南；硬规与标点豁免仍按档案「${activeStyleProfile.name}」机检${
+          hr.dialogueRatioMin !== undefined
+            ? ` · 硬规对白≥${Math.round((hr.dialogueRatioMin ?? 0) * 100)}%`
+            : ''
+        }`,
+        detail: '参考源快照不含硬规（拆书分析只产指纹与指南）。想让硬规也换掉：清除参考源，或把参考源「另存为档案」并启用。',
+      });
+    }
   } else if (activeStyleProfile) {
     const hr = activeStyleProfile.hardRules;
     push({

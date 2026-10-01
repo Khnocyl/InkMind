@@ -12,6 +12,7 @@ import {
   getReferenceStyleProfile,
   resolveStyleForInjection,
   resolveInjectionProfile,
+  resolveStyleHardRules,
   setReferenceProfile,
   clearReferenceProfile,
   normalizeReferenceProfile,
@@ -19,6 +20,7 @@ import {
   mergeStyleConfigPreserve,
 } from '../src/services/styleImitate';
 import { sampleProseForStyle } from '../src/services/bookDeconstruct';
+import { buildPrewriteCheckReport } from '../src/services/prewriteCheck';
 import { analyzeStyleFingerprint } from '../src/services/styleFingerprint';
 import { buildChapterProsePrompt } from '../src/services/prompts';
 import { getDefaultStyleConfig } from '../src/services/storage';
@@ -127,6 +129,17 @@ describe('sampleProseForStyle · 参考源抽样', () => {
     const r = sampleProseForStyle(chapters, { chapterCount: 10 });
     expect(r.chapterNumbers).toEqual([1, 2]);
     expect(r.text).not.toContain('……');
+  });
+
+  it('预算极紧时按预算缩减章数，绝不突破 maxChars', () => {
+    // 此前 per 的 200 字下限会突破预算：40 章 × 200 = 8000 > 1200（6.7 倍）
+    const big = '正文内容'.repeat(800);
+    const chapters = Array.from({ length: 60 }, (_, i) => chapter(i + 1, big));
+    const r = sampleProseForStyle(chapters, { chapterCount: 40, maxChars: 1200 });
+    expect(r.charCount).toBeLessThanOrEqual(1200);
+    // 仍保住均匀覆盖（含首章），不是退化成只取一章
+    expect(r.chapterNumbers.length).toBeGreaterThanOrEqual(2);
+    expect(r.chapterNumbers[0]).toBe(1);
   });
 });
 
@@ -285,5 +298,66 @@ describe('落盘与备份 · 参考源不被冲掉', () => {
     expect(project.styleConfig.referenceProfile?.projectId).toBe('proj-dec-1');
     expect(project.styleConfig.referenceProfile?.profile.name).toBe('拆书参考文风');
     expect(project.styleConfig.styleProfiles || []).toEqual([]);
+  });
+});
+
+// ── 5. 写前检查：文风指南与硬规是**两个轴**，不能合并成二选一 ──────────────
+
+describe('prewriteCheck · 参考源与档案硬规两个轴都要显示', () => {
+  const archiveWithHardRules = (): StyleProfile => ({
+    ...fakeProfile('我的档案'),
+    id: 'archive-1',
+    hardRules: { dialogueRatioMin: 0.3 } as never,
+  });
+
+  function makeStyleConfig(profiles: StyleProfile[]): StyleConfig {
+    return {
+      ...getDefaultStyleConfig(),
+      styleProfiles: profiles,
+      activeStyleProfileId: profiles[0]?.id ?? null,
+      referenceProfile: fakeReference(),
+    } as StyleConfig;
+  }
+
+  const chapterForCheck = {
+    ...chapter(1, ''),
+    summary: '这是一个足够长的章节梗概用于通过占位判定',
+  } as Chapter;
+
+  it('设了参考源且激活档案声明硬规 → 两者都必须出现', () => {
+    const styleConfig = makeStyleConfig([archiveWithHardRules()]);
+    const report = buildPrewriteCheckReport({
+      chapter: chapterForCheck,
+      allCharacters: [],
+      allSettings: [],
+      styleConfig,
+      previousContextPack: null,
+    });
+    const text = report.items.map((i) => `${i.label}｜${i.summary}`).join('\n');
+
+    // ① 文风轴：参考源生效
+    expect(text).toContain('文风参考源');
+    expect(text).toContain('拆书模板：测试模板书');
+    // ② 约束轴：硬规仍在机检生效 —— 此前 else if 把它整条吞掉，用户看不见却被判不通过
+    expect(text).toContain('硬规');
+    expect(text).toContain('硬规对白≥30%');
+
+    // 与运行时口径一致：硬规确实仍由激活档案提供
+    expect(resolveStyleHardRules(styleConfig)).toEqual({ dialogueRatioMin: 0.3 });
+  });
+
+  it('只有参考源、激活档案未声明硬规 → 不出现多余的硬规条目', () => {
+    const styleConfig = makeStyleConfig([{ ...fakeProfile('我的档案'), id: 'archive-1' }]);
+    const report = buildPrewriteCheckReport({
+      chapter: chapterForCheck,
+      allCharacters: [],
+      allSettings: [],
+      styleConfig,
+      previousContextPack: null,
+    });
+    const text = report.items.map((i) => `${i.label}｜${i.summary}`).join('\n');
+    expect(text).toContain('文风参考源');
+    expect(text).not.toContain('硬规（来自激活档案）');
+    expect(resolveStyleHardRules(styleConfig)).toBeNull();
   });
 });

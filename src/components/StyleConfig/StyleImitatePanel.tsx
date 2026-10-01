@@ -179,8 +179,19 @@ export const StyleImitatePanel: React.FC<StyleImitatePanelProps> = ({
   };
 
   const handleClearReference = async () => {
-    await onUpdateStyleConfig((prev) => clearReferenceProfile(prev));
-    setRefMsg('已清除本书参考源');
+    if (refBusy) return;
+    setRefBusy(true);
+    // 与另两个参考源处理器（分析 / 另存为档案）保持同一套错误处理：
+    // 此前裸 await + void 调用，落盘失败（如 rev 冲突）会变成未处理的 rejection，
+    // 用户既看不到失败、也看不到成功文案，界面上毫无反应。
+    try {
+      await onUpdateStyleConfig((prev) => clearReferenceProfile(prev));
+      setRefMsg('已清除本书参考源');
+    } catch (e: unknown) {
+      setRefMsg(`❌ 清除失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefBusy(false);
+    }
   };
 
   /**

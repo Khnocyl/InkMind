@@ -418,21 +418,37 @@ export function sampleProseForStyle(
   const usable = chapters.filter((c) => hasUsableChapterBody(c.content));
   if (!usable.length) return { text: '', chapterNumbers: [], charCount: 0 };
 
+  // 预算内最多取几章：每章至少 MIN_PER_CHAPTER 字，且**总预算不得超过 maxChars**。
+  // 两者冲突时以总预算为准——它对齐 buildStyleAnalyzePrompt 的首尾各 2200 字上限；
+  // 超预算时 prompt 只会取到样本首尾、中段被静默丢弃，均匀抽样就白做了。
+  // （此前 per 的 200 字下限会突破预算：{chapterCount:40, maxChars:1200} → 总量 8000。）
+  // 截断标记 '……' 连同两侧换行占 4 字符，需从配额里预留，否则每章会略微超出。
+  const MIN_PER_CHAPTER = 200;
+  const SEPARATOR_CHARS = 4;
+  const budgetCount = Math.max(
+    2,
+    Math.floor(maxChars / (MIN_PER_CHAPTER + SEPARATOR_CHARS))
+  );
+  const takeCount = Math.min(count, budgetCount);
+
   const picked: Chapter[] = [];
-  if (usable.length <= count) {
+  if (usable.length <= takeCount) {
     picked.push(...usable);
   } else {
     // 均匀取样（含首尾）：step=(n-1)/(count-1)，四舍五入后去重
     const seen = new Set<number>();
-    for (let i = 0; i < count; i += 1) {
-      const idx = Math.round((i * (usable.length - 1)) / (count - 1));
+    for (let i = 0; i < takeCount; i += 1) {
+      const idx = Math.round((i * (usable.length - 1)) / (takeCount - 1));
       if (seen.has(idx)) continue;
       seen.add(idx);
       picked.push(usable[idx]);
     }
   }
 
-  const per = Math.max(200, Math.floor(maxChars / picked.length));
+  const per = Math.max(
+    MIN_PER_CHAPTER,
+    Math.floor(maxChars / picked.length) - SEPARATOR_CHARS
+  );
   const parts: string[] = [];
   const chapterNumbers: number[] = [];
   let charCount = 0;
