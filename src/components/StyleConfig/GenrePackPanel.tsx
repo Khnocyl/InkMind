@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { ProjectConfig } from '../../types/novel';
 import {
   formatGenrePackForPrompt,
@@ -63,6 +63,15 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
   const [name, setName] = useState(effective.name);
   const [description, setDescription] = useState(effective.description);
   const [pacing, setPacing] = useState(effective.pacing);
+  const [beatStructure, setBeatStructure] = useState(effective.beatStructure || '');
+  const [scenePatterns, setScenePatterns] = useState(linesToText(effective.scenePatterns || []));
+  const [payoffDesign, setPayoffDesign] = useState(linesToText(effective.payoffDesign || []));
+  const [perspectiveRules, setPerspectiveRules] = useState(
+    linesToText(effective.perspectiveRules || [])
+  );
+  const [relationshipRules, setRelationshipRules] = useState(
+    linesToText(effective.relationshipRules || [])
+  );
   const [taboos, setTaboos] = useState(linesToText(effective.taboos));
   const [mustHaves, setMustHaves] = useState(linesToText(effective.mustHaves));
   const [auditHints, setAuditHints] = useState(linesToText(effective.auditHints || []));
@@ -75,6 +84,11 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
     setName(effective.name);
     setDescription(effective.description);
     setPacing(effective.pacing);
+    setBeatStructure(effective.beatStructure || '');
+    setScenePatterns(linesToText(effective.scenePatterns || []));
+    setPayoffDesign(linesToText(effective.payoffDesign || []));
+    setPerspectiveRules(linesToText(effective.perspectiveRules || []));
+    setRelationshipRules(linesToText(effective.relationshipRules || []));
     setTaboos(linesToText(effective.taboos));
     setMustHaves(linesToText(effective.mustHaves));
     setAuditHints(linesToText(effective.auditHints || []));
@@ -101,6 +115,11 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
       name: name.trim() || basePack.name,
       description: description.trim(),
       pacing: pacing.trim(),
+      beatStructure: beatStructure.trim(),
+      scenePatterns: textToLines(scenePatterns),
+      payoffDesign: textToLines(payoffDesign),
+      perspectiveRules: textToLines(perspectiveRules),
+      relationshipRules: textToLines(relationshipRules),
       taboos: textToLines(taboos),
       mustHaves: textToLines(mustHaves),
       auditHints: textToLines(auditHints),
@@ -119,6 +138,11 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
     setName(b.name);
     setDescription(b.description);
     setPacing(b.pacing);
+    setBeatStructure(b.beatStructure || '');
+    setScenePatterns(linesToText(b.scenePatterns || []));
+    setPayoffDesign(linesToText(b.payoffDesign || []));
+    setPerspectiveRules(linesToText(b.perspectiveRules || []));
+    setRelationshipRules(linesToText(b.relationshipRules || []));
     setTaboos(linesToText(b.taboos));
     setMustHaves(linesToText(b.mustHaves));
     setAuditHints(linesToText(b.auditHints || []));
@@ -133,6 +157,11 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
         name,
         description,
         pacing,
+        beatStructure,
+        scenePatterns: textToLines(scenePatterns),
+        payoffDesign: textToLines(payoffDesign),
+        perspectiveRules: textToLines(perspectiveRules),
+        relationshipRules: textToLines(relationshipRules),
         taboos: textToLines(taboos),
         mustHaves: textToLines(mustHaves),
         auditHints: textToLines(auditHints),
@@ -184,6 +213,48 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
             <div className="font-semibold text-slate-800 mb-1">节奏</div>
             <p className="text-slate-600 leading-relaxed">{effective.pacing}</p>
           </div>
+          {effective.beatStructure && (
+            <div>
+              <div className="font-semibold text-slate-800 mb-1">章节范式</div>
+              <p className="text-slate-600 leading-relaxed">{effective.beatStructure}</p>
+            </div>
+          )}
+          {[
+            ['招牌场景拍法', effective.scenePatterns],
+            ['爽点与情绪兑现', effective.payoffDesign],
+            ['视角纪律', effective.perspectiveRules],
+            ['人物关系法则', effective.relationshipRules],
+          ]
+            .filter(([, items]) => (items as string[] | undefined)?.length)
+            .map(([title, items]) => (
+              <div key={title as string}>
+                <div className="font-semibold text-slate-800 mb-1">{title as string}</div>
+                <ul className="list-disc pl-4 space-y-0.5 text-slate-700">
+                  {(items as string[]).map((t) => (
+                    <li key={t}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          {effective.styleNorms &&
+            (effective.styleNorms.targetWords ||
+              effective.styleNorms.paragraphLen ||
+              effective.styleNorms.dialogueRatio) && (
+              <div>
+                <div className="font-semibold text-slate-800 mb-1">题材参考规格（软性）</div>
+                <p className="text-slate-600 leading-relaxed">
+                  {[
+                    effective.styleNorms.targetWords && `单章约 ${effective.styleNorms.targetWords} 字`,
+                    effective.styleNorms.paragraphLen &&
+                      `段落约 ${effective.styleNorms.paragraphLen} 字`,
+                    effective.styleNorms.dialogueRatio &&
+                      `对白约 ${effective.styleNorms.dialogueRatio}%`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              </div>
+            )}
           <div>
             <div className="font-semibold text-slate-800 mb-1">禁忌</div>
             <ul className="list-disc pl-4 space-y-0.5 text-slate-700">
@@ -254,6 +325,51 @@ export const GenrePackPanel: React.FC<GenrePackPanelProps> = ({
               value={pacing}
               onChange={(e) => setPacing(e.target.value)}
               className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg leading-relaxed"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-semibold text-slate-700">章节范式（起→承→转→合）</span>
+            <textarea
+              rows={2}
+              value={beatStructure}
+              onChange={(e) => setBeatStructure(e.target.value)}
+              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg leading-relaxed"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-semibold text-slate-700">招牌场景拍法（每行一条）</span>
+            <textarea
+              rows={3}
+              value={scenePatterns}
+              onChange={(e) => setScenePatterns(e.target.value)}
+              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono leading-relaxed"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-semibold text-slate-700">爽点与情绪兑现（每行一条）</span>
+            <textarea
+              rows={3}
+              value={payoffDesign}
+              onChange={(e) => setPayoffDesign(e.target.value)}
+              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono leading-relaxed"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-semibold text-slate-700">视角纪律（每行一条）</span>
+            <textarea
+              rows={2}
+              value={perspectiveRules}
+              onChange={(e) => setPerspectiveRules(e.target.value)}
+              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono leading-relaxed"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-semibold text-slate-700">人物关系法则（每行一条）</span>
+            <textarea
+              rows={2}
+              value={relationshipRules}
+              onChange={(e) => setRelationshipRules(e.target.value)}
+              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono leading-relaxed"
             />
           </label>
           <label className="block space-y-1">
