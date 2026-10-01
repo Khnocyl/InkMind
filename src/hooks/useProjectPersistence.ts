@@ -5,7 +5,12 @@ import type {
   SetStateAction,
 } from 'react';
 import type { BookProject, BookProjectSummary } from '../types/novel';
-import { saveProject, listProjects, isProjectConflictError } from '../services/storage';
+import {
+  saveProject,
+  listProjects,
+  isProjectConflictError,
+  invalidateProjectListCache,
+} from '../services/storage';
 import { CoalescedWriter } from '../services/coalescedWriter';
 import type { CoalescedWriteResult } from '../services/coalescedWriter';
 import { mergeStyleConfigPreserve } from '../services/styleImitate';
@@ -55,6 +60,11 @@ export function useProjectPersistence({
         // 他页已修改导致拒写：静默 console 不足以止损（用户会继续敲而全部不落盘），显式打断一次
         if (isProjectConflictError(err) && !conflictAlertedRef.current) {
           conflictAlertedRef.current = true;
+          // 冲突本身就意味着「别的标签页刚刚写完新数据」——本页列表缓存大概率陈旧
+          // （TTL 3s 内不失效）。失效缓存并立即重读，让书库列表同步他页的最新状态，
+          // 而不是让用户在陈旧摘要上继续操作（观察项 #1）。
+          invalidateProjectListCache();
+          void listProjects().then((updatedList) => setProjectsList(updatedList));
           window.alert(err.message);
         }
       }

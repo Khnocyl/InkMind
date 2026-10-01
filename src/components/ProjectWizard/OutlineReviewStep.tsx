@@ -3,6 +3,7 @@ import type { Volume, Chapter, ProjectConfig } from '../../types/novel';
 import { Layers, ChevronDown, ChevronRight, Plus, RefreshCw, CheckCircle, BookOpen, FileText, ArrowLeft, Target, Sparkles } from 'lucide-react';
 import { isPlaceholderChapter } from '../../services/outlineGenerate';
 import { resolveChapterWordTarget } from '../../services/proseWords';
+import { OUTLINE_GENERATE_MAX_CHAPTERS } from '../../services/prompts';
 
 interface OutlineReviewStepProps {
   volumes: Volume[];
@@ -186,6 +187,13 @@ export const OutlineReviewStep: React.FC<OutlineReviewStepProps> = ({
                 const detailed = chapters.length - placeholderCount;
                 return (
                   <>
+                    {/* 目标超过单次拆章上限时先把口径说明白，避免「差 N 章」显得莫名（P2-2） */}
+                    {target > OUTLINE_GENERATE_MAX_CHAPTERS && (
+                      <span className="text-amber-800 font-semibold">
+                        {' '}
+                        · 自动大纲单次上限 {OUTLINE_GENERATE_MAX_CHAPTERS} 章
+                      </span>
+                    )}
                     {target > 0 && chapters.length !== target && (
                       <span className="text-amber-800 font-semibold">
                         {' '}

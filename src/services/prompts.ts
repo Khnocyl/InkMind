@@ -296,11 +296,21 @@ ${styleStructureSection(styleStructureBlock)}
   ];
 }
 
-/** 目标总章数（兼容两套字段） */
+/**
+ * 自动大纲**单次**生成的章数上限（成本保护：每 20 章一批 LLM 调用，500 章 ≈ 25 批）。
+ *
+ * 这是「单次自动拆章」的能力上限，**不是**全书目标的上限：目标总章数
+ * （`targetChapterCount`，控件上限见 projectLimits.MAX_TARGET_CHAPTERS=5000）是
+ * 进度统计/书库展示用的全书目标。目标超过本上限时：大纲按本上限生成，
+ * 超出部分不自动生成——向导滑杆与大纲审阅页都会如实提示（2026-09-25 产品决策）。
+ */
+export const OUTLINE_GENERATE_MAX_CHAPTERS = 500;
+
+/** 目标总章数（兼容两套字段）；自动拆章按 OUTLINE_GENERATE_MAX_CHAPTERS 封顶 */
 export function resolveOutlineTotalChapters(config: ProjectConfig): number {
   const n = config.targetChapterCount ?? config.totalChapters ?? 100;
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 1) return 100;
-  return Math.min(500, Math.max(3, Math.floor(n)));
+  return Math.min(OUTLINE_GENERATE_MAX_CHAPTERS, Math.max(3, Math.floor(n)));
 }
 
 /** 建议分卷数：约每卷 20–30 章 */

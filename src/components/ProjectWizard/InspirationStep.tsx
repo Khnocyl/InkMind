@@ -5,6 +5,9 @@ import { listGenrePacks, resolveGenrePack } from '../../services/genrePacks';
 import { generateInspirationSparks, type InspirationSpark } from '../../services/inspirationSparks';
 import { analyzeReferenceStyle, applyStyleKeyToProject, importStyleProfile } from '../../services/styleImitate';
 import { readTextFileSmart } from '../../services/textEncoding';
+import { effectiveSliderChapterMax } from '../../services/projectLimits';
+import { OUTLINE_GENERATE_MAX_CHAPTERS } from '../../services/prompts';
+import { buildWizardProjectConfig } from '../../services/wizardConfig';
 import {
   mergeWizardStyleProfiles,
   upsertGlobalStyleProfiles,
@@ -90,6 +93,14 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   const [totalChapters, setTotalChapters] = useState(
     initialConfig.targetChapterCount || initialConfig.totalChapters || 100
   );
+  /**
+   * 滑杆上限：与设置页共用 MAX_TARGET_CHAPTERS（此前这里写死 500、设置页写死 5000，
+   * 同一字段两个口径）。`effectiveSliderChapterMax` 保证上限**永远不低于当前值**，
+   * 并向上吸附到 min=20/step=10 的滑杆网格——range 输入会按 HTML 规范把 value 钳到 max，
+   * 且可停位置都在网格上：max 不在网格（如导入的 5999）时滑块只到 5990，
+   * 标签却显示 5999，一碰就被静默降级。
+   */
+  const chapterMax = effectiveSliderChapterMax(totalChapters);
   const [wordsPerChapter, setWordsPerChapter] = useState(
     initialConfig.targetWordCountPerChapter || initialConfig.wordsPerChapter || 3000
   );
@@ -249,20 +260,17 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
   /** 由当前表单状态构造 ProjectConfig（提交与草稿自动落盘共用同一份口径） */
   const buildConfig = (): ProjectConfig => {
     const { writingStyle, styleProfileId } = resolveWritingStyle(styleKey);
-    return {
+    // 走纯函数：只覆盖向导管理的字段，其余（crossAuditRecentCount / targetAudience…）保留。
+    // 此前是逐字段字面量，而提交路径是 updateAndSave({config}) 整表替换 → 那些字段被静默丢掉。
+    return buildWizardProjectConfig(initialConfig, {
       inspiration,
       totalChapters,
       wordsPerChapter,
-      targetChapterCount: totalChapters,
-      targetWordCountPerChapter: wordsPerChapter,
       writingStyle,
       genre,
-      customParameters: {
-        ...(initialConfig.customParameters || {}),
-        genrePackId: packId,
-        wizardStyleProfileId: styleProfileId || undefined,
-      },
-    };
+      genrePackId: packId,
+      styleProfileId,
+    });
   };
 
   /**
@@ -493,7 +501,7 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                 <input
                   type="range"
                   min={20}
-                  max={500}
+                  max={chapterMax}
                   step={10}
                   value={totalChapters}
                   onChange={(e) => setTotalChapters(Number(e.target.value))}
@@ -502,9 +510,16 @@ export const InspirationStep: React.FC<InspirationStepProps> = ({
                 />
                 <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
                   <span>20章(短篇)</span>
-                  <span>100章(主推)</span>
-                  <span>500章(宏篇)</span>
+                  <span>{Math.round(chapterMax / 2)}章</span>
+                  <span>{chapterMax}章(超长篇)</span>
                 </div>
+                {totalChapters > OUTLINE_GENERATE_MAX_CHAPTERS && (
+                  <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mt-2 leading-relaxed">
+                    目标将按 {totalChapters} 章记录（用于进度统计）；自动大纲单次最多生成{' '}
+                    {OUTLINE_GENERATE_MAX_CHAPTERS} 章（成本保护），第{' '}
+                    {OUTLINE_GENERATE_MAX_CHAPTERS + 1} 章起需在工作台手动添加。
+                  </p>
+                )}
               </div>
 
               <div>

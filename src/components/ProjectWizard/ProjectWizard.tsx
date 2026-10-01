@@ -162,6 +162,25 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
   };
 
+  /**
+   * 生成期视图推进：发起生成时就把界面切到**目标步骤**。
+   *
+   * 各步的 `wizardStep` 是在 AI 返回后才写入并跳转的，于是整个生成期间用户面对的
+   * 仍是上一步的表单，只有一个转圈的进度条 —— 表现为「跑第二阶段时界面还在第一阶段」。
+   * 四个 review 步在 `isGenerating` 时渲染的是独立进度块（不渲染内容），因此提前切过去
+   * 不会露出空数据。返回「失败回退」函数，由调用方在 catch 中调用，避免把用户丢在
+   * 一个没有内容的目标步上。
+   *
+   * 只改本地 viewStep、**不落盘** wizardStep：生成中途刷新应回到有完整数据的来源步。
+   * 若发起时已在目标步（各步的「重新生成」按钮），返回空操作。
+   */
+  const advanceViewForGeneration = (target: WizardStep): (() => void) => {
+    const from = viewStep;
+    if (from === target) return () => {};
+    setViewStep(target);
+    return () => setViewStep(from);
+  };
+
   // ── 向导草稿自动落盘 ──
   // 各步表单此前只在点「下一步」时落盘：退出向导/切书/刷新会丢掉未提交的编辑
   // （用户实测第一步的灵感与参数退出后回来全空）。这里把每步的编辑去抖写回项目。
@@ -197,6 +216,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
     beginGenerate();
     setErrorMsg('');
+    const rollbackView = advanceViewForGeneration('title-review');
     setProgressMsg('正在全盘解构你的灵感逻辑，脑暴推导引人入胜的绝佳书名与底层梗概...');
     try {
       const styleBlock = formatStyleStructureForPrompt(
@@ -246,6 +266,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       });
       setViewStep('title-review');
     } catch (err: any) {
+      rollbackView();
       setErrorMsg(err.message || 'AI 推导书名发生错误，请检查网络或 API Key 设置');
     } finally {
       endGenerate();
@@ -274,6 +295,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
     beginGenerate();
     setErrorMsg('');
+    const rollbackView = advanceViewForGeneration('characters-review');
     setProgressMsg('正在精心设计立体核心出场人物，埋藏隐藏暗线与绝密性格动机...');
     try {
       await updateAndSave({
@@ -303,6 +325,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       });
       setViewStep('characters-review');
     } catch (err: any) {
+      rollbackView();
       setErrorMsg(err.message || 'AI 推导人物发生错误');
     } finally {
       endGenerate();
@@ -318,6 +341,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
     beginGenerate();
     setErrorMsg('');
+    const rollbackView = advanceViewForGeneration('world-review');
     setProgressMsg('正在推导自洽森严的力量体系、地理势力以及绝不吃书的【绝对约束红线】...');
     try {
       await updateAndSave({ characters: updatedChars });
@@ -336,6 +360,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
       });
       setViewStep('world-review');
     } catch (err: any) {
+      rollbackView();
       setErrorMsg(err.message || 'AI 推导设定发生错误');
     } finally {
       endGenerate();
@@ -351,6 +376,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
     }
     beginGenerate();
     setErrorMsg('');
+    const rollbackView = advanceViewForGeneration('outline-review');
     setProgressMsg('分卷骨架 + 分批拆章进行中（对齐目标章数，可能多轮 API，请稍候）…');
     try {
       await updateAndSave({ settings: updatedSettings });
@@ -415,6 +441,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({
         );
       }
     } catch (err: any) {
+      rollbackView();
       setErrorMsg(err.message || 'AI 拆建大纲发生错误');
     } finally {
       endGenerate();

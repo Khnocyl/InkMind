@@ -59,6 +59,7 @@ import {
   type EmbeddingConfigPublic,
 } from '../../services/llmClient';
 import { invalidateEmbeddingConfigCache } from '../../services/embeddingIndex';
+import { effectiveTargetChapterMax } from '../../services/projectLimits';
 import { resolveChapterWordTarget } from '../../services/proseWords';
 import { collectBlacklistExemptions } from '../../services/aiTasteScan';
 import { ALL_LLM_ROLES, ROLE_LABELS } from '../../services/llmRouting';
@@ -1938,13 +1939,25 @@ export const StyleAndEngineManager: React.FC<StyleAndEngineManagerProps> = ({
               <input
                 type="number"
                 min={1}
-                max={5000}
+                /* 上限随当前值抬升（effectiveTargetChapterMax）：导入不钳制，存量可能 >5000，
+                   若 max 写死常量，用户一碰控件 HTML 就把既有值静默改小——违反 projectLimits 的不变量 */
+                max={effectiveTargetChapterMax(
+                  projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? 100
+                )}
                 step={1}
                 value={
                   projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? 100
                 }
                 onChange={(e) => {
-                  const n = Math.max(1, Math.min(5000, Number(e.target.value) || 1));
+                  const n = Math.max(
+                    1,
+                    Math.min(
+                      effectiveTargetChapterMax(
+                        projectConfig.targetChapterCount ?? projectConfig.totalChapters ?? 100
+                      ),
+                      Number(e.target.value) || 1
+                    )
+                  );
                   onUpdateProjectConfig({
                     ...projectConfig,
                     targetChapterCount: n,
