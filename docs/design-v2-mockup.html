@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Novel Studio · v2 优化设计稿</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --ink: #111111; --paper: #ffffff; --surface: #fafafa; --line: #e5e5e5;
+    --muted: #737373; --faint: #a3a3a3;
+    --amber: #b45309; --amber-bg: #fffbeb; --amber-line: #fde68a;
+    --rose: #be123c; --rose-bg: #fff1f2; --rose-line: #fecdd3;
+    --green: #047857; --green-bg: #ecfdf5; --green-line: #a7f3d0;
+    --radius: 10px; --radius-sm: 7px;
+  }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; background: #ebebe9; color: var(--ink); }
+  .frame { max-width: 1240px; margin: 26px auto; background: var(--paper); border: 1px solid #d8d8d4; border-radius: 14px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.1); }
+  .frame-label { display: flex; align-items: baseline; gap: 10px; max-width: 1240px; margin: 30px auto 12px; padding: 0 4px; }
+  .frame-label .no { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 5px; padding: 1px 7px; }
+  .frame-label .t { font-size: 14px; font-weight: 700; }
+  .frame-label .d { font-size: 12px; color: #8a8a86; }
+  .ic { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+  .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+
+  /* ── 顶栏（瘦身版）── */
+  .top { height: 42px; border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 16px; gap: 14px; }
+  .logo { font-weight: 800; font-size: 13px; letter-spacing: .02em; }
+  .nav { display: flex; gap: 3px; background: #f5f5f4; border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .nav span { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; color: #525252; padding: 5px 12px; border-radius: 7px; }
+  .nav span.on { background: var(--ink); color: #fff; }
+  .searchbox { margin-left: auto; display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 100px; padding: 4px 12px; font-size: 11px; color: var(--faint); background: #fff; min-width: 190px; }
+  .kbd { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); background: var(--surface); }
+  .top .chip { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 3px 10px; background: #fff; }
+  .top .chip b { color: var(--ink); }
+
+  .main { display: flex; min-height: 620px; }
+
+  /* ── 左栏 ── */
+  .side { width: 210px; border-right: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+  .vol { font-size: 10.5px; font-weight: 700; color: var(--muted); letter-spacing: .05em; padding: 5px 6px 3px; }
+  .ch { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; padding: 6px 8px; border-radius: var(--radius-sm); color: #3f3f3f; border: 1px solid transparent; }
+  .ch.on { background: var(--surface); border-color: var(--line); font-weight: 600; color: #111; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .side-foot { margin-top: auto; border-top: 1px dashed #f0f0f0; padding-top: 9px; }
+  .mh { font-size: 9.5px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .mh b { color: var(--ink); }
+  .mh-bar { display: flex; gap: 2px; height: 5px; }
+  .mh-bar i { flex: 1; border-radius: 2px; }
+
+  /* ── 中栏 ── */
+  .canvas { flex: 1; padding: 24px 34px 40px; position: relative; }
+  .editor { max-width: 640px; margin: 0 auto; }
+  .editor h1 { font-size: 16px; font-weight: 800; display: flex; align-items: center; gap: 9px; }
+  .prose { font-family: "Noto Serif SC", "Songti SC", Georgia, serif; font-size: 14px; line-height: 2.15; color: #262626; margin-top: 18px; }
+  .prose p { margin-bottom: 1em; text-indent: 2em; }
+  .prose p:first-child { text-indent: 0; }
+  .prose .caret { display: inline-block; width: 2px; height: 1.05em; background: var(--ink); vertical-align: -0.15em; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .tag { font-size: 9.5px; font-weight: 700; border-radius: 100px; padding: 1.5px 7px; white-space: nowrap; }
+  .tag.ok { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-line); }
+  .tag.warn { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-line); }
+  .tag.bad { background: var(--rose-bg); color: var(--rose); border: 1px solid var(--rose-line); }
+
+  /* ── 右栏 ── */
+  .panel { width: 288px; border-left: 1px solid var(--line); display: flex; flex-direction: column; flex-shrink: 0; background: #fff; position: relative; }
+  .rail-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; display: flex; align-items: center; justify-content: center; }
+  .rail-grip i { width: 2px; height: 30px; background: #dcdcd8; border-radius: 2px; }
+  .p-head { padding: 10px 12px 8px; border-bottom: 1px solid #f0f0f0; }
+  .p-status { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #525252; }
+  .p-status b { color: #111; }
+  .p-progress { height: 5px; background: #e8e8e8; border-radius: 100px; overflow: hidden; margin-top: 7px; }
+  .p-progress i { display: block; height: 100%; background: var(--ink); border-radius: 100px; }
+  .p-prow { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: 5px; }
+  .cta { margin: 10px 12px 4px; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 700; border-radius: var(--radius); padding: 9px 0; border: none; }
+  .gtabs { display: flex; gap: 3px; margin: 6px 12px 9px; background: #f5f5f4; border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+  .gtab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 11px; font-weight: 600; color: #525252; padding: 6px 0; border-radius: var(--radius-sm); }
+  .gtab.on { background: var(--ink); color: #fff; }
+  .badge { min-width: 15px; height: 15px; border-radius: 100px; background: var(--rose); color: #fff; font-size: 9px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .badge.amber { background: var(--amber); }
+  .p-body { flex: 1; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 11px; background: #fff; }
+  .card.sub { background: var(--surface); padding: 0 11px; }
+  .card-h { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; font-weight: 700; color: #111; }
+  .card-h .lft { display: flex; align-items: center; gap: 6px; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: #3f3f3f; padding: 3px 0; }
+  .kv b { font-weight: 700; color: #111; text-align: right; }
+  .kv .k { color: var(--muted); flex-shrink: 0; }
+  .fold { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 600; color: #3f3f3f; padding: 8px 2px; border-top: 1px solid #f0f0f0; }
+  .fold:first-child { border-top: none; }
+  .fold .lft { display: flex; align-items: center; gap: 7px; }
+  .mini { font-size: 10px; color: var(--faint); line-height: 1.7; }
+  .spacer { flex: 1; }
+
+  /* ── 底部状态栏（新增）── */
+  .statusbar { height: 26px; border-top: 1px solid var(--line); background: #fcfcfb; display: flex; align-items: center; padding: 0 14px; gap: 16px; font-size: 10.5px; color: var(--muted); }
+  .statusbar .sep { width: 1px; height: 11px; background: var(--line); }
+  .statusbar b { color: var(--ink); font-weight: 600; }
+  .statusbar .dotmark { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+
+  /* ── Zen 模式 ── */
+  .zen { background: #fdfdfc; min-height: 620px; position: relative; padding: 70px 0 90px; }
+  .zen .editor { max-width: 680px; }
+  .zen .prose { font-size: 15.5px; line-height: 2.35; }
+  .zen-top { position: absolute; top: 0; left: 0; right: 0; height: 46px; display: flex; align-items: center; padding: 0 18px; opacity: .25; }
+  .zen-top .t { font-size: 11px; color: var(--muted); }
+  .zen-pill { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--line); border-radius: 100px; padding: 7px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.07); font-size: 11px; color: var(--muted); }
+  .zen-pill b { color: var(--ink); }
+  .zen-edge { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; opacity: .35; }
+  .zen-edge i { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 8px; display: flex; align-items: center; justify-content: center; background: #fff; }
+  .guide { position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed #e0e0dc; }
+
+  /* ── 命令面板 ── */
+  .overlay { background: rgba(17,17,17,.35); padding: 46px 0 56px; display: flex; justify-content: center; }
+  .palette { width: 560px; background: #fff; border: 1px solid #d8d8d4; border-radius: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.28); overflow: hidden; }
+  .pal-in { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #f0f0f0; font-size: 13px; color: var(--ink); }
+  .pal-in .ph { color: var(--faint); }
+  .pal-sec { padding: 8px 8px 2px; }
+  .pal-sec .lab { font-size: 9.5px; font-weight: 700; color: var(--faint); letter-spacing: .08em; padding: 4px 10px; }
+  .pal-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; font-size: 12px; color: #262626; }
+  .pal-row.on { background: var(--ink); color: #fff; }
+  .pal-row .meta { margin-left: auto; font-size: 10px; opacity: .55; }
+  .pal-foot { border-top: 1px solid #f0f0f0; padding: 8px 16px; display: flex; gap: 14px; font-size: 10px; color: var(--faint); }
+
+  /* ── 记忆健康面板 ── */
+  .memwrap { padding: 22px 26px; }
+  .mem-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .mem-h .t { font-size: 13px; font-weight: 800; }
+  .mem-h .d { font-size: 11px; color: var(--muted); }
+  .threads { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px 10px; }
+  .th-row { display: grid; grid-template-columns: 190px 1fr 58px; gap: 10px; align-items: center; padding: 5px 0; font-size: 11px; }
+  .th-row .name { color: #262626; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .th-row .name .core { color: var(--amber); }
+  .th-track { position: relative; height: 14px; background: #f5f5f4; border-radius: 4px; }
+  .th-bar { position: absolute; top: 3px; height: 8px; border-radius: 3px; }
+  .th-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); border-radius: 1px; }
+  .th-row .st { text-align: right; font-size: 10px; }
+  .axis { display: grid; grid-template-columns: 190px 1fr 58px; gap: 10px; font-size: 9.5px; color: var(--faint); padding-top: 4px; border-top: 1px dashed #eee; margin-top: 4px; }
+  .axis .ticks { display: flex; justify-content: space-between; }
+  .legend { display: flex; gap: 14px; margin-top: 10px; font-size: 10px; color: var(--muted); align-items: center; }
+  .legend i { width: 14px; height: 8px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+  .memgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .cover { border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 13px; }
+  .cover .card-h { margin-bottom: 8px; }
+  .cmap { display: flex; gap: 2px; height: 22px; }
+  .cmap i { flex: 1; border-radius: 2px; position: relative; }
+  .cmap i em { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 8px; color: rgba(255,255,255,.9); }
+
+  /* ── 夜间墨色 ── */
+  .night { --paper: #171512; --surface: #1e1b17; --line: #35302a; --ink: #ece7db; --muted: #9d968a; --faint: #6e675d;
+    --amber: #e0a955; --amber-bg: #2c2313; --amber-line: #57431f; --rose: #f0748c; --rose-bg: #2e1a20; --rose-line: #5b2836; --green: #5cc99a; --green-bg: #14251d; --green-line: #27473a; }
+  .night.frame, .frame.night { background: var(--paper); border-color: #2a2620; }
+  .night .top, .night .side, .night .panel { background: var(--paper); border-color: var(--line); }
+  .night .nav { background: #221f1a; border-color: var(--line); }
+  .night .nav span { color: #b5ad9f; }
+  .night .nav span.on { background: var(--ink); color: #171512; }
+  .night .ch.on { background: var(--surface); border-color: var(--line); color: var(--ink); }
+  .night .ch { color: #b5ad9f; }
+  .night .prose { color: #ddd6c8; }
+  .night .cta { background: var(--ink); color: #171512; }
+  .night .gtabs { background: #221f1a; }
+  .night .gtab { color: #b5ad9f; }
+  .night .gtab.on { background: var(--ink); color: #171512; }
+  .night .card, .night .cover, .night .threads { background: var(--surface); border-color: var(--line); }
+  .night .card-h, .night .p-status b { color: var(--ink); }
+  .night .statusbar { background: #1a1814; border-color: var(--line); }
+  .night .p-progress { background: #2a2620; }
+  .night .p-progress i { background: var(--ink); }
+  .night .editor h1 { color: var(--ink); }
+  .night .tag.ok, .night .tag.warn, .night .tag.bad { background: transparent; }
+
+  .anno { max-width: 1240px; margin: 12px auto 8px; padding: 0 4px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .anno span { font-size: 11px; color: #525252; background: #fff; border: 1px solid #e0e0dc; border-radius: 100px; padding: 3px 11px; }
+  .anno span b { color: var(--ink); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<div class="frame-label"><span class="no">01</span><span class="t">工作台 v2 · 顶栏瘦身 + 底部状态栏 + 记忆健康入口</span><span class="d">用量/模型/进度从顶栏迁到底栏；左栏底部常驻一条「记忆健康」；右栏可拖宽可收起</span></div>
+<div class="frame">
+  <div class="top">
+    <span class="logo">Novel Studio</span>
+    <nav class="nav">
+      <span class="on"><svg class="ic" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>写作</span>
+      <span><svg class="ic" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.7-4 3-9 3s-9-1.3-9-3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg>设定与角色</span>
+      <span><svg class="ic" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v1a4 4 0 004 4h4a4 4 0 004-4v-1"/><path d="M12 13.5v2"/></svg>大纲</span>
+      <span><svg class="ic" viewBox="0 0 24 24"><path d="M14.7 6.3a4.5 4.5 0 00-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 006-6L14 13l-3-3 3.7-3.7z"/></svg>设置</span>
+    </nav>
+    <div class="searchbox"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>跳转章节、执行动作…</span><span class="kbd" style="margin-left:auto">Ctrl K</span></div>
+    <span class="chip">今日 <b>3,200</b> / 6,000 字</span>
+  </div>
+  <div class="main">
+    <aside class="side">
+      <div class="vol">第一卷 · 烬起青冥</div>
+      <div class="ch on"><span>第1章 退婚</span><span class="dot" style="background:#f59e0b"></span></div>
+      <div class="ch"><span>第2章 矿脉初探</span><span class="dot" style="background:#10b981"></span></div>
+      <div class="ch"><span>第3章 城中小比</span><span class="dot" style="background:#10b981"></span></div>
+      <div class="ch"><span>第4章 拍卖风波</span><span class="dot" style="background:#10b981"></span></div>
+      <div class="ch"><span>第5章 断崖夜袭</span><span class="dot" style="background:#d4d4d4"></span></div>
+      <div class="ch"><span>第6章 雪夜归人</span><span class="dot" style="background:#d4d4d4"></span></div>
+      <div class="side-foot">
+        <div class="mh"><span>记忆健康</span><b class="mono">82</b></div>
+        <div class="mh-bar">
+          <i style="background:#111" title="账本覆盖"></i><i style="background:#10b981" title="摘要覆盖"></i><i style="background:#f59e0b" title="伏笔债务 2"></i>
+        </div>
+        <div class="mini" style="margin-top:5px">账本 64/120 · 债务 2 · 摘要至第4章</div>
+      </div>
+    </aside>
+    <main class="canvas">
+      <div class="editor">
+        <h1>第1章 退婚 <span class="tag warn">正文草稿</span></h1>
+        <div class="prose">
+          <p>演武场上，他负手而立，衣袍无风自动。台下窃语声里，他终于抬眼，声音不高，却压过全场："三年之约，今日，我来取。"</p>
+          <p>"萧家的脸，不是你能高攀的。"女子垂眼，将一张退婚帖轻轻搁在案上，语气平静得像在赏赐。大厅里鸦雀无声，族老们的目光落下来，有失望，有嘲弄，也有几道不忍。</p>
+          <p>少年立在阶下，指尖一点一点陷进掌心。他没有抬头，只把那张帖子拿起来，慢慢攥成一团。<span class="caret"></span></p>
+        </div>
+      </div>
+    </main>
+    <aside class="panel">
+      <div class="rail-grip"><i></i></div>
+      <div class="p-head">
+        <div class="p-status"><b>第1章 退婚</b><span>未锁定</span></div>
+        <div class="p-progress"><i style="width:0%"></i></div>
+        <div class="p-prow"><span>待开始</span><span class="mono">0%</span></div>
+      </div>
+      <div class="cta"><svg class="ic" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>写这一章</div>
+      <div class="gtabs">
+        <div class="gtab on">写作</div><div class="gtab">审校<span class="badge">2</span></div><div class="gtab">全书<span class="badge amber">5</span></div>
+      </div>
+      <div class="p-body">
+        <div class="card">
+          <div class="card-h"><span class="lft">写前大纲</span><span class="tag warn">完整度 60%</span></div>
+          <div class="kv"><span class="k">目标 / 禁止 / 钩子</span><span>3 · 2 · 1</span></div>
+        </div>
+        <div class="card sub">
+          <div class="fold"><span class="lft">分镜（3）· 可拖动排序</span><svg class="ic" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></div>
+          <div class="fold"><span class="lft">连写 · 目标 3 章 · 直到绿灯</span><span class="mini">Auto-Pilot</span></div>
+          <div class="fold"><span class="lft">定稿锁定</span><span class="mini">未锁</span></div>
+        </div>
+        <div class="spacer"></div>
+        <div class="mini" style="text-align:center">审校 <b style="color:#be123c">2</b> 条待处理 · 全书 <b style="color:#b45309">5</b> 章缺口</div>
+      </div>
+    </aside>
+  </div>
+  <div class="statusbar">
+    <span><span class="dotmark" style="background:#10b981"></span>gmi · MiniMax-M3</span>
+    <span class="sep"></span>
+    <span>本月 <b class="mono">¥10.85</b> / 不限</span>
+    <span class="sep"></span>
+    <span>336 次调用 · <b class="mono">1.96M</b> tok</span>
+    <div class="right">
+      <span>全书 <b class="mono">2,070</b> / 30万 · 0.7%</span>
+      <span class="sep"></span>
+      <span>快照 <b>12 分钟前</b></span>
+      <span class="sep"></span>
+      <span>草稿已实时保留</span>
+    </div>
+  </div>
+</div>
+<div class="anno">
+  <span><b>顶栏</b>只留：导航胶囊 + Ctrl K + 今日字数。模型/费用/调用数迁到底栏（IDE 惯例，视线落点更低频）</span>
+  <span><b>左栏底部</b>「记忆健康」一条常驻：账本/摘要/债务三色，点击进 04 屏</span>
+  <span><b>右栏</b>左缘加拖拽握把；可收起为 40px 图标轨（写作时腾出正文宽度）</span>
+</div>
+
+<div class="frame-label"><span class="no">02</span><span class="t">沉浸写作模式（Zen）</span><span class="d">Esc 或 Ctrl Shift F 进入；chrome 全隐，正文加宽放大，悬浮胶囊给最低信息，边缘轨按需唤回右栏</span></div>
+<div class="frame">
+  <div class="zen">
+    <div class="zen-top"><span class="t">第1章 退婚 <span style="opacity:.55">— 沉浸中，Esc 退出</span></span></div>
+    <div class="guide"></div>
+    <div class="editor">
+      <div class="prose">
+        <p>演武场上，他负手而立，衣袍无风自动。台下窃语声里，他终于抬眼，声音不高，却压过全场："三年之约，今日，我来取。"</p>
+        <p>"萧家的脸，不是你能高攀的。"女子垂眼，将一张退婚帖轻轻搁在案上，语气平静得像在赏赐。大厅里鸦雀无声，族老们的目光落下来，有失望，有嘲弄，也有几道不忍。</p>
+        <p>少年立在阶下，指尖一点一点陷进掌心。他没有抬头，只把那张帖子拿起来，慢慢攥成一团。纸角刺进肉里的时候，他忽然笑了一下。</p>
+        <p>"好。"他松开手，碎纸混着一点血落在地上，"那便按规矩来。三天之后，我在演武场，取回我萧家今天丢出去的东西。"</p>
+      </div>
+    </div>
+    <div class="zen-pill">
+      <span>本章 <b class="mono">1,650</b> 字</span><span style="color:#e0e0dc">|</span>
+      <span>本次 <b class="mono">24:16</b></span><span style="color:#e0e0dc">|</span>
+      <span><span class="dotmark" style="width:6px;height:6px;border-radius:50%;background:#10b981;display:inline-block;margin-right:4px"></span>绿灯 · 已锁</span><span style="color:#e0e0dc">|</span>
+      <span class="kbd">Esc</span> 退出
+    </div>
+    <div class="zen-edge"><i><svg class="ic" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></i><i><svg class="ic" viewBox="0 0 24 24"><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z"/></svg></i><i><svg class="ic" viewBox="0 0 24 24"><path d="M12 2l10 5.5L12 13 2 7.5 12 2z"/></svg></i></div>
+  </div>
+</div>
+<div class="anno">
+  <span><b>触发</b>：主按钮长按 / Ctrl Shift F；写作中默认禁弹「写前体检」等 confirm，改记入底栏角标</span>
+  <span><b>右缘轨</b>悬停唤出写作/审校/全书三组（不退出 Zen 也能跑机检）</span>
+  <span><b>实现成本最低</b>：纯 CSS 布局态 + 一个 state，功能零删减</span>
+</div>
+
+<div class="frame-label"><span class="no">03</span><span class="t">命令面板 Ctrl K</span><span class="d">500 章量级的唯一导航解法：跳章 / 动作 / 设定档切换一个入口全收，动作项直接映射现有 handler</span></div>
+<div class="frame">
+  <div class="overlay">
+    <div class="palette">
+      <div class="pal-in"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><span>退</span><span class="ph">婚 / 扫描 / 快照…</span><span class="caret" style="display:inline-block;width:2px;height:1.1em;background:#111;vertical-align:-.15em"></span></div>
+      <div class="pal-sec">
+        <div class="lab">章节</div>
+        <div class="pal-row on"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>第1章 · 退婚<span class="meta">草稿 · 2 项待修</span></div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>第14章 · 退婚之赌（伏笔命中「退婚」）<span class="meta">定稿</span></div>
+      </div>
+      <div class="pal-sec">
+        <div class="lab">动作</div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>写这一章<span class="meta">Enter</span></div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/></svg>扫描本章 AI 味<span class="meta">零改写</span></div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0020.5 15"/></svg>跨章抽检 · 近 20 章<span class="meta">本地 · 零 token</span></div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/></svg>手动快照<span class="meta">Ctrl S</span></div>
+      </div>
+      <div class="pal-sec">
+        <div class="lab">配置档</div>
+        <div class="pal-row"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>切换模型 → deepseek · glm-5.3-flash<span class="meta">⌘2</span></div>
+      </div>
+      <div class="pal-foot"><span>↑↓ 选择</span><span>Enter 执行</span><span>Esc 关闭</span><span style="margin-left:auto">动作项 = 现有按钮的快捷键映射，不新增逻辑</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="frame-label"><span class="no">04</span><span class="t">记忆健康 · 伏笔债务时间轴</span><span class="d">把刚核过的债务机制（progressing=5 / core=8 / open=10）画出来：哪条伏笔在逼近沉默阈值，一眼看穿</span></div>
+<div class="frame">
+  <div class="memwrap">
+    <div class="mem-h"><span class="t">记忆健康</span><span class="d">第 120 章 · 综合 82 · 点击任意条可跳章处理</span><span class="tag ok" style="margin-left:auto">守卫在线 · 账本级全局对账</span></div>
+    <div class="threads">
+      <div class="th-row"><span class="name">★ 烬天碑的来历 <span class="core">core</span></span><div class="th-track"><div class="th-bar" style="left:2%;width:88%;background:linear-gradient(90deg,#10b981,#f59e0b 78%,#be123c)"></div><div class="th-now" style="left:90%"></div></div><span class="st" style="color:#be123c">静默 14 章</span></div>
+      <div class="th-row"><span class="name">姜漪澜的真实身份</span><div class="th-track"><div class="th-bar" style="left:18%;width:60%;background:linear-gradient(90deg,#10b981,#f59e0b)"></div><div class="th-now" style="left:90%"></div></div><span class="st" style="color:#b45309">静默 8 章</span></div>
+      <div class="th-row"><span class="name">矿洞塌方断后路</span><div class="th-track"><div class="th-bar" style="left:30%;width:52%;background:#10b981"></div><div class="th-now" style="left:90%"></div></div><span class="st" style="color:#047857">推进中 2</span></div>
+      <div class="th-row"><span class="name">退婚书无火自燃</span><div class="th-track"><div class="th-bar" style="left:4%;width:70%;background:linear-gradient(90deg,#10b981,#f59e0b 70%,#be123c)"></div><div class="th-now" style="left:90%"></div></div><span class="st" style="color:#be123c">静默 12 章</span></div>
+      <div class="th-row"><span class="name">黑袍人的玉牌（已回收）</span><div class="th-track"><div class="th-bar" style="left:44%;width:30%;background:#d4d4d4"></div><div class="th-now" style="left:90%"></div></div><span class="st" style="color:#737373">resolved</span></div>
+      <div class="axis"><span></span><div class="ticks"><span>1</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span><span>120</span></div><span></span></div>
+      <div class="legend">
+        <span><i style="background:#10b981"></i>安全（静默 &lt; 阈值）</span>
+        <span><i style="background:#f59e0b"></i>逼近（≥ 阈值×0.7）</span>
+        <span><i style="background:#be123c"></i>债务（强制注入中）</span>
+        <span><i style="background:#d4d4d4"></i>已回收</span>
+        <span style="margin-left:auto">阈值：progressing 5 · core 8 · open 10 · deferred 15</span>
+      </div>
+    </div>
+    <div class="memgrid">
+      <div class="cover">
+        <div class="card-h"><span class="lft">事实账本覆盖</span><span class="mono" style="font-size:10px;color:#047857">64 / 120</span></div>
+        <div class="kv"><span class="k">死亡（永不退场）</span><b class="mono">23</b></div>
+        <div class="kv"><span class="k">道具归属</span><b class="mono">18</b></div>
+        <div class="kv"><span class="k">角色状态</span><b class="mono">15</b></div>
+        <div class="kv"><span class="k">手钉保护</span><b class="mono">8</b></div>
+        <div class="mini" style="margin-top:6px">逼近 120 才需扩池；死亡类最抗淘汰（rank 0）</div>
+      </div>
+      <div class="cover">
+        <div class="card-h"><span class="lft">摘要分层覆盖</span><span class="mono" style="font-size:10px;color:#047857">无空洞</span></div>
+        <div class="cmap">
+          <i style="background:#111" title="super 1-100"><em>super 1-100</em></i>
+          <i style="background:#404040" title="mega 101-150"><em>mega</em></i>
+          <i style="background:#737373" title="rolling 101-120"><em>rolling</em></i>
+        </div>
+        <div class="kv" style="margin-top:8px"><span class="k">注入选择（本章）</span><span>super 1 · mega 1 · arc 1 · rolling 1</span></div>
+        <div class="mini">与 selectRelevantDigests 配额表同源，防「以为有记忆其实没注入」</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="anno">
+  <span><b>数据源全部现成</b>：threadSilence / debtThreshold / listActiveAssertions / spanDigests，纯读零 token</span>
+  <span><b>只读面板</b>：不进「一键修全部」循环（伏笔收弃是人决断——09-14 死循环教训）</span>
+</div>
+
+<div class="frame-label"><span class="no">05</span><span class="t">夜间墨色（可选主题）</span><span class="d">暖调墨纸而非纯黑，语义色提亮降饱和；主题 = CSS 变量切换，全组件零改</span></div>
+<div class="frame night">
+  <div class="top">
+    <span class="logo">Novel Studio</span>
+    <nav class="nav"><span class="on">写作</span><span>设定与角色</span><span>大纲</span><span>设置</span></nav>
+    <span class="chip" style="margin-left:auto">主题 <b>昼 / 夜</b></span>
+  </div>
+  <div class="main" style="min-height:300px">
+    <aside class="side">
+      <div class="vol">第一卷 · 烬起青冥</div>
+      <div class="ch on"><span>第1章 退婚</span><span class="dot" style="background:#f59e0b"></span></div>
+      <div class="ch"><span>第2章 矿脉初探</span><span class="dot" style="background:#10b981"></span></div>
+      <div class="ch"><span>第3章 城中小比</span><span class="dot" style="background:#10b981"></span></div>
+    </aside>
+    <main class="canvas">
+      <div class="editor">
+        <h1>第1章 退婚 <span class="tag warn">正文草稿</span></h1>
+        <div class="prose">
+          <p>演武场上，他负手而立，衣袍无风自动。台下窃语声里，他终于抬眼，声音不高，却压过全场："三年之约，今日，我来取。"</p>
+          <p>少年立在阶下，指尖一点一点陷进掌心。他没有抬头，只把那张帖子拿起来，慢慢攥成一团。</p>
+        </div>
+      </div>
+    </main>
+    <aside class="panel">
+      <div class="p-head"><div class="p-status"><b>第1章 退婚</b><span>未锁定</span></div><div class="p-progress"><i style="width:0%"></i></div></div>
+      <div class="cta">写这一章</div>
+      <div class="gtabs"><div class="gtab on">写作</div><div class="gtab">审校<span class="badge">2</span></div><div class="gtab">全书<span class="badge amber">5</span></div></div>
+      <div class="p-body"><div class="card"><div class="card-h"><span class="lft">写前大纲</span><span class="tag warn">完整度 60%</span></div></div></div>
+    </aside>
+  </div>
+  <div class="statusbar"><span><span class="dotmark" style="background:#10b981"></span>gmi · MiniMax-M3</span><span class="sep"></span><span>本月 <b class="mono">¥10.85</b></span><div class="right"><span>全书 <b class="mono">2,070</b> / 30万</span></div></div>
+</div>
+<div class="anno">
+  <span><b>前置条件</b>：先把 index.css 的硬编码色（#111/#be123c/#b45309 等）收敛为 token——这是唯一成本</span>
+  <span>夜调：纸 #171512 暖墨 · 字 #ECE7DB · 语义色提亮降饱和，衬线正文保留「写字」手感</span>
+</div>
+
+<div class="anno" style="max-width:1240px;margin:26px auto 40px">
+  <span><b>落地顺序</b>：02 Zen（纯 CSS，半天）→ 01 底栏+顶栏瘦身（半天）→ 04 记忆健康（新组件，数据全现成）→ 03 Ctrl K（中）→ 05 夜间（先 token 化）</span>
+  <span><b>纪律不变</b>：功能 0 删减 · 语义色只上徽标边框 · 墨=主操作</span>
+</div>
+
+</body>
+</html>
