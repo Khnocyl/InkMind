@@ -31,6 +31,14 @@ server/data/
 *.sln
 *.sw?
 
+# AI agent 工作目录（会话记忆 / 中间产物：属工具状态，禁止入库）
+.workbuddy-ai/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.aider*
+
 # 打包产物与中间件（保留桌面应用图标）
 build/*
 !build/icon.png
