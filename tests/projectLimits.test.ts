@@ -47,9 +47,10 @@ describe('projectLimits · 目标总章数上限', () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const root = process.cwd();
+    // 设置页消费方已自 StyleAndEngineManager.tsx 拆入 SettingsTargetsSection.tsx
     for (const rel of [
       'src/components/ProjectWizard/InspirationStep.tsx',
-      'src/components/StyleConfig/StyleAndEngineManager.tsx',
+      'src/components/StyleConfig/SettingsTargetsSection.tsx',
     ]) {
       const src = fs.readFileSync(path.join(root, rel), 'utf8');
       // 不得再出现写死的章数上限字面量
@@ -63,7 +64,7 @@ describe('projectLimits · 目标总章数上限', () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const src = fs.readFileSync(
-      path.join(process.cwd(), 'src/components/StyleConfig/StyleAndEngineManager.tsx'),
+      path.join(process.cwd(), 'src/components/StyleConfig/SettingsTargetsSection.tsx'),
       'utf8'
     );
     // 若退回写死常量 max={MAX_TARGET_CHAPTERS}，导入的超限存量值一碰就被 clamp
