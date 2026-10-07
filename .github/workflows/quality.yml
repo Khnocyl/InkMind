@@ -1,0 +1,66 @@
+# 质量门禁 · CI 版
+#
+# 与本地 .githooks/ 同口径，但不依赖任何人记得装钩子（core.hooksPath 是可绕过的、
+# 且钩子只作用于有钩子的那台机器）。CI 是唯一无法被本地环境悄悄跳过的门禁：
+# 2026-10-01 工作区曾有 122 个文件（79 个 src/services + 43 个测试）被误删至
+# 项目无法编译，本地无任何信号，只能靠人工勘察才发现 —— 本 workflow 即为该缺口。
+#
+# 四道门禁与本地一一对应（故意不复用 npm run build：拆开才能看清是哪一道挂的）：
+#   tsc -b     ← pre-commit（类型检查，0 错误）
+#   oxlint     ← pre-commit（0 error；历史 warning 基线 18，不拦）
+#   vitest     ← pre-push（全量单测，基线 903 passed / 75 文件）
+#   vite build ← pre-push（前端产物可构建）
+name: Quality Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支连续推送时取消旧运行，避免排队浪费额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 只读权限：本 workflow 不写仓库、不评论、不发包
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: 类型 / 测试 / 规范 / 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # Node 22 与开发机一致；README 要求 20+，锁 22 避免上游浮动
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 用 ci 而非 install：严格按 package-lock.json 装，且 lock 与 package.json
+      # 不一致时直接失败（这正是本地 npm install 会静默"修好"的漂移）
+      - name: 安装依赖
+        run: npm ci
+
+      # 关键：类型检查失败即整轮失败。缺文件（如整个 services 目录被删）会在此
+      # 以 TS2307「Cannot find module」成批爆出，是本次事故最灵敏的探针
+      - name: 类型检查（tsc -b）
+        run: npx tsc -b
+
+      - name: 全量单测（vitest）
+        run: npm test
+        env:
+          CI: 'true'
+
+      - name: 代码规范（oxlint）
+        run: npx oxlint
+
+      - name: 前端构建（vite build）
+        run: npx vite build
