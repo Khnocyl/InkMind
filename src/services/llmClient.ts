@@ -59,6 +59,35 @@ export interface EmbeddingConfigPublic {
   resolvedHasKey: boolean;
 }
 
+/**
+ * 常见模型官方 API 域名。Base URL 落在名单外时视为第三方中转——
+ * 写作正文/设定/记忆会全文发送到该端点，UI 需给出隐私提醒。
+ * （模型配置表单与 Embedding 表单两处共用，从设置页组件抽出单一来源。）
+ */
+const OFFICIAL_LLM_HOSTS = new Set([
+  'api.deepseek.com',
+  'api.moonshot.cn',
+  'open.bigmodel.cn',
+  'api.siliconflow.cn',
+  'api.openai.com',
+  'api.anthropic.com',
+  'dashscope.aliyuncs.com',
+  'api.minimax.chat',
+  'api.lingyiwanwu.com',
+]);
+
+/** 返回第三方中转域名；官方端点/空/非法 URL 返回 null */
+export function thirdPartyHost(baseURL: string): string | null {
+  const t = (baseURL || '').trim();
+  if (!t) return null;
+  try {
+    const u = new URL(t);
+    return OFFICIAL_LLM_HOSTS.has(u.hostname) ? null : u.hostname;
+  } catch {
+    return null;
+  }
+}
+
 export async function getLLMConfig(): Promise<BackendLLMConfig> {
   // 后端失败 / 非 JSON / 业务错误一律如实上抛。此前 catch 后静默返回一套硬编码
   // deepseek 默认配置，设置页会把「后端不可用」误显示成一套不存在的当前配置

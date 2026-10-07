@@ -53,6 +53,7 @@ import {
   getEmbeddingConfig,
   saveEmbeddingConfigApi,
   testEmbeddingApi,
+  thirdPartyHost,
   type BackendLLMConfig,
   type LLMModelInfo,
   type LLMProfilePublic,
@@ -63,34 +64,6 @@ import { effectiveTargetChapterMax } from '../../services/projectLimits';
 import { resolveChapterWordTarget } from '../../services/proseWords';
 import { collectBlacklistExemptions } from '../../services/aiTasteScan';
 import { ALL_LLM_ROLES, ROLE_LABELS } from '../../services/llmRouting';
-
-/**
- * 常见模型官方 API 域名。Base URL 落在名单外时视为第三方中转——
- * 写作正文/设定/记忆会全文发送到该端点，UI 需给出隐私提醒。
- */
-const OFFICIAL_LLM_HOSTS = new Set([
-  'api.deepseek.com',
-  'api.moonshot.cn',
-  'open.bigmodel.cn',
-  'api.siliconflow.cn',
-  'api.openai.com',
-  'api.anthropic.com',
-  'dashscope.aliyuncs.com',
-  'api.minimax.chat',
-  'api.lingyiwanwu.com',
-]);
-
-/** 返回第三方中转域名；官方端点/空/非法 URL 返回 null */
-function thirdPartyHost(baseURL: string): string | null {
-  const t = (baseURL || '').trim();
-  if (!t) return null;
-  try {
-    const u = new URL(t);
-    return OFFICIAL_LLM_HOSTS.has(u.hostname) ? null : u.hostname;
-  } catch {
-    return null;
-  }
-}
 import {
   runDoctorClient,
   overallLabel,
